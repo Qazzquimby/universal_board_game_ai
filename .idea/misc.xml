@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="Black">
+    <option name="enabledOnReformat" value="true" />
+    <option name="enabledOnSave" value="true" />
+    <option name="executionMode" value="BINARY" />
+    <option name="pathToExecutable" value="C:\Python310\Scripts\black.exe" />
+    <option name="sdkName" value="/home/qazzquimby/anaconda3" />
+  </component>
+  <component name="BlackConnectSettings" triggerOnEachSave="true" triggerOnReformat="true" />
+  <component name="ProjectRootManager" version="2" project-jdk-name="Python 3.13 (boardGameEngine)" project-jdk-type="Python SDK" />
+  <component name="PyDebuggerOptionsProvider">
+    <option name="myDropIntoDebuggerOnFailedTests" value="true" />
+  </component>
+</project>
