@@ -1,6 +1,5 @@
 import numpy as np
 from typing import Dict, List, Tuple, Any
-import random
 
 
 class BoardGameEnv:
@@ -237,17 +236,28 @@ class BoardGameEnv:
         """Close the environment."""
         pass
 
+    def copy(self) -> "BoardGameEnv":
+        """Create a copy of the environment"""
+        new_env = BoardGameEnv(
+            board_size=self.board_size,
+            num_players=self.num_players,
+            max_steps=self.max_steps,
+        )
+        new_env.board = self.board.copy()
+        new_env.current_player = self.current_player
+        new_env.done = self.done
+        new_env.winner = self.winner
+        new_env.step_count = self.step_count
+        new_env.last_action = self.last_action
+        new_env.rewards = self.rewards.copy()
+        return new_env
 
-# Example of a random agent
-class RandomAgent:
-    """A simple random agent for demonstration."""
-
-    def __init__(self, env: BoardGameEnv):
-        self.env = env
-
-    def act(self) -> Tuple[int, int]:
-        """Choose a random valid action."""
-        valid_actions = self.env.get_legal_actions()
-        if valid_actions:
-            return random.choice(valid_actions)
-        return (-1, -1)  # Invalid action if no valid actions available
+    def set_state(self, state: dict) -> None:
+        """Set the environment state"""
+        self.board = state["board"].copy()
+        self.current_player = state["current_player"]
+        self.step_count = state["step_count"]
+        self.last_action = state["last_action"]
+        self.rewards = state["rewards"].copy()
+        self.winner = state["winner"]
+        self.done = state["done"]

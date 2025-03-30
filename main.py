@@ -1,113 +1,10 @@
 import numpy as np
-from collections import defaultdict
 import matplotlib.pyplot as plt
-from temp_env import BoardGameEnv, RandomAgent  # Import your environment
 
-
-class QLearningAgent:
-    """Q-learning agent for board games with sparse rewards"""
-
-    def __init__(
-        self,
-        env: BoardGameEnv,
-        learning_rate: float = 0.1,
-        discount_factor: float = 0.95,
-        exploration_rate: float = 1.0,
-        exploration_decay: float = 0.999,
-        min_exploration: float = 0.01,
-    ):
-        """
-        Initialize the Q-learning agent.
-
-        Args:
-            env: The board game environment
-            learning_rate: Learning rate for Q-learning updates
-            discount_factor: Discount factor for future rewards
-            exploration_rate: Initial exploration rate for epsilon-greedy policy
-            exploration_decay: Rate at which exploration decreases
-        """
-        self.env = env
-        self.learning_rate = learning_rate
-        self.discount_factor = discount_factor
-        self.exploration_rate = exploration_rate
-        self.exploration_decay = exploration_decay
-        self.min_exploration = min_exploration
-
-        # Initialize Q-table
-        # Using defaultdict to handle new state-action pairs
-        self.q_table = defaultdict(lambda: defaultdict(float))
-
-    def _state_to_key(self, state):
-        """Convert state (board) to a hashable key."""
-        # Flatten the board and convert to tuple for hashing
-        board = state["board"]
-        return tuple(board.flatten())
-
-    def act(self, state):
-        """
-        Choose an action using epsilon-greedy policy.
-
-        Args:
-            state: The current state observation
-
-        Returns:
-            The chosen action
-        """
-        state_key = self._state_to_key(state)
-        valid_actions = self.env.get_legal_actions()
-
-        # If no valid actions, return an invalid action
-        if not valid_actions:
-            return -1, -1
-
-        # Exploration: choose random action
-        if np.random.random() < self.exploration_rate:
-            index = np.random.choice(len(valid_actions))
-            return valid_actions[index]
-
-        # Exploitation: choose best action based on Q-values
-        q_values = {action: self.q_table[state_key][action] for action in valid_actions}
-
-        # If all Q-values are the same (e.g., all 0), choose randomly
-        if len(set(q_values.values())) == 1:
-            index = np.random.choice(len(valid_actions))
-            return valid_actions[index]
-
-        # Otherwise, choose the action with the highest Q-value
-        return max(q_values.items(), key=lambda x: x[1])[0]
-
-    def learn(self, episode_history):
-        """Update Q-values for all steps in the episode"""
-        final_reward = episode_history[-1][2]  # Reward from final step
-
-        # Reverse update to propagate final reward back
-        for t in reversed(range(len(episode_history))):
-            state, action, _, done = episode_history[t]
-            state_key = self._state_to_key(state)
-            action = tuple(action)
-
-            next_max = 0
-            if not done and t < len(episode_history) - 1:
-                next_state = episode_history[t + 1][0]
-                next_valid = self.env.get_legal_actions()
-                next_max = max(
-                    (
-                        self.q_table[self._state_to_key(next_state)][a]
-                        for a in next_valid
-                    ),
-                    default=0,
-                )
-
-            # Q-learning update with discounted future rewards
-            self.q_table[state_key][action] += self.learning_rate * (
-                final_reward * (self.discount_factor ** (len(episode_history) - t - 1))
-                + self.discount_factor * next_max
-                - self.q_table[state_key][action]
-            )
-
-    def decay_exploration(self):
-        """Decay the exploration rate."""
-        self.exploration_rate *= self.exploration_decay
+from mcts import MCTSAgent
+from qlearning import QLearningAgent
+from temp_env import BoardGameEnv  # Import your environment
+from random_agent import RandomAgent
 
 
 def train_agent(env, agent, num_episodes=1000, opponent=None):
@@ -222,53 +119,56 @@ def plot_results(win_history, window_size=100):
     plt.show()
 
 
+def _run_test_games(env, agent1, agent2, num_games=100):
+    """Run test games between two agents"""
+    results = {"agent1": 0, "agent2": 0, "draws": 0}
+
+    for _ in range(num_games):
+        state = env.reset()
+        done = False
+
+        while not done:
+            if env.get_current_player() == 0:
+                action = agent1.act(state)
+            else:
+                action = agent2.act(state)
+            state, _, done = env.step(action)
+
+        winner = env.get_winning_player()
+        if winner == 0:
+            results["agent1"] += 1
+        elif winner == 1:
+            results["agent2"] += 1
+        else:
+            results["draws"] += 1
+
+    print(f"Results after {num_games} games:")
+    print(f"Agent1 wins: {results['agent1']}")
+    print(f"Agent2 wins: {results['agent2']}")
+    print(f"Draws: {results['draws']}")
+
+
 # Example usage
 if __name__ == "__main__":
     # Create environment
     env = BoardGameEnv(board_size=4, num_players=2)
 
-    # Create agent
-    agent = QLearningAgent(env)
+    # Create different agents
+    random_agent = RandomAgent(env)
+    ql_agent = QLearningAgent(env)
+    mcts_agent = MCTSAgent(env)
 
-    # Train agent
-    print("Training agent...")
-    wins = train_agent(env, agent, num_episodes=5000)
-
-    # Plot results
+    # Train Q-learning agent
+    print("Training Q-learning agent...")
+    wins = train_agent(env, ql_agent, num_episodes=5000)
     plot_results(wins, window_size=200)
 
-    # Test agent against random opponent
-    print("\nTesting agent against random opponent...")
+    # Test agents against each other
+    print("\nTesting MCTS vs Q-Learning...")
+    _run_test_games(env.copy(), mcts_agent, ql_agent)
 
-    test_env = BoardGameEnv(board_size=4, num_players=2)
-    test_opponent = RandomAgent(test_env)
+    print("\nTesting Q-Learning vs Random...")
+    _run_test_games(env.copy(), ql_agent, random_agent)
 
-    num_test_games = 200
-    wins, draws, losses = 0, 0, 0
-
-    for _ in range(num_test_games):
-        obs = test_env.reset()
-        done = False
-
-        while not done:
-            # Agent's turn
-            if test_env.current_player == 0:
-                action = agent.act(obs)
-                obs, _, done = test_env.step(action)
-            # Opponent's turn
-            else:
-                action = test_opponent.act()
-                obs, _, done = test_env.step(action)
-
-        # Record result
-        if test_env.get_winning_player() == 0:
-            wins += 1
-        elif test_env.get_winning_player() is not None:
-            losses += 1
-        else:
-            draws += 1
-
-    print(f"Results against random opponent:")
-    print(f"Win Rate: {wins/num_test_games:.2f}")
-    print(f"Draw Rate: {draws/num_test_games:.2f}")
-    print(f"Loss Rate: {losses/num_test_games:.2f}")
+    print("\nTesting MCTS vs MCTS...")
+    _run_test_games(env.copy(), mcts_agent, MCTSAgent(env))

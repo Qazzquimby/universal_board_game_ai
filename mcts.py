@@ -4,14 +4,14 @@ from typing import Dict, List, Tuple, Any
 
 
 class MCTSNode:
-    """A node in the Monte Carlo Tree Search"""
+    """Core MCTS node that tracks search statistics"""
 
-    def __init__(self, parent: "MCTSNode" = None, prior: float = 1.0):
+    def __init__(self, parent=None, prior=1.0):
         self.parent = parent
-        self.prior = prior  # Prior probability from policy network
+        self.prior = prior
         self.visit_count = 0
         self.total_value = 0.0
-        self.children: Dict[Any, MCTSNode] = {}
+        self.children = {}
 
     @property
     def value(self) -> float:
@@ -24,81 +24,39 @@ class MCTSNode:
         """Create child nodes for all legal actions"""
         for action in legal_actions:
             if action not in self.children:
-                self.children[action] = MCTSNode(parent=self, prior=1.0)
-
-    def select_child(self, exploration_constant: float) -> Tuple[Any, "MCTSNode"]:
-        """Select child with highest UCB score"""
-        _, action, node = max(
-            (self._ucb_score(child, exploration_constant), action, child)
-            for action, child in self.children.items()
-        )
-        return action, node
-
-    def _ucb_score(self, child: "MCTSNode", c: float) -> float:
-        """Calculate UCB1 score"""
-        if child.visit_count == 0:
-            q_value = 0.0
-        else:
-            q_value = child.value
-
-        return q_value + c * (
-            math.sqrt(math.log(self.visit_count + 1) / (child.visit_count + 1e-6))
-        )
+                self.children[action] = MCTSNode(parent=self)
 
 
-class MCTSAgent:
-    """Monte Carlo Tree Search agent with random rollouts"""
+class MCTS:
+    """Core MCTS algorithm implementation, environment-agnostic"""
 
     def __init__(
-        self,
-        env: "BoardGameEnv",
-        num_simulations: int = 100,
-        exploration_constant: float = 1.41,
-        discount_factor: float = 0.95,
+        self, exploration_constant=1.41, discount_factor=1.0, num_simulations=100
     ):
-        self.env = env
-        self.num_simulations = num_simulations
         self.exploration_constant = exploration_constant
         self.discount_factor = discount_factor
+        self.num_simulations = num_simulations
         self.root = MCTSNode()
-        # Cache for state keys to avoid recomputation
-        self._state_cache = {}
 
-    def _run_simulation(self, state: dict, root_env: "BoardGameEnv") -> float:
-        """Run a single MCTS simulation"""
-        node = self.root
-        env = root_env.copy()
-        depth = 0
+    def _ucb_score(self, node: MCTSNode, parent_visits: int) -> float:
+        """Calculate UCB1 score"""
+        if node.visit_count == 0:
+            return float("inf")
+        return node.value + self.exploration_constant * math.sqrt(
+            math.log(parent_visits) / node.visit_count
+        )
 
-        # Select - walk down tree until leaf node
-        while node.is_expanded():
-            action, node = node.select_child(self.exploration_constant)
+    def _select(self, node: MCTSNode, env) -> Tuple[MCTSNode, Any, int]:
+        """Select child node with highest UCB score"""
+        while node.is_expanded() and not env.is_game_over():
+            action, node = max(
+                (self._ucb_score(child, node.visit_count), action, child)
+                for action, child in node.children.items()
+            )[1:]
             env.step(action)
-            depth += 1
+        return node, env
 
-        # Expand and evaluate if game not ended
-        if not env.is_game_over():
-            legal_actions = env.get_legal_actions()
-            node.expand(legal_actions)
-            value = self._rollout(env) * (self.discount_factor**depth)
-        else:
-            if env.get_winning_player() == root_env.current_player:
-                value = 1.0
-            elif env.get_winning_player() is None:
-                value = 0.0
-            else:
-                value = -1.0
-
-        # Backpropagate
-        while node is not None:
-            node.visit_count += 1
-            node.total_value += value
-            node = node.parent
-            value = -value  # Alternate values for 2-player games
-
-        return value
-
-    def _rollout(self, env: "BoardGameEnv") -> float:
+    def _rollout(self, env) -> float:
         """Random rollout policy"""
         current_player = env.get_current_player()
         while not env.is_game_over():
@@ -110,27 +68,52 @@ class MCTSAgent:
             return 0.0
         return 1.0 if winner == current_player else -1.0
 
-    def act(self, state: dict) -> Tuple[int, int]:
-        """Choose action through MCTS search"""
-        original_env = self.env
+    def _backpropagate(self, node: MCTSNode, value: float):
+        """Backpropagate value up the tree"""
+        while node is not None:
+            node.visit_count += 1
+            node.total_value += value
+            value = -value  # Alternate for 2-player games
+            node = node.parent
+
+    def search(self, env, state) -> MCTSNode:
+        """Run MCTS search from given state"""
+        self.root = MCTSNode()
         for _ in range(self.num_simulations):
-            self._run_simulation(state, original_env)
+            sim_env = env.copy()
+            sim_env.set_state(state)
 
-        # Choose most visited action
-        best_action = max(
-            self.root.children.items(), key=lambda item: item[1].visit_count
-        )[0]
+            node, sim_env = self._select(self.root, sim_env)
 
-        # Move root to the selected child for next move
-        if best_action in self.root.children:
-            self.root = self.root.children[best_action]
-            self.root.parent = None  # Allow old tree to be garbage collected
-        else:
-            self.root = MCTSNode()
+            if not sim_env.is_game_over():
+                legal_actions = sim_env.get_legal_actions()
+                node.expand(legal_actions)
+                value = self._rollout(sim_env)
+            else:
+                winner = sim_env.get_winning_player()
+                value = 1.0 if winner == env.get_current_player() else -1.0
 
-        return best_action
+            self._backpropagate(node, value)
+
+        return self.root
+
+
+class MCTSAgent:
+    """Thin wrapper that adapts MCTS to agent interface"""
+
+    def __init__(self, env, num_simulations=100, exploration_constant=1.41):
+        self.env = env
+        self.mcts = MCTS(
+            num_simulations=num_simulations,
+            exploration_constant=exploration_constant,
+            discount_factor=1.0,
+        )
+
+    def act(self, state: dict) -> Any:
+        self.mcts.reset()
+        root_node = self.mcts.search(self.env, state)
+        return max(root_node.children.items(), key=lambda x: x[1].visit_count)[0]
 
     def reset(self) -> None:
         """Reset search tree between moves"""
-        self.root = MCTSNode()
-        self._state_cache.clear()
+        self.mcts.root = MCTSNode()
