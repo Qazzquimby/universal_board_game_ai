@@ -8,8 +8,5 @@
     <option name="sdkName" value="/home/qazzquimby/anaconda3" />
   </component>
   <component name="BlackConnectSettings" triggerOnEachSave="true" triggerOnReformat="true" />
-  <component name="ProjectRootManager" version="2" project-jdk-name="Python 3.13 (boardGameEngine)" project-jdk-type="Python SDK" />
-  <component name="PyDebuggerOptionsProvider">
-    <option name="myDropIntoDebuggerOnFailedTests" value="true" />
-  </component>
+  <component name="ProjectRootManager" version="2" project-jdk-name="Python 3.11 (rl_experiments)" project-jdk-type="Python SDK" />
 </project>
