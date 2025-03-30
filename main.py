@@ -5,18 +5,16 @@ from temp_env import BoardGameEnv, RandomAgent  # Import your environment
 
 
 class QLearningAgent:
-    """
-    A Q-learning agent for the board game environment.
-    Uses a tabular Q-table approach for simplicity.
-    """
+    """Q-learning agent for board games with sparse rewards"""
 
     def __init__(
         self,
         env: BoardGameEnv,
         learning_rate: float = 0.1,
-        discount_factor: float = 0.99,
-        exploration_rate: float = 0.3,
-        exploration_decay: float = 0.99,
+        discount_factor: float = 0.95,
+        exploration_rate: float = 1.0,
+        exploration_decay: float = 0.999,
+        min_exploration: float = 0.01,
     ):
         """
         Initialize the Q-learning agent.
@@ -33,6 +31,7 @@ class QLearningAgent:
         self.discount_factor = discount_factor
         self.exploration_rate = exploration_rate
         self.exploration_decay = exploration_decay
+        self.min_exploration = min_exploration
 
         # Initialize Q-table
         # Using defaultdict to handle new state-action pairs
@@ -77,41 +76,34 @@ class QLearningAgent:
         # Otherwise, choose the action with the highest Q-value
         return max(q_values.items(), key=lambda x: x[1])[0]
 
-    def learn(self, state, action, reward, next_state, done):
-        """
-        Update Q-values based on the Q-learning update rule.
+    def learn(self, episode_history):
+        """Update Q-values for all steps in the episode"""
+        final_reward = episode_history[-1][2]  # Reward from final step
 
-        Args:
-            state: Current state
-            action: Action taken
-            reward: Reward received
-            next_state: Next state
-            done: Whether the episode is done
-        """
-        state_key = self._state_to_key(state)
-        next_state_key = self._state_to_key(next_state)
+        # Reverse update to propagate final reward back
+        for t in reversed(range(len(episode_history))):
+            state, action, _, done = episode_history[t]
+            state_key = self._state_to_key(state)
+            action = tuple(action)
 
-        # Convert action to tuple if it's not already
-        action = tuple(action) if not isinstance(action, tuple) else action
+            next_max = 0
+            if not done and t < len(episode_history) - 1:
+                next_state = episode_history[t + 1][0]
+                next_valid = self.env.get_valid_actions()
+                next_max = max(
+                    (
+                        self.q_table[self._state_to_key(next_state)][a]
+                        for a in next_valid
+                    ),
+                    default=0,
+                )
 
-        # Get the best next action from next_state
-        next_valid_actions = self.env.get_valid_actions()
-
-        if done or not next_valid_actions:
-            # If done or no valid actions, there's no future reward
-            best_next_q = 0
-        else:
-            next_q_values = {
-                a: self.q_table[next_state_key][a] for a in next_valid_actions
-            }
-            best_next_q = max(next_q_values.values()) if next_q_values else 0
-
-        # Q-learning update rule
-        self.q_table[state_key][action] += self.learning_rate * (
-            reward
-            + self.discount_factor * best_next_q
-            - self.q_table[state_key][action]
-        )
+            # Q-learning update with discounted future rewards
+            self.q_table[state_key][action] += self.learning_rate * (
+                final_reward * (self.discount_factor ** (len(episode_history) - t - 1))
+                + self.discount_factor * next_max
+                - self.q_table[state_key][action]
+            )
 
     def decay_exploration(self):
         """Decay the exploration rate."""
@@ -119,66 +111,52 @@ class QLearningAgent:
 
 
 def train_agent(env, agent, num_episodes=1000, opponent=None):
-    """
-    Train the agent against an opponent (or random if none provided).
-
-    Args:
-        env: The environment
-        agent: The agent to train
-        num_episodes: Number of episodes to train for
-        opponent: The opponent agent (uses RandomAgent if None)
-
-    Returns:
-        List of rewards per episode
-    """
-    if opponent is None:
-        opponent = RandomAgent(env)
-
-    rewards_history = []
+    """Train agent with proper turn handling and sparse rewards"""
+    opponent = opponent or RandomAgent(env)
     win_history = []
 
     for episode in range(num_episodes):
-        total_reward = 0
         obs = env.reset()
         done = False
+        episode_history = []
 
         while not done:
-            # Agent's turn
-            if env.current_player == 0:  # Assuming agent is player 0
+            current_player = env.get_current_player()
+
+            if current_player == 0:  # Agent's turn
                 state = obs
                 action = agent.act(state)
-                next_obs, reward, done, info = env.step(action)
-
-                # If the game ended with this move
-                if done:
-                    # Positive reward for winning, neutral for draw
-                    if "winner" in info and info["winner"] == 0:
-                        reward = 1.0
-                    elif "draw" in info:
-                        reward = 0.1
-
-                agent.learn(state, action, reward, next_obs, done)
-                total_reward += reward
+                next_obs, reward, done = env.step(action)
+                episode_history.append((state, action, reward, done))
                 obs = next_obs
-
-            # Opponent's turn
-            else:
+            else:  # Opponent's turn
                 action = opponent.act()
-                obs, _, done, _ = env.step(action)
+                obs, _, done = env.step(action)
 
-        # Decay exploration
-        agent.decay_exploration()
+        # After episode ends, determine final reward
+        if env.get_winning_player() == 0:
+            final_reward = 1.0
+            outcome = 1
+        elif env.get_winning_player() is not None:
+            final_reward = -1.0
+            outcome = -1
+        else:
+            final_reward = 0.0
+            outcome = 0
 
-        # Record results
-        rewards_history.append(total_reward)
+        # Update Q-values with final reward
+        if episode_history:
+            # Replace all rewards with final outcome
+            episode_history = [
+                (s, a, final_reward, d) for s, a, _, d in episode_history
+            ]
+            agent.learn(episode_history)
 
-        # Record if agent won
-        if "winner" in info and info["winner"] == 0:
-            win_history.append(1)
-        elif "winner" in info and info["winner"] != 0:
-            win_history.append(-1)
-        else:  # Draw
-            win_history.append(0)
+        # Track outcomes and decay exploration
+        win_history.append(outcome)
+        agent.exploration_rate = max(
+            agent.exploration_rate * agent.exploration_decay, agent.min_exploration
+        )
 
         # Print progress occasionally
         if (episode + 1) % 100 == 0:
@@ -193,27 +171,27 @@ def train_agent(env, agent, num_episodes=1000, opponent=None):
                 f"Exploration: {agent.exploration_rate:.4f}"
             )
 
-    return rewards_history, win_history
+    return win_history
 
 
-def plot_results(rewards_history, win_history, window_size=100):
+def plot_results(win_history, window_size=100):
     """Plot the training results."""
     # Plot rewards
     plt.figure(figsize=(12, 10))
 
     plt.subplot(2, 1, 1)
-    plt.plot(rewards_history)
+    plt.plot(win_history)
     plt.title("Rewards per Episode")
     plt.xlabel("Episode")
     plt.ylabel("Reward")
 
     # Plot smoothed rewards
-    if len(rewards_history) >= window_size:
+    if len(win_history) >= window_size:
         smoothed_rewards = [
-            np.mean(rewards_history[i : i + window_size])
-            for i in range(len(rewards_history) - window_size + 1)
+            np.mean(win_history[i : i + window_size])
+            for i in range(len(win_history) - window_size + 1)
         ]
-        plt.plot(range(window_size - 1, len(rewards_history)), smoothed_rewards, "r-")
+        plt.plot(range(window_size - 1, len(win_history)), smoothed_rewards, "r-")
         plt.legend(["Rewards", f"Moving Average ({window_size})"])
 
     # Plot win rate
@@ -253,10 +231,10 @@ if __name__ == "__main__":
 
     # Train agent
     print("Training agent...")
-    rewards, wins = train_agent(env, agent, num_episodes=5000)
+    wins = train_agent(env, agent, num_episodes=50000)
 
     # Plot results
-    plot_results(rewards, wins)
+    plot_results(wins)
 
     # Test agent against random opponent
     print("\nTesting agent against random opponent...")
@@ -270,24 +248,22 @@ if __name__ == "__main__":
     for _ in range(num_test_games):
         obs = test_env.reset()
         done = False
-        info = {}
 
         while not done:
             # Agent's turn
             if test_env.current_player == 0:
                 action = agent.act(obs)
-                obs, _, done, info = test_env.step(action)
+                obs, _, done = test_env.step(action)
             # Opponent's turn
             else:
                 action = test_opponent.act()
-                obs, _, done, info = test_env.step(action)
+                obs, _, done = test_env.step(action)
 
         # Record result
-        if "winner" in info:
-            if info["winner"] == 0:
-                wins += 1
-            else:
-                losses += 1
+        if test_env.get_winning_player() == 0:
+            wins += 1
+        elif test_env.get_winning_player() is not None:
+            losses += 1
         else:
             draws += 1
 
