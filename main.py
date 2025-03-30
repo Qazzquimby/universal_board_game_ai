@@ -54,7 +54,7 @@ class QLearningAgent:
             The chosen action
         """
         state_key = self._state_to_key(state)
-        valid_actions = self.env.get_valid_actions()
+        valid_actions = self.env.get_legal_actions()
 
         # If no valid actions, return an invalid action
         if not valid_actions:
@@ -89,7 +89,7 @@ class QLearningAgent:
             next_max = 0
             if not done and t < len(episode_history) - 1:
                 next_state = episode_history[t + 1][0]
-                next_valid = self.env.get_valid_actions()
+                next_valid = self.env.get_legal_actions()
                 next_max = max(
                     (
                         self.q_table[self._state_to_key(next_state)][a]
@@ -159,10 +159,11 @@ def train_agent(env, agent, num_episodes=1000, opponent=None):
         )
 
         # Print progress occasionally
-        if (episode + 1) % 100 == 0:
-            win_rate = win_history[-100:].count(1) / 100
-            draw_rate = win_history[-100:].count(0) / 100
-            loss_rate = win_history[-100:].count(-1) / 100
+        window_size = 200
+        if (episode + 1) % window_size == 0:
+            win_rate = win_history[-window_size:].count(1) / window_size
+            draw_rate = win_history[-window_size:].count(0) / window_size
+            loss_rate = win_history[-window_size:].count(-1) / window_size
             print(
                 f"Episode {episode + 1}/{num_episodes} | "
                 f"Win Rate: {win_rate:.2f} | "
@@ -231,10 +232,10 @@ if __name__ == "__main__":
 
     # Train agent
     print("Training agent...")
-    wins = train_agent(env, agent, num_episodes=50000)
+    wins = train_agent(env, agent, num_episodes=5000)
 
     # Plot results
-    plot_results(wins)
+    plot_results(wins, window_size=200)
 
     # Test agent against random opponent
     print("\nTesting agent against random opponent...")
@@ -242,7 +243,7 @@ if __name__ == "__main__":
     test_env = BoardGameEnv(board_size=4, num_players=2)
     test_opponent = RandomAgent(test_env)
 
-    num_test_games = 100
+    num_test_games = 200
     wins, draws, losses = 0, 0, 0
 
     for _ in range(num_test_games):

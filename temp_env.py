@@ -154,10 +154,18 @@ class BoardGameEnv:
                 else:
                     count = 0
 
+            # Check both diagonal directions
             # Check diagonal (top-left to bottom-right)
             for r in range(self.board_size - 3):
                 for c in range(self.board_size - 3):
-                    if (self.board[r : r + 4, c : c + 4] == player_piece).all():
+                    if all(self.board[r + i][c + i] == player_piece for i in range(4)):
+                        self.winner = player
+                        return True
+
+            # Check diagonal (top-right to bottom-left)
+            for r in range(self.board_size - 3):
+                for c in range(3, self.board_size):
+                    if all(self.board[r + i][c - i] == player_piece for i in range(4)):
                         self.winner = player
                         return True
 
@@ -195,7 +203,7 @@ class BoardGameEnv:
                 print(row_str)
             print()
 
-    def get_valid_actions(self) -> List[Tuple[int, int]]:
+    def get_legal_actions(self) -> List[Tuple[int, int]]:
         """
         Get a list of all valid actions.
 
@@ -211,7 +219,7 @@ class BoardGameEnv:
 
     def is_game_over(self) -> bool:
         """Return whether the game is over."""
-        return self.done
+        return self.done or not self.get_legal_actions()
 
     def get_winning_player(self) -> int:
         """Return the winning player number, or None if no winner."""
@@ -239,7 +247,7 @@ class RandomAgent:
 
     def act(self) -> Tuple[int, int]:
         """Choose a random valid action."""
-        valid_actions = self.env.get_valid_actions()
+        valid_actions = self.env.get_legal_actions()
         if valid_actions:
             return random.choice(valid_actions)
         return (-1, -1)  # Invalid action if no valid actions available
