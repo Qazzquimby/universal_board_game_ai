@@ -96,4 +96,9 @@ def get_agents(env: BaseEnvironment, config: AppConfig) -> Dict[str, Agent]:
         ),
         "Random": RandomAgent(env),
     }
+
+    # If running smoke test, remove the slower MCTS agent
+    if config.smoke_test and "MCTS_200" in agents:
+        print("Smoke test mode: Removing MCTS_200 agent.")
+        del agents["MCTS_200"]
     return agents

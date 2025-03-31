@@ -8,10 +8,9 @@ import numpy as np
 
 from environments.base import BaseEnvironment, StateType, ActionType
 from core.agent_interface import Agent
-from core.config import QLearningConfig  # Import QLearningConfig
+from core.config import QLearningConfig
 
-# Define data directory relative to this file or project root
-# Assuming project root is parent of 'agents' directory
+# Define data directory relative to project root
 PROJECT_ROOT = Path(__file__).parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
 

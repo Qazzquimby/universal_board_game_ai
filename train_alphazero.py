@@ -79,15 +79,14 @@ def run_self_play_game(
     return final_outcome, game_steps
 
 
-# --- Main Training Script ---
+# --- Main Training Function ---
 
-if __name__ == "__main__":
-    # --- Configuration ---
-    config = AppConfig()
+def run_training(config: AppConfig, env_name_override: str = None):
+    """Runs the AlphaZero training process."""
 
-    # --- Environment Selection (Optional: Add CLI arg parsing) ---
-    if len(sys.argv) > 1:
-        config.env.name = sys.argv[1]  # e.g., python train_alphazero.py Nim
+    # --- Environment Selection ---
+    if env_name_override:
+        config.env.name = env_name_override
 
     # --- Instantiation ---
     env = get_environment(config.env)
@@ -100,28 +99,33 @@ if __name__ == "__main__":
     else:
         print("Loaded existing weights. Continuing training.")
 
-    # Optimizer is now managed internally by the agent
+    # Optimizer is managed internally by the agent
 
     # --- Training Loop ---
-    # TODO: Make number of training iterations configurable
-    num_training_iterations = (
-        100  # Example: Number of times we run self-play + learning
-    )
-    num_episodes_per_iteration = 25  # Example: Games played before each learning step
+    # Use values from config
+    num_training_iterations = config.training.num_iterations
+    num_episodes_per_iteration = config.training.num_episodes_per_iteration
+
     print(f"Starting AlphaZero training for {num_training_iterations} iterations...")
     print(f"({num_episodes_per_iteration} self-play games per iteration)")
 
-    game_outcomes = []  # Track outcomes for plotting
+    game_outcomes = []
 
-    for iteration in range(num_training_iterations):
+    # Disable tqdm if running smoke test to potentially avoid encoding issues
+    use_tqdm = not config.smoke_test
+    outer_loop_iterator = range(num_training_iterations)
+    inner_loop_iterator = tqdm(range(num_episodes_per_iteration), desc="Self-Play") if use_tqdm else range(num_episodes_per_iteration)
+
+
+    for iteration in outer_loop_iterator:
         print(f"\n--- Iteration {iteration + 1}/{num_training_iterations} ---")
 
         # 1. Self-Play Phase
-        agent.network.eval()  # Ensure network is in eval mode for MCTS simulations
+        agent.network.eval()
         print("Running self-play games...")
-        for _ in tqdm(range(num_episodes_per_iteration), desc="Self-Play"):
+        for _ in inner_loop_iterator:
             outcome, steps = run_self_play_game(env, agent)
-            game_outcomes.append(outcome)  # Store outcome for player 0
+            game_outcomes.append(outcome)
 
         # 2. Learning Phase
         print("Running learning step...")
@@ -156,4 +160,18 @@ if __name__ == "__main__":
     print("Plotting training results...")
     plot_results(game_outcomes, window_size=config.training.plot_window)
 
-    print("\n--- AlphaZero Training Script Finished ---")
+    print("\n--- AlphaZero Training Finished ---")
+
+
+# --- Script Entry Point ---
+
+if __name__ == "__main__":
+    # --- Configuration ---
+    config = AppConfig()
+    env_override = None
+
+    # --- Environment Selection (Optional: Add CLI arg parsing) ---
+    if len(sys.argv) > 1:
+        env_override = sys.argv[1] # e.g., python train_alphazero.py Nim
+
+    run_training(config, env_name_override=env_override)

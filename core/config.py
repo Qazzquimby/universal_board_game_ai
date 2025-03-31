@@ -24,15 +24,6 @@ class QLearningConfig:
     exploration_decay: float = 0.999
     min_exploration: float = 0.01
 
-    def __post_init__(self):
-        # Allow overrides via environment variables for smoke tests
-        import os
-        self.learning_rate = float(os.getenv("SMOKE_TEST_QL_LR", self.learning_rate))
-        self.discount_factor = float(os.getenv("SMOKE_TEST_QL_DISCOUNT", self.discount_factor))
-        self.exploration_rate = float(os.getenv("SMOKE_TEST_QL_EXPL_START", self.exploration_rate))
-        self.exploration_decay = float(os.getenv("SMOKE_TEST_QL_EXPL_DECAY", self.exploration_decay))
-        self.min_exploration = float(os.getenv("SMOKE_TEST_QL_EXPL_MIN", self.min_exploration))
-
 
 @dataclass
 class MCTSConfig:
@@ -40,13 +31,6 @@ class MCTSConfig:
     discount_factor: float = 1.0 # Discount within the search tree
     num_simulations_short: int = 50
     num_simulations_long: int = 200
-
-    def __post_init__(self):
-        # Allow overrides via environment variables for smoke tests
-        import os
-        self.exploration_constant = float(os.getenv("SMOKE_TEST_MCTS_C", self.exploration_constant))
-        self.num_simulations_short = int(os.getenv("SMOKE_TEST_MCTS_SIMS_SHORT", self.num_simulations_short))
-        self.num_simulations_long = int(os.getenv("SMOKE_TEST_MCTS_SIMS_LONG", self.num_simulations_long))
 
 
 @dataclass
@@ -57,17 +41,8 @@ class AlphaZeroConfig:
     weight_decay: float = 0.0001
     hidden_layer_size: int = 128 # Size for the MLP hidden layers
     num_hidden_layers: int = 2 # Number of hidden layers in the MLP
-    replay_buffer_size: int = 10000 # Max size of the replay buffer
-    batch_size: int = 64 # Batch size for training
-
-    def __post_init__(self):
-        # Allow overrides via environment variables for smoke tests
-        import os
-        self.num_simulations = int(os.getenv("SMOKE_TEST_AZ_SIMS", self.num_simulations))
-        self.cpuct = float(os.getenv("SMOKE_TEST_AZ_CPUCT", self.cpuct))
-        self.learning_rate = float(os.getenv("SMOKE_TEST_AZ_LR", self.learning_rate))
-        self.replay_buffer_size = int(os.getenv("SMOKE_TEST_AZ_BUFFER", self.replay_buffer_size))
-        self.batch_size = int(os.getenv("SMOKE_TEST_AZ_BATCH", self.batch_size))
+    replay_buffer_size: int = 10000
+    batch_size: int = 64
 
 
 # --- Training Configuration ---
@@ -78,15 +53,8 @@ class TrainingConfig:
     plot_window: int = 200
 
     # Specific to AlphaZero training loop in train_alphazero.py
-    num_iterations: int = 100 # Number of self-play + learn cycles
-    num_episodes_per_iteration: int = 25 # Self-play games per cycle
-
-    def __post_init__(self):
-        # Allow overrides via environment variables for smoke tests
-        import os
-        self.num_episodes = int(os.getenv("SMOKE_TEST_QL_EPISODES", self.num_episodes))
-        self.num_iterations = int(os.getenv("SMOKE_TEST_AZ_ITERATIONS", self.num_iterations))
-        self.num_episodes_per_iteration = int(os.getenv("SMOKE_TEST_AZ_EPISODES_PER_ITER", self.num_episodes_per_iteration))
+    num_iterations: int = 100
+    num_episodes_per_iteration: int = 25
 
 
 # --- Evaluation Configuration ---
@@ -98,12 +66,6 @@ class EvaluationConfig:
     elo_baseline_agent: str = "Random"
     elo_baseline_rating: float = 1000.0
 
-    def __post_init__(self):
-        # Allow overrides via environment variables for smoke tests
-        import os
-        self.num_games = int(os.getenv("SMOKE_TEST_EVAL_GAMES", self.num_games))
-        self.elo_iterations = int(os.getenv("SMOKE_TEST_EVAL_ELO_ITER", self.elo_iterations))
-
 
 # --- Main Application Configuration ---
 @dataclass
@@ -111,9 +73,11 @@ class AppConfig:
     env: EnvConfig = field(default_factory=EnvConfig)
     q_learning: QLearningConfig = field(default_factory=QLearningConfig)
     mcts: MCTSConfig = field(default_factory=MCTSConfig)
-    alpha_zero: AlphaZeroConfig = field(default_factory=AlphaZeroConfig) # Add AlphaZero config
+    alpha_zero: AlphaZeroConfig = field(default_factory=AlphaZeroConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
     evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
+    # Flag to indicate if running in smoke test mode (can be set by test runner)
+    smoke_test: bool = False
 
 # Example usage:
 # config = AppConfig()

@@ -29,7 +29,7 @@ class FourInARow(BaseEnvironment):
         self._max_steps = max_steps
 
         # Action space: all possible (row, col) combinations
-        self.num_actions = self._board_size * self._board_size # Use internal attribute
+        self.num_actions = self._board_size * self._board_size  # Use internal attribute
 
         # State tracking
         self.board = None
@@ -115,7 +115,7 @@ class FourInARow(BaseEnvironment):
                     self.rewards[other_player] = -1.0
 
         # Check for draw
-        elif self.step_count >= self.max_steps or np.all(self.board != 0):
+        elif self.step_count >= self._max_steps or np.all(self.board != 0):
             self.done = True
             # All players get 0 reward for draw (consistent with win/loss being +/- 1)
             # Or keep 0.1 if desired, but 0 seems more standard for zero-sum games. Let's use 0.
