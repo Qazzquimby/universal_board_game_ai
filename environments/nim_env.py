@@ -2,13 +2,13 @@ from typing import List, Tuple, Optional
 
 import numpy as np
 
-from core.env_interface import EnvInterface, StateType
+from environments.env_interface import BaseEnvironment, StateType
 
 # Define Nim-specific action type for clarity
 NimActionType = Tuple[int, int]  # (pile_index, num_to_remove)
 
 
-class NimEnv(EnvInterface):
+class NimEnv(BaseEnvironment):
     """
     Environment for the game of Nim.
 

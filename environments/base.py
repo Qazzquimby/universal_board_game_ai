@@ -2,11 +2,12 @@ import abc
 from typing import Any, Dict, List, Tuple, Optional, TypeVar
 
 # Generic type for actions, can be Tuple[int, int], Tuple[int, int], int, etc.
-ActionType = TypeVar('ActionType')
+ActionType = TypeVar("ActionType")
 # Generic type for the state representation used by the agent (often a dict)
-StateType = Dict[str, Any] # Keep as Dict for now, could be more generic later
+StateType = Dict[str, Any]  # Keep as Dict for now, could be more generic later
 
-class EnvInterface(abc.ABC):
+
+class BaseEnvironment(abc.ABC):
     """Abstract base class for game environments."""
 
     @abc.abstractmethod
@@ -86,7 +87,7 @@ class EnvInterface(abc.ABC):
         pass
 
     @abc.abstractmethod
-    def copy(self) -> 'EnvInterface':
+    def copy(self) -> "BaseEnvironment":
         """
         Create a deep copy of the environment state.
 

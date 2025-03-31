@@ -1,10 +1,9 @@
 import sys  # For basic CLI args or environment selection
-import numpy as np
-from typing import Optional, Dict, Type
+from typing import Optional, Dict
 
 # Core imports
 from core.config import MainConfig
-from core.env_interface import EnvInterface
+from environments.env_interface import BaseEnvironment
 from core.agent_interface import Agent
 
 # Environment imports - Choose the environment to use
@@ -12,16 +11,16 @@ from environments.four_in_a_row import FourInARow
 from environments.nim_env import NimEnv
 
 # Agent imports
-from mcts import MCTSAgent
-from qlearning import QLearningAgent
-from random_agent import RandomAgent
+from agents.mcts_agent import MCTSAgent
+from agents.qlearning import QLearningAgent
+from agents.random_agent import RandomAgent
 
 # Evaluation import
 from evaluation import plot_results, run_evaluation
 
 
 def train_q_agent(
-    env: EnvInterface,
+    env: BaseEnvironment,
     agent: QLearningAgent,
     num_episodes=1000,
     opponent: Optional[Agent] = None,
@@ -100,7 +99,7 @@ def train_q_agent(
     return win_history
 
 
-def get_environment(env_name: str, config: MainConfig) -> EnvInterface:
+def get_environment(env_name: str, config: MainConfig) -> BaseEnvironment:
     """Factory function to create environment instances."""
     if env_name.lower() == "fourinarow":
         print(f"Using FourInARow environment ({config.board_size}x{config.board_size})")
@@ -118,7 +117,7 @@ def get_environment(env_name: str, config: MainConfig) -> EnvInterface:
         raise ValueError(f"Unknown environment name: {env_name}")
 
 
-def get_agents(env: EnvInterface, config: MainConfig) -> Dict[str, Agent]:
+def get_agents(env: BaseEnvironment, config: MainConfig) -> Dict[str, Agent]:
     """Factory function to create agent instances for the given environment."""
     # Adjust Q-learning save file based on environment type
     env_type_name = type(env).__name__

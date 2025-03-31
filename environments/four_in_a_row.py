@@ -2,12 +2,12 @@ from typing import Dict, List, Tuple, Any, Optional
 
 import numpy as np
 
-from core.env_interface import EnvInterface, StateType
+from environments.env_interface import BaseEnvironment, StateType
 
 BoardGameActionType = Tuple[int, int]
 
 
-class FourInARow(EnvInterface):
+class FourInARow(BaseEnvironment):
     """
     A board game environment following PettingZoo-like conventions.
     Implements a Connect-4 style game on a square board.

@@ -6,11 +6,11 @@ from tqdm import tqdm
 
 from core.agent_interface import Agent
 from core.config import MainConfig
-from core.env_interface import EnvInterface, StateType
+from environments.env_interface import BaseEnvironment
 
 
 # --- Helper for Single Game Simulation ---
-def _play_one_game(env: EnvInterface, agent0: Agent, agent1: Agent) -> Optional[int]:
+def _play_one_game(env: BaseEnvironment, agent0: Agent, agent1: Agent) -> Optional[int]:
     """
     Plays a single game from the current env state.
     Args:
@@ -94,7 +94,7 @@ def plot_results(win_history, window_size=100):
 
 
 def run_test_games(
-    env: EnvInterface,
+    env: BaseEnvironment,
     agent1_name: str,
     agent1: Agent,
     agent2_name: str,
@@ -264,7 +264,7 @@ def calculate_elo_ratings(
     return elo_ratings
 
 
-def run_evaluation(env: EnvInterface, agents: Dict[str, Agent], config: MainConfig):
+def run_evaluation(env: BaseEnvironment, agents: Dict[str, Agent], config: MainConfig):
     """
     Runs the full evaluation suite: round-robin games and Elo calculation.
 

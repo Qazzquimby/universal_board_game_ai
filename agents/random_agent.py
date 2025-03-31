@@ -1,20 +1,18 @@
 import random
-from typing import Tuple, Dict, Any
 
-# Use the generic EnvInterface
-from core.env_interface import EnvInterface, StateType, ActionType
+from environments.base import BaseEnvironment, StateType, ActionType
 from core.agent_interface import Agent
 
 
 class RandomAgent(Agent):
     """A simple random agent for demonstration. Does not learn."""
 
-    def __init__(self, env: EnvInterface): # Use EnvInterface
+    def __init__(self, env: BaseEnvironment):  # Use EnvInterface
         """
         Args:
             env: An instance of the BoardGameEnv (used for its copy method).
         """
-        self.env = env # Keep env reference mainly for copy()
+        self.env = env  # Keep env reference mainly for copy()
 
     # Update action return type hint
     def act(self, state: StateType) -> ActionType:
