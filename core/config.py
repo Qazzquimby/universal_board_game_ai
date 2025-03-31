@@ -1,46 +1,66 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import List
+
+# --- Environment Configuration ---
+@dataclass
+class EnvConfig:
+    name: str = "FourInARow" # Default environment
+    board_size: int = 4 # Specific to FourInARow
+    num_players: int = 2
+    max_steps: int = field(init=False) # Calculated post-init
+    nim_piles: List[int] = field(default_factory=lambda: [3, 5, 7]) # Specific to Nim
+
+    def __post_init__(self):
+        # Calculate max_steps based on board_size if applicable
+        self.max_steps = self.board_size * self.board_size + 1
 
 
-# Forward declare Agent if needed, or import later if circular dependency is resolved
-# from core.agent_interface import Agent
-
+# --- Agent-Specific Configurations ---
+@dataclass
+class QLearningConfig:
+    learning_rate: float = 0.1
+    discount_factor: float = 0.95
+    exploration_rate: float = 1.0 # Initial exploration
+    exploration_decay: float = 0.999
+    min_exploration: float = 0.01
+    # Save file name is now handled directly in the agent load/save logic
 
 @dataclass
-class MainConfig:
-    """Configuration settings for the main script."""
+class MCTSConfig:
+    exploration_constant: float = 1.41
+    discount_factor: float = 1.0 # Discount within the search tree
+    num_simulations_short: int = 50
+    num_simulations_long: int = 200
 
-    # Environment settings
-    board_size: int = 4
-    num_players: int = 2
-    env_max_steps: int = (
-        board_size * board_size + 1
-    )  # Max steps slightly more than board size
 
-    # Training settings
-    num_episodes_train: int = 5000
+# --- Training Configuration ---
+@dataclass
+class TrainingConfig:
+    num_episodes: int = 5000
     plot_window: int = 200
-    ql_save_file: str = "q_agent_{board_size}x{board_size}.pkl"
 
-    # Testing settings
-    num_games_test: int = 50
+
+# --- Evaluation Configuration ---
+@dataclass
+class EvaluationConfig:
+    num_games: int = 50
     elo_k_factor: int = 64
     elo_iterations: int = 100
     elo_baseline_agent: str = "Random"
     elo_baseline_rating: float = 1000.0
 
-    # Agent specific configurations can be added here or in separate dataclasses
-    mcts_simulations_short: int = 50
-    mcts_simulations_long: int = 200
 
-    # Agent registry (mapping names to classes - requires agent classes to be imported)
-    # This might be better placed elsewhere if config needs to be loaded before agent classes
-    # agent_registry: Dict[str, Type[Agent]] = field(default_factory=dict)
+# --- Main Application Configuration ---
+@dataclass
+class AppConfig:
+    env: EnvConfig = field(default_factory=EnvConfig)
+    q_learning: QLearningConfig = field(default_factory=QLearningConfig)
+    mcts: MCTSConfig = field(default_factory=MCTSConfig)
+    training: TrainingConfig = field(default_factory=TrainingConfig)
+    evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
 
-    def __post_init__(self):
-        # Dynamically create filename if needed
-        self.ql_save_file = self.ql_save_file.format(board_size=self.board_size)
-
-
-# Example of creating a config instance
-# config = MainConfig()
-# print(config.ql_save_file)
+# Example usage:
+# config = AppConfig()
+# config.env.name = "Nim"
+# print(config.env)
+# print(config.q_learning.learning_rate)

@@ -1,12 +1,13 @@
 import itertools
+import math # Need math for Elo
 from typing import Dict, List, Optional
 
-import matplotlib.pyplot as plt
 from tqdm import tqdm
 
 from core.agent_interface import Agent
-from core.config import MainConfig
-from environments.env_interface import BaseEnvironment
+# Use specific config type
+from core.config import EvaluationConfig, AppConfig
+from environments.base import BaseEnvironment
 
 
 # --- Helper for Single Game Simulation ---
@@ -53,44 +54,7 @@ def _play_one_game(env: BaseEnvironment, agent0: Agent, agent1: Agent) -> Option
     return winner
 
 
-# --- Plotting ---
-def plot_results(win_history, window_size=100):
-    """Plot the training results (win/loss/draw rates)."""
-    plt.figure(figsize=(12, 6))  # Adjusted figure size
-
-    # Calculate win/draw/loss rates using a sliding window
-    if len(win_history) >= window_size:
-        win_rates = []
-        draw_rates = []
-        loss_rates = []
-
-        for i in range(len(win_history) - window_size + 1):
-            window = win_history[i : i + window_size]
-            win_rates.append(window.count(1) / window_size)
-            draw_rates.append(window.count(0) / window_size)
-            loss_rates.append(window.count(-1) / window_size)
-
-        episodes = range(window_size - 1, len(win_history))
-        plt.plot(episodes, win_rates, "g-", label=f"Win Rate (Avg over {window_size})")
-        plt.plot(
-            episodes, draw_rates, "y-", label=f"Draw Rate (Avg over {window_size})"
-        )
-        plt.plot(
-            episodes, loss_rates, "r-", label=f"Loss Rate (Avg over {window_size})"
-        )
-        plt.legend()
-
-    else:
-        # Plot raw outcomes if not enough data for smoothing
-        plt.plot(win_history, "b.", label="Episode Outcome (1:Win, 0:Draw, -1:Loss)")
-        plt.legend()
-
-    plt.title("Agent Training Performance Over Time")
-    plt.xlabel("Episode")
-    plt.ylabel("Rate / Outcome")
-    plt.grid(True)
-    plt.tight_layout()
-    plt.show()
+# Plotting moved to utils.plotting
 
 
 def run_test_games(
@@ -181,10 +145,7 @@ def update_elo(
 def calculate_elo_ratings(
     agent_names: List[str],
     all_results: Dict[tuple, Dict],
-    baseline_agent: str = "Random",
-    baseline_rating: float = 1000.0,
-    k_factor: int = 32,
-    iterations: int = 100,
+    eval_config: EvaluationConfig # Use EvaluationConfig
 ) -> Dict[str, float]:
     """
     Calculate Elo ratings for agents based on pairwise game results.
@@ -202,9 +163,9 @@ def calculate_elo_ratings(
         Dictionary mapping agent names to their calculated Elo ratings.
     """
     print("\n--- Calculating Elo Ratings ---")
-    elo_ratings = {name: baseline_rating for name in agent_names}
+    elo_ratings = {name: eval_config.elo_baseline_rating for name in agent_names}
 
-    for i in range(iterations):
+    for i in range(eval_config.elo_iterations):
         new_ratings = elo_ratings.copy()
         for (agent1_name, agent2_name), results in all_results.items():
             # Ensure results dict contains the correct keys
@@ -236,18 +197,18 @@ def calculate_elo_ratings(
 
             # Update ratings (using ratings from the start of the iteration)
             # Don't update the baseline agent
-            if agent1_name != baseline_agent:
+            if agent1_name != eval_config.elo_baseline_agent:
                 new_ratings[agent1_name] = update_elo(
-                    elo_ratings[agent1_name], expected_score1, actual_score1, k_factor
+                    elo_ratings[agent1_name], expected_score1, actual_score1, eval_config.elo_k_factor
                 )
-            if agent2_name != baseline_agent:
+            if agent2_name != eval_config.elo_baseline_agent:
                 new_ratings[agent2_name] = update_elo(
-                    elo_ratings[agent2_name], expected_score2, actual_score2, k_factor
+                    elo_ratings[agent2_name], expected_score2, actual_score2, eval_config.elo_k_factor
                 )
 
         # Ensure baseline agent rating remains fixed
-        new_ratings[baseline_agent] = baseline_rating
-        elo_ratings = new_ratings  # Update ratings for the next iteration
+        new_ratings[eval_config.elo_baseline_agent] = eval_config.elo_baseline_rating
+        elo_ratings = new_ratings
 
         # Optional: Print progress or check for convergence
         # if i % 10 == 0:
@@ -255,7 +216,7 @@ def calculate_elo_ratings(
 
     # Print sorted Elo ratings
     print(
-        f"\n--- Final Elo Ratings (Baseline: {baseline_agent} @ {baseline_rating:.0f}) ---"
+        f"\n--- Final Elo Ratings (Baseline: {eval_config.elo_baseline_agent} @ {eval_config.elo_baseline_rating:.0f}) ---"
     )
     sorted_elos = sorted(elo_ratings.items(), key=lambda item: item[1], reverse=True)
     for name, rating in sorted_elos:
@@ -264,7 +225,7 @@ def calculate_elo_ratings(
     return elo_ratings
 
 
-def run_evaluation(env: BaseEnvironment, agents: Dict[str, Agent], config: MainConfig):
+def run_evaluation(env: BaseEnvironment, agents: Dict[str, Agent], config: AppConfig):
     """
     Runs the full evaluation suite: round-robin games and Elo calculation.
 
@@ -289,7 +250,7 @@ def run_evaluation(env: BaseEnvironment, agents: Dict[str, Agent], config: MainC
             agent1,
             agent2_name,
             agent2,
-            num_games=config.num_games_test,
+            num_games=config.evaluation.num_games, # Use EvaluationConfig field
         )
 
         # Store results using a consistent key (sorted tuple of names)
@@ -302,8 +263,5 @@ def run_evaluation(env: BaseEnvironment, agents: Dict[str, Agent], config: MainC
     calculate_elo_ratings(
         agent_names=agent_names,
         all_results=all_results,
-        baseline_agent=config.elo_baseline_agent,
-        baseline_rating=config.elo_baseline_rating,
-        k_factor=config.elo_k_factor,
-        iterations=config.elo_iterations,
+        eval_config=config.evaluation # Pass EvaluationConfig
     )
