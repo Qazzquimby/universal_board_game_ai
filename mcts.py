@@ -1,6 +1,10 @@
+# Standard library imports
 import math
 import random
 from typing import Dict, List, Tuple, Any
+
+from temp_env import BoardGameEnv
+from core.agent_interface import Agent
 
 
 class MCTSNode:
@@ -109,21 +113,57 @@ class MCTS:
         return self.root
 
 
-class MCTSAgent:
-    """Thin wrapper that adapts MCTS to agent interface"""
+class MCTSAgent(Agent):
+    """Agent that uses MCTS to choose actions."""
 
-    def __init__(self, env, num_simulations=100, exploration_constant=1.41):
-        self.env = env
+    def __init__(self, env: BoardGameEnv, num_simulations: int = 100, exploration_constant: float = 1.41):
+        """
+        Args:
+            env: The game environment instance (used for copy).
+            num_simulations: Number of MCTS simulations per move.
+            exploration_constant: Exploration constant (c) for UCB1.
+        """
+        self.env = env # Keep env reference mainly for copy()
+        # TODO: MuZero doesn't need an env?
         self.mcts = MCTS(
             num_simulations=num_simulations,
             exploration_constant=exploration_constant,
-            discount_factor=1.0,
+            discount_factor=1.0, # Discount factor within the search tree
         )
 
-    def act(self, state: dict) -> Any:
+    def act(self, state: Dict[str, Any]) -> Tuple[int, int]:
+        """
+        Perform MCTS search and choose the best action.
+
+        Args:
+            state: The current environment state observation.
+
+        Returns:
+            The chosen action (row, col).
+        """
+        # Ensure the MCTS root is reset or updated appropriately.
+        # For stateless MCTS between moves, we run a fresh search each time.
+        # If we wanted to reuse the tree, we'd need more logic here.
+        self.reset() # Reset the tree for a fresh search from the current state
+
         root_node = self.mcts.search(self.env, state)
-        return max(root_node.children.items(), key=lambda x: x[1].visit_count)[0]
+
+        if not root_node.children:
+            # If root has no children after search (e.g., immediate terminal state or no legal moves)
+            # Need a fallback strategy. Choosing randomly from legal moves is one option.
+            print("Warning: MCTS root has no children after search. Falling back.")
+            temp_env = self.env.copy()
+            temp_env.set_state(state)
+            legal_actions = temp_env.get_legal_actions()
+            if legal_actions:
+                return random.choice(legal_actions)
+            else:
+                return -1, -1  # No legal actions
+
+        # Choose the action leading to the most visited child node
+        best_action = max(root_node.children.items(), key=lambda item: item[1].visit_count)[0]
+        return best_action
 
     def reset(self) -> None:
-        """Reset search tree between moves"""
+        """Reset the MCTS search tree."""
         self.mcts.root = MCTSNode()

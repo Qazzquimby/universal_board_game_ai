@@ -1,16 +1,18 @@
 import random
-from typing import Tuple
+from typing import Tuple, Dict, Any
 
 from temp_env import BoardGameEnv
+from core.agent_interface import Agent
 
 
-from typing import Tuple, Dict, Any, List
-
-
-class RandomAgent:
-    """A simple random agent for demonstration."""
+class RandomAgent(Agent):
+    """A simple random agent for demonstration. Does not learn."""
 
     def __init__(self, env: BoardGameEnv):
+        """
+        Args:
+            env: An instance of the BoardGameEnv (used for its copy method).
+        """
         self.env = env
 
     def act(self, state: Dict[str, Any]) -> Tuple[int, int]:
@@ -24,4 +26,4 @@ class RandomAgent:
 
         if valid_actions:
             return random.choice(valid_actions)
-        return -1, -1  # Invalid action if no valid actions available
+        return -1, -1
