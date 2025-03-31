@@ -101,9 +101,9 @@ class QLearningAgent(Agent):
         # Get legal actions from the temporary environment
         valid_actions = temp_env.get_legal_actions()
 
-        # If no valid actions, return an invalid action
+        # If no valid actions, return None
         if not valid_actions:
-            return (-1, -1)  # Return tuple for consistency
+            return None
 
         # Exploration: choose random action
         if (

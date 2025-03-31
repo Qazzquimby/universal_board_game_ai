@@ -59,7 +59,7 @@ class FourInARow(EnvInterface):
         self.last_action = None
         self.rewards = {i: 0.0 for i in range(self.num_players)}
 
-        return self._get_observation()
+        return self.get_observation()
 
     def step(self, action: Tuple[int, int]) -> Tuple[Dict[str, Any], float, bool]:
         """
@@ -76,7 +76,7 @@ class FourInARow(EnvInterface):
         if self.is_game_over():
             # Return current state, 0 reward for current player, and done=True
             return (
-                self._get_observation(),
+                self.get_observation(),
                 self.rewards.get(self.current_player, 0.0),
                 True,
             )
@@ -89,16 +89,8 @@ class FourInARow(EnvInterface):
 
         # Check if action is valid
         if not self._is_valid_action(action):
-            # Penalize and return, game not done
-            # Note: Consistent reward handling is tricky. Should step return reward for the player
-            # who *just moved* or the player whose *turn it is now*?
-            # Let's assume it's the reward for the player who *just moved*.
-            # In case of invalid move, the current player didn't change.
-            # Assign a penalty.
-            penalty = -10.0
-            self.rewards[self.current_player] = penalty
-            # Game isn't done, state didn't change meaningfully (except maybe rewards dict)
-            return self._get_observation(), penalty, False
+            # Raise error for invalid actions, consistent with NimEnv
+            raise ValueError(f"Invalid action {action} for board state.")
 
         # Place piece on the board
         self.board[row, col] = self.current_player + 1
@@ -129,7 +121,7 @@ class FourInARow(EnvInterface):
             # Switch to next player only if game is not done
             self.current_player = (self.current_player + 1) % self.num_players
 
-        return self._get_observation(), reward_for_acting_player, self.done
+        return self.get_observation(), reward_for_acting_player, self.done
 
     def _is_valid_action(self, action: Tuple[int, int]) -> bool:
         """Check if an action is valid."""

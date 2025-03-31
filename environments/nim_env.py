@@ -1,12 +1,12 @@
-import random
-from typing import List, Tuple, Dict, Any, Optional
+from typing import List, Tuple, Optional
 
 import numpy as np
 
-from core.env_interface import EnvInterface, StateType, ActionType
+from core.env_interface import EnvInterface, StateType
 
 # Define Nim-specific action type for clarity
 NimActionType = Tuple[int, int]  # (pile_index, num_to_remove)
+
 
 class NimEnv(EnvInterface):
     """
@@ -19,16 +19,19 @@ class NimEnv(EnvInterface):
 
     metadata = {"render_modes": ["human"], "name": "nim"}
 
-    def __init__(self, initial_piles: List[int] = [3, 5, 7], num_players: int = 2):
+    def __init__(self, initial_piles: List[int] = None, num_players: int = 2):
         """
         Args:
             initial_piles: List defining the number of objects in each pile at the start.
             num_players: Number of players (typically 2 for Nim).
         """
+        if initial_piles is None:
+            initial_piles = [3, 5, 7]
+
         if num_players != 2:
             raise ValueError("Nim is currently implemented for 2 players only.")
 
-        self.initial_piles = tuple(initial_piles) # Use tuple for immutability
+        self.initial_piles = tuple(initial_piles)  # Use tuple for immutability
         self.num_players = num_players
 
         # State tracking
@@ -122,14 +125,14 @@ class NimEnv(EnvInterface):
 
     def is_game_over(self) -> bool:
         """Check if the game has ended."""
-        # Game is over if done flag is set (win) or if no legal moves remain (shouldn't happen in Nim unless already won)
-        return self.done or np.sum(self.piles) == 0
+        # Game is over if done flag is set (set correctly in step)
+        return self.done
 
     def get_observation(self) -> StateType:
         """Return the current state observation."""
         # Use a tuple for the core state (piles) to make it hashable for Q-learning keys
         return {
-            "piles": tuple(self.piles.tolist()), # Use tuple for hashability
+            "piles": tuple(self.piles.tolist()),  # Use tuple for hashability
             "current_player": self.current_player,
             "step_count": self.step_count,
             "last_action": self.last_action,
@@ -139,9 +142,9 @@ class NimEnv(EnvInterface):
 
     def get_winning_player(self) -> Optional[int]:
         """Return the winner, or None if draw/not over."""
-        return self.winner # Nim doesn't have draws
+        return self.winner  # Nim doesn't have draws
 
-    def copy(self) -> 'NimEnv':
+    def copy(self) -> "NimEnv":
         """Create a deep copy of the Nim environment."""
         new_env = NimEnv(list(self.initial_piles), self.num_players)
         new_env.piles = self.piles.copy()
@@ -165,4 +168,6 @@ class NimEnv(EnvInterface):
     def render(self, mode: str = "human") -> None:
         """Print the current piles."""
         if mode == "human":
-            print(f"Step: {self.step_count}, Player Turn: {self.current_player}, Piles: {self.piles.tolist()}")
+            print(
+                f"Step: {self.step_count}, Player Turn: {self.current_player}, Piles: {self.piles.tolist()}"
+            )
