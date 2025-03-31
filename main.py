@@ -1,8 +1,7 @@
-import os
-import pickle
 import itertools
 import numpy as np
 import matplotlib.pyplot as plt
+from tqdm import tqdm
 
 from mcts import MCTSAgent
 from qlearning import QLearningAgent
@@ -30,7 +29,8 @@ def train_agent(env, agent, num_episodes=1000, opponent=None):
                 episode_history.append((state, action, reward, done))
                 obs = next_obs
             else:  # Opponent's turn
-                action = opponent.act()
+                # Pass the current observation (state) to the opponent's act method
+                action = opponent.act(obs)
                 obs, _, done = env.step(action)
 
         # After episode ends, determine final reward
@@ -122,19 +122,12 @@ def plot_results(win_history, window_size=100):
     plt.show()
 
 
-def _run_test_games(env, agent1_name, agent1, agent2_name, agent2, num_games=100):
+def _run_test_games(env, agent1_name, agent1, agent2_name, agent2, num_games=30):
     """Run test games between two agents"""
     print(f"\n--- Testing {agent1_name} vs {agent2_name} ---")
     results = {agent1_name: 0, agent2_name: 0, "draws": 0}
 
-    # Ensure agents have exploration turned off for testing if applicable
-    original_exploration_rates = {}
-    for agent, name in [(agent1, agent1_name), (agent2, agent2_name)]:
-        if hasattr(agent, "exploration_rate"):
-            original_exploration_rates[name] = agent.exploration_rate
-            agent.exploration_rate = 0.0  # Turn off exploration
-
-    for game_num in range(num_games):
+    for _ in tqdm(range(num_games)):
         state = env.reset()
         done = False
 
@@ -152,11 +145,6 @@ def _run_test_games(env, agent1_name, agent1, agent2_name, agent2, num_games=100
             results[agent2_name] += 1
         else:
             results["draws"] += 1
-
-    # Restore original exploration rates
-    for agent, name in [(agent1, agent1_name), (agent2, agent2_name)]:
-        if name in original_exploration_rates:
-            agent.exploration_rate = original_exploration_rates[name]
 
     print(f"Results after {num_games} games:")
     print(f"{agent1_name} wins: {results[agent1_name]}")
@@ -179,17 +167,12 @@ if __name__ == "__main__":
     env = BoardGameEnv(board_size=BOARD_SIZE, num_players=NUM_PLAYERS)
 
     # --- Agent Initialization ---
-    ql_agent = QLearningAgent(env)
-
-    # --- Load or Train Q-Learning Agent ---
+    ql_agent = QLearningAgent(env, exploration_rate=0.0)
     if not ql_agent.load(QL_SAVE_FILE):
-        if NUM_EPISODES_TRAIN > 0:
-            print(f"Training Q-learning agent for {NUM_EPISODES_TRAIN} episodes...")
-            wins = train_agent(env, ql_agent, num_episodes=NUM_EPISODES_TRAIN)
-            plot_results(wins, window_size=PLOT_WINDOW)
-            ql_agent.save(QL_SAVE_FILE)
-        else:
-            print("Skipping Q-learning training as NUM_EPISODES_TRAIN is 0.")
+        print(f"Training Q-learning agent for {NUM_EPISODES_TRAIN} episodes...")
+        wins = train_agent(env, ql_agent, num_episodes=NUM_EPISODES_TRAIN)
+        plot_results(wins, window_size=PLOT_WINDOW)
+        ql_agent.save(QL_SAVE_FILE)
     else:
         print("Loaded pre-trained Q-learning agent.")
         # Optionally plot if training data were saved alongside agent
@@ -202,8 +185,8 @@ if __name__ == "__main__":
 
     agents = {
         "QLearning": ql_agent,
+        "MCTS_20": MCTSAgent(env, num_simulations=20),
         "MCTS_100": MCTSAgent(env, num_simulations=100),
-        "MCTS_500": MCTSAgent(env, num_simulations=500), # Example of another MCTS variant
         "Random": RandomAgent(env),
     }
 
@@ -215,20 +198,14 @@ if __name__ == "__main__":
     for agent1_name, agent2_name in itertools.combinations_with_replacement(
         agent_names, 2
     ):
+        if agent1_name == agent2_name:
+            continue
+
         agent1 = agents[agent1_name]
         agent2 = agents[agent2_name]
 
         # Need a fresh copy of the env for each test pair
         test_env = env.copy()
-
-        # If testing agent against itself, create a new instance for the opponent
-        if agent1_name == agent2_name:
-             # Re-create agent instance to avoid shared state issues (like MCTS tree)
-            if isinstance(agent2, MCTSAgent):
-                 agent2 = MCTSAgent(env, num_simulations=agent2.mcts.num_simulations)
-            # QLearning and Random agents are generally okay state-wise for self-play,
-            # but recreating MCTS is safer. If QL had internal state beyond Q-table,
-            # it might need recreation too.
 
         _run_test_games(
             test_env, agent1_name, agent1, agent2_name, agent2, num_games=NUM_GAMES_TEST

@@ -46,7 +46,7 @@ class MCTS:
             math.log(parent_visits) / node.visit_count
         )
 
-    def _select(self, node: MCTSNode, env) -> Tuple[MCTSNode, Any, int]:
+    def _select(self, node: MCTSNode, env) -> Tuple[MCTSNode, Any]:
         """Select child node with highest UCB score"""
         while node.is_expanded() and not env.is_game_over():
             action, node = max(
@@ -89,9 +89,20 @@ class MCTS:
                 legal_actions = sim_env.get_legal_actions()
                 node.expand(legal_actions)
                 value = self._rollout(sim_env)
-            else:
+            else: # Terminal state found during selection
                 winner = sim_env.get_winning_player()
-                value = 1.0 if winner == env.get_current_player() else -1.0
+                # Determine the player whose turn it *would* have been at this terminal node.
+                # This is the perspective needed for the first step of backpropagation.
+                player_at_terminal_node = sim_env.get_current_player()
+
+                if winner is None: # Draw
+                    value = 0.0
+                elif winner == player_at_terminal_node: # Player whose turn it is wins
+                    value = 1.0
+                else: # Player whose turn it is loses
+                    value = -1.0
+                # Note: This value is correct for the terminal node itself.
+                # Backpropagation will flip the sign for the parent.
 
             self._backpropagate(node, value)
 
@@ -110,7 +121,6 @@ class MCTSAgent:
         )
 
     def act(self, state: dict) -> Any:
-        self.mcts.reset()
         root_node = self.mcts.search(self.env, state)
         return max(root_node.children.items(), key=lambda x: x[1].visit_count)[0]
 

@@ -50,7 +50,7 @@ class QLearningAgent:
 
     def act(self, state):
         """
-        Choose an action using epsilon-greedy policy.
+        Choose an action using epsilon-greedy policy based on the provided state.
 
         Args:
             state: The current state observation
@@ -59,7 +59,13 @@ class QLearningAgent:
             The chosen action
         """
         state_key = self._state_to_key(state)
-        valid_actions = self.env.get_legal_actions()
+
+        # Create a temporary environment copy and set its state
+        temp_env = self.env.copy()
+        temp_env.set_state(state)
+
+        # Get legal actions from the temporary environment
+        valid_actions = temp_env.get_legal_actions()
 
         # If no valid actions, return an invalid action
         if not valid_actions:

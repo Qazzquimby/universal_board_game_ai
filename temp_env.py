@@ -124,51 +124,74 @@ class BoardGameEnv:
 
     def _check_win(self, row: int, col: int) -> bool:
         """
-        Check if any player has won after placing a piece at (row, col).
-        Returns True if there's a winner, and sets self.winner to the winning player.
+        Check if the player who just moved to (row, col) has won.
+        Only checks lines passing through the last move.
+        Returns True if there's a winner, and sets self.winner.
         """
-        # Check for all players
-        for player in range(self.num_players):
-            player_piece = player + 1
+        player = self.current_player
+        player_piece = player + 1
+        board = self.board
+        size = self.board_size
+        win_condition = 4 # Connect-4 style
 
-            # Check horizontal
-            count = 0
-            for c in range(self.board_size):
-                if self.board[row, c] == player_piece:
+        # --- Check Horizontal ---
+        count = 0
+        for c in range(size):
+            if board[row, c] == player_piece:
+                count += 1
+                if count >= win_condition:
+                    self.winner = player
+                    return True
+            else:
+                count = 0
+
+        # --- Check Vertical ---
+        count = 0
+        for r in range(size):
+            if board[r, col] == player_piece:
+                count += 1
+                if count >= win_condition:
+                    self.winner = player
+                    return True
+            else:
+                count = 0
+
+        # --- Check Diagonal (top-left to bottom-right) ---
+        count = 0
+        # Iterate along the diagonal line passing through (row, col)
+        for i in range(-(win_condition - 1), win_condition):
+            r, c = row + i, col + i
+            if 0 <= r < size and 0 <= c < size:
+                if board[r, c] == player_piece:
                     count += 1
-                    if count >= 4:  # Connect-4 style win condition
+                    if count >= win_condition:
                         self.winner = player
                         return True
                 else:
                     count = 0
+            # Reset count if we hit the edge or a different piece *within the check range*
+            # This handles cases where the winning line starts/ends near the check point
+            if not (0 <= r < size and 0 <= c < size) or board[r, c] != player_piece:
+                 count = 0 # Reset if out of bounds or wrong piece
 
-            # Check vertical
-            count = 0
-            for r in range(self.board_size):
-                if self.board[r, col] == player_piece:
+        # --- Check Anti-Diagonal (top-right to bottom-left) ---
+        count = 0
+        # Iterate along the anti-diagonal line passing through (row, col)
+        for i in range(-(win_condition - 1), win_condition):
+            r, c = row + i, col - i
+            if 0 <= r < size and 0 <= c < size:
+                if board[r, c] == player_piece:
                     count += 1
-                    if count >= 4:
+                    if count >= win_condition:
                         self.winner = player
                         return True
                 else:
                     count = 0
+            # Reset count if we hit the edge or a different piece *within the check range*
+            if not (0 <= r < size and 0 <= c < size) or board[r, c] != player_piece:
+                 count = 0 # Reset if out of bounds or wrong piece
 
-            # Check both diagonal directions
-            # Check diagonal (top-left to bottom-right)
-            for r in range(self.board_size - 3):
-                for c in range(self.board_size - 3):
-                    if all(self.board[r + i][c + i] == player_piece for i in range(4)):
-                        self.winner = player
-                        return True
-
-            # Check diagonal (top-right to bottom-left)
-            for r in range(self.board_size - 3):
-                for c in range(3, self.board_size):
-                    if all(self.board[r + i][c - i] == player_piece for i in range(4)):
-                        self.winner = player
-                        return True
-
-        return False
+        return False # No win found for this player on this move
 
     def _get_observation(self) -> Dict[str, Any]:
         """Get the current observation of the environment."""
