@@ -2,7 +2,7 @@ from typing import List, Tuple, Optional
 
 import numpy as np
 
-from environments.env_interface import BaseEnvironment, StateType
+from environments.base import BaseEnvironment, StateType
 
 # Define Nim-specific action type for clarity
 NimActionType = Tuple[int, int]  # (pile_index, num_to_remove)

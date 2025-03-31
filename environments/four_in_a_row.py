@@ -2,7 +2,7 @@ from typing import Dict, List, Tuple, Any, Optional
 
 import numpy as np
 
-from environments.env_interface import BaseEnvironment, StateType
+from environments.base import BaseEnvironment, StateType
 
 BoardGameActionType = Tuple[int, int]
 

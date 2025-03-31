@@ -1,15 +1,14 @@
-import os
 import pickle
 import random
 from collections import defaultdict
 from typing import List, Tuple
-from pathlib import Path # Import Path
+from pathlib import Path  # Import Path
 
 import numpy as np
 
-from environments.env_interface import BaseEnvironment, StateType, ActionType
+from environments.base import BaseEnvironment, StateType, ActionType
 from core.agent_interface import Agent
-from core.config import QLearningConfig # Import QLearningConfig
+from core.config import QLearningConfig  # Import QLearningConfig
 
 # Define data directory relative to this file or project root
 # Assuming project root is parent of 'agents' directory
@@ -30,7 +29,9 @@ class QLearningAgent(Agent):
         """
         self.env = env
         self.config = config
-        self.exploration_rate = config.exploration_rate # Track current exploration rate
+        self.exploration_rate = (
+            config.exploration_rate
+        )  # Track current exploration rate
 
         # Initialize Q-table
         # Using defaultdict to handle new state-action pairs
@@ -126,14 +127,20 @@ class QLearningAgent(Agent):
         return best_action
 
     # Modify learn to accept the final reward directly for MC update
-    def learn(self, episode_history: List[Tuple[StateType, ActionType, float, bool]], final_reward_for_agent: float):
+    def learn(
+        self,
+        episode_history: List[Tuple[StateType, ActionType, float, bool]],
+        final_reward_for_agent: float,
+    ):
         """Update Q-values using Monte Carlo method based on final episode reward."""
         if not episode_history:
             return
 
         # Propagate the final reward back through the episode history
         for t in reversed(range(len(episode_history))):
-            state, action, _, _ = episode_history[t] # Original reward in history is ignored for MC
+            state, action, _, _ = episode_history[
+                t
+            ]  # Original reward in history is ignored for MC
             state_key = self._state_to_key(state)
             action_key = tuple(action)
 
@@ -146,9 +153,9 @@ class QLearningAgent(Agent):
             # Let's stick to the pure Monte Carlo update based on final reward, which is simpler for sparse rewards.
             # Q(s,a) <- Q(s,a) + alpha * (DiscountedFinalReward - Q(s,a))
             old_value = self.q_table[state_key][action_key]
-            self.q_table[state_key][action_key] = old_value + self.config.learning_rate * (
-                target_value - old_value
-            )
+            self.q_table[state_key][
+                action_key
+            ] = old_value + self.config.learning_rate * (target_value - old_value)
 
     # Note: decay_exploration is now handled within the training loop itself
 
@@ -191,8 +198,12 @@ class QLearningAgent(Agent):
                     {k: defaultdict(float, v) for k, v in data["q_table"].items()},
                 )
                 # Load exploration rate, but ensure it respects the current config's min value
-                loaded_exploration = data.get("exploration_rate", self.config.exploration_rate)
-                self.exploration_rate = max(loaded_exploration, self.config.min_exploration)
+                loaded_exploration = data.get(
+                    "exploration_rate", self.config.exploration_rate
+                )
+                self.exploration_rate = max(
+                    loaded_exploration, self.config.min_exploration
+                )
                 print(f"Agent loaded from {filepath}")
                 return True
             else:
@@ -205,10 +216,17 @@ class QLearningAgent(Agent):
 
 # --- Training Function ---
 # TODO: Consider moving training logic to a dedicated Trainer class for better separation, especially if adding more complex training regimes (e.g., for AlphaZero/MuZero).
-from typing import Optional # Need Optional for opponent type hint
-from agents.random_agent import RandomAgent # Need RandomAgent for default opponent
+from typing import Optional  # Need Optional for opponent type hint
+from agents.random_agent import RandomAgent  # Need RandomAgent for default opponent
 
-def train_agent(env: BaseEnvironment, agent: QLearningAgent, num_episodes: int, q_config: QLearningConfig, opponent: Optional[Agent] = None):
+
+def train_agent(
+    env: BaseEnvironment,
+    agent: QLearningAgent,
+    num_episodes: int,
+    q_config: QLearningConfig,
+    opponent: Optional[Agent] = None,
+):
     """Train QLearning agent against an opponent (defaults to Random)."""
     opponent = opponent or RandomAgent(env)
     win_history = []
@@ -227,7 +245,9 @@ def train_agent(env: BaseEnvironment, agent: QLearningAgent, num_episodes: int, 
                 action = agent.act(state)
                 if action is None:
                     # This should ideally not happen if env has valid moves
-                    print(f"Warning: Agent {type(agent).__name__} returned None action in state: {state}. Skipping turn?")
+                    print(
+                        f"Warning: Agent {type(agent).__name__} returned None action in state: {state}. Skipping turn?"
+                    )
                     # Decide how to handle: break, raise error, skip? For now, let's break episode.
                     break
                 next_obs, reward, done = env.step(action)
@@ -237,19 +257,23 @@ def train_agent(env: BaseEnvironment, agent: QLearningAgent, num_episodes: int, 
                 state = obs
                 action = opponent.act(state)
                 if action is None:
-                    print(f"Warning: Opponent {type(opponent).__name__} returned None action in state: {state}. Skipping turn?")
-                    break # Break episode if opponent can't move
-                obs, _, done = env.step(action) # Opponent reward/history not stored for agent
+                    print(
+                        f"Warning: Opponent {type(opponent).__name__} returned None action in state: {state}. Skipping turn?"
+                    )
+                    break  # Break episode if opponent can't move
+                obs, _, done = env.step(
+                    action
+                )  # Opponent reward/history not stored for agent
 
         # Determine final outcome for the agent (player 0)
         winner = env.get_winning_player()
         if winner == 0:
             final_reward_for_agent = 1.0
             outcome = 1
-        elif winner is not None: # Opponent won
+        elif winner is not None:  # Opponent won
             final_reward_for_agent = -1.0
             outcome = -1
-        else: # Draw
+        else:  # Draw
             final_reward_for_agent = 0.0
             outcome = 0
 
@@ -258,34 +282,37 @@ def train_agent(env: BaseEnvironment, agent: QLearningAgent, num_episodes: int, 
             # Pass the history and the final reward directly to the learn method.
             agent.learn(episode_history, final_reward_for_agent)
 
-
         win_history.append(outcome)
         # Decay exploration rate after each episode
         agent.exploration_rate = max(
-            agent.exploration_rate * agent.config.exploration_decay, agent.config.min_exploration
+            agent.exploration_rate * agent.config.exploration_decay,
+            agent.config.min_exploration,
         )
 
         # Print progress occasionally
         # Ensure plot_window exists in q_config, fall back if necessary
-        plot_window = getattr(q_config, 'plot_window', 200) # Use getattr for safety
-        print_interval = num_episodes // 20 if num_episodes >= 20 else 1 # Print ~20 times
+        plot_window = getattr(q_config, "plot_window", 200)  # Use getattr for safety
+        print_interval = (
+            num_episodes // 20 if num_episodes >= 20 else 1
+        )  # Print ~20 times
         if (episode + 1) % print_interval == 0:
-             # Use plot_window from TrainingConfig if available, else default
-             window_size = plot_window if plot_window <= episode else episode + 1
-             if window_size > 0:
-                 win_rate = win_history[-window_size:].count(1) / window_size
-                 draw_rate = win_history[-window_size:].count(0) / window_size
-                 loss_rate = win_history[-window_size:].count(-1) / window_size
-                 print(
-                     f"Episode {episode + 1}/{num_episodes} | "
-                     f"Win Rate (last {window_size}): {win_rate:.2f} | "
-                     f"Draw Rate: {draw_rate:.2f} | "
-                     f"Loss Rate: {loss_rate:.2f} | "
-                     f"Exploration: {agent.exploration_rate:.4f}"
-                 )
-             else:
-                  print(f"Episode {episode + 1}/{num_episodes} | Exploration: {agent.exploration_rate:.4f}")
-
+            # Use plot_window from TrainingConfig if available, else default
+            window_size = plot_window if plot_window <= episode else episode + 1
+            if window_size > 0:
+                win_rate = win_history[-window_size:].count(1) / window_size
+                draw_rate = win_history[-window_size:].count(0) / window_size
+                loss_rate = win_history[-window_size:].count(-1) / window_size
+                print(
+                    f"Episode {episode + 1}/{num_episodes} | "
+                    f"Win Rate (last {window_size}): {win_rate:.2f} | "
+                    f"Draw Rate: {draw_rate:.2f} | "
+                    f"Loss Rate: {loss_rate:.2f} | "
+                    f"Exploration: {agent.exploration_rate:.4f}"
+                )
+            else:
+                print(
+                    f"Episode {episode + 1}/{num_episodes} | Exploration: {agent.exploration_rate:.4f}"
+                )
 
     print("Training complete.")
     return win_history
