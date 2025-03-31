@@ -1,21 +1,17 @@
-# Standard library imports
 import math
 import random
-from typing import List, Tuple, Any, Optional, Dict
+from typing import List, Tuple, Optional, Dict
 
-# Third-party imports
 import numpy as np
-import torch
 
-# Local application imports
-from environments.env_interface import ActionType, StateType, BaseEnvironment
-from models.networks import AlphaZeroNet # Import the network
+from environments.base import ActionType, StateType, BaseEnvironment
+from models.networks import AlphaZeroNet
 
 
 class MCTSNode:
     """MCTS node adapted for AlphaZero."""
 
-    def __init__(self, parent: Optional['MCTSNode'] = None, prior: float = 1.0):
+    def __init__(self, parent: Optional["MCTSNode"] = None, prior: float = 1.0):
         self.parent = parent
         self.prior = prior  # P(s,a) - Prior probability from the network
         self.visit_count = 0
@@ -23,7 +19,7 @@ class MCTSNode:
         self.children: Dict[ActionType, MCTSNode] = {}
 
     @property
-    def value(self) -> float: # Q(s,a) - Mean action value
+    def value(self) -> float:  # Q(s,a) - Mean action value
         return self.total_value / self.visit_count if self.visit_count else 0.0
 
     def is_expanded(self) -> bool:
@@ -44,269 +40,414 @@ class MCTSNode:
 
 
 class MCTS:
-    """MCTS algorithm adapted for AlphaZero."""
+    """Core MCTS algorithm implementation (UCB1 + Random Rollout)."""
 
     def __init__(
         self,
-        exploration_constant: float = 1.0, # c_puct in AlphaZero
-        discount_factor: float = 1.0, # Usually 1.0 for AlphaZero MCTS value
+        exploration_constant: float = 1.41,  # UCB1 exploration constant
+        discount_factor: float = 1.0,  # Discount factor for rollout rewards
         num_simulations: int = 100,
-        network: Optional[AlphaZeroNet] = None # Network for policy/value
     ):
-        self.exploration_constant = exploration_constant # c_puct
-        self.discount_factor = discount_factor # Not typically used in AZ backprop, but kept for potential future use
+        self.exploration_constant = exploration_constant
+        self.discount_factor = discount_factor
         self.num_simulations = num_simulations
-        self.network = network
         self.root = MCTSNode()
-        # TODO: Add Dirichlet noise for root exploration during training
 
     def reset_root(self):
         """Resets the root node."""
         self.root = MCTSNode()
 
-    def _puct_score(self, node: MCTSNode, parent_visits: int) -> float:
-        """Calculate the PUCT score for a node."""
+    def _ucb_score(self, node: MCTSNode, parent_visits: int) -> float:
+        """Calculate UCB1 score."""
         if node.visit_count == 0:
-            # If node hasn't been visited, U is based only on prior and parent visits
-            u_score = self.exploration_constant * node.prior * math.sqrt(parent_visits)
-            return u_score # Q score is 0 initially
-        else:
-            # Q(s,a) + U(s,a)
-            q_score = node.value # Mean action value
-            u_score = self.exploration_constant * node.prior * math.sqrt(parent_visits) / (1 + node.visit_count)
-            return q_score + u_score
+            return float("inf")
+        # Ensure parent_visits is at least 1 to avoid math.log(0)
+        safe_parent_visits = max(1, parent_visits)
+        exploration_term = self.exploration_constant * math.sqrt(
+            math.log(safe_parent_visits) / node.visit_count
+        )
+        return node.value + exploration_term
 
-    def _select(self, node: MCTSNode, env: BaseEnvironment) -> Tuple[MCTSNode, BaseEnvironment]:
-        """Select child node with highest PUCT score until a leaf node is reached."""
+    def _select(
+        self, node: MCTSNode, env: BaseEnvironment
+    ) -> Tuple[MCTSNode, BaseEnvironment]:
+        """Select child node with highest UCB score until a leaf node is reached."""
         while node.is_expanded() and not env.is_game_over():
             parent_visits = node.visit_count
-            # Select the action corresponding to the child with the highest PUCT score
-            action, node = max(
-                (
-                    (action, child) for action, child in node.children.items()
-                ),
-                key=lambda item: self._puct_score(item[1], parent_visits)
+            # Select the action corresponding to the child with the highest UCB score
+            # Need to handle the case where parent_visits is 0 (shouldn't happen if root is visited once?)
+            # Let's ensure root is visited at least once implicitly by the loop structure.
+            best_item = max(
+                node.children.items(),
+                key=lambda item: self._ucb_score(item[1], parent_visits),
             )
+            action, node = best_item
             # Action here is the key from children dict, should be hashable
-            env.step(action) # Update the environment state as we traverse
+            env.step(action)  # Update the environment state as we traverse
         return node, env
 
-    def _expand_and_evaluate(self, node: MCTSNode, env: BaseEnvironment) -> float:
-        """
-        Expand the leaf node using the network, evaluate the position, and return the value.
-        """
-        if self.network is None:
-            raise ValueError("MCTS requires a network for AlphaZero-style expansion and evaluation.")
+    def _expand(self, node: MCTSNode, env: BaseEnvironment):
+        """Expand the leaf node by creating children for all legal actions."""
+        if node.is_expanded() or env.is_game_over():
+            return  # Already expanded or terminal
 
-        current_state_obs = env.get_observation()
         legal_actions = env.get_legal_actions()
+        # Use uniform prior for standard MCTS expansion
+        # The MCTSNode prior defaults to 1.0, which is fine here.
+        action_priors = {
+            action: 1.0 / len(legal_actions) if legal_actions else 1.0
+            for action in legal_actions
+        }
+        node.expand(action_priors)  # Use the expand method with uniform priors
 
-        if not legal_actions: # Should not happen if not env.is_game_over() was checked before calling
-             print("Warning: Expanding node with no legal actions despite not being game over.")
-             return 0.0 # Or handle based on game rules (e.g., loss for current player)
+    def _rollout(self, env: BaseEnvironment) -> float:
+        """Simulate game from current state using random policy."""
+        # Determine the player whose perspective the rollout value should represent.
+        # This is the player whose turn it was *at the start of the rollout*.
+        player_at_rollout_start = env.get_current_player()
 
+        sim_env = env.copy()  # Simulate on a copy
+        while not sim_env.is_game_over():
+            legal_actions = sim_env.get_legal_actions()
+            if not legal_actions:
+                break  # Should not happen if is_game_over is checked, but safety first
+            action = random.choice(legal_actions)
+            sim_env.step(action)
 
-        # Get policy priors and value from the network
-        # Ensure network is on correct device and input is formatted correctly
-        # TODO: Add device handling
-        policy_logits_tensor, value_tensor = self.network(current_state_obs) # Use the forward method
-
-        # Process policy logits
-        policy_logits = policy_logits_tensor.squeeze(0).cpu().detach().numpy()
-        # Apply softmax? Network might already do it. Assume logits for now.
-        # policy_probs = torch.softmax(policy_logits_tensor, dim=1).squeeze(0).cpu().detach().numpy()
-
-        # Process value
-        value = value_tensor.squeeze(0).cpu().item() # Get scalar value
-
-        # --- Map policy outputs to legal actions ---
-        # This requires a consistent mapping between the network's policy output vector
-        # and the environment's legal actions. This is a CRITICAL part.
-        # We need helper functions in the network or environment to handle this mapping.
-        # For now, let's assume a placeholder function `_get_policy_for_legal_actions` exists.
-
-        action_priors = self._get_policy_for_legal_actions(policy_logits, legal_actions, env)
-
-        # Expand the node with legal actions and their priors
-        node.expand(action_priors)
-
-        # Return the network's value estimate for this state (from the perspective of the current player in env)
-        return value
-
-    def _get_policy_for_legal_actions(self, policy_output: np.ndarray, legal_actions: List[ActionType], env: BaseEnvironment) -> Dict[ActionType, float]:
-        """
-        Placeholder: Maps raw network policy output to priors for legal actions.
-        This needs a concrete implementation based on the environment and network structure.
-        """
-        # Example: Assume policy_output is a vector for all possible actions
-        # and we need to mask illegal actions and re-normalize.
-        action_priors = {}
-        policy_sum_legal = 0.0
-
-        # Create a mapping from action to index (this should be efficient)
-        # This mapping logic MUST match AlphaZeroNet._calculate_policy_size
-        action_to_index_map = self._create_action_index_map(env) # Needs implementation
-
-        if not action_to_index_map:
-             print("Warning: Action-to-index map is empty. Cannot assign policy priors.")
-             # Fallback: Uniform priors for legal actions
-             if legal_actions:
-                 prior = 1.0 / len(legal_actions)
-                 return {action: prior for action in legal_actions}
-             else:
-                 return {}
-
-
-        legal_indices = []
-        for action in legal_actions:
-            action_key = tuple(action) if isinstance(action, list) else action
-            idx = action_to_index_map.get(action_key)
-            if idx is not None and 0 <= idx < len(policy_output):
-                legal_indices.append(idx)
-                # Use softmax on logits for legal actions only? Or use pre-softmax values?
-                # AlphaZero paper uses softmax over all actions, then selects legal ones.
-                # Let's assume policy_output are logits.
-                action_priors[action_key] = float(np.exp(policy_output[idx])) # Use float() to ensure type
-                policy_sum_legal += action_priors[action_key]
-            else:
-                 print(f"Warning: Action {action_key} not found in map or index out of bounds.")
-
-
-        # Normalize the priors for legal actions
-        if policy_sum_legal > 1e-6: # Avoid division by zero
-            for action in action_priors:
-                action_priors[action] /= policy_sum_legal
-        elif legal_actions:
-             # Fallback to uniform if all legal actions had zero or negative logits
-             print("Warning: Sum of exp(logits) for legal actions is near zero. Using uniform priors.")
-             prior = 1.0 / len(legal_actions)
-             action_priors = {action: prior for action in legal_actions}
-        else:
-             action_priors = {} # No legal actions
-
-        # Add Dirichlet noise here if training
-
-        return action_priors
-
-    def _create_action_index_map(self, env: BaseEnvironment) -> Dict[ActionType, int]:
-        """
-        Placeholder: Creates a map from hashable action representation to policy index.
-        Needs specific implementation per environment type.
-        """
-        # Example for FourInARow (assuming policy is flattened board)
-        if hasattr(env, 'board_size') and isinstance(env, BaseEnvironment):
-             size = env.board_size
-             # Assuming action is (row, col)
-             return {(r, c): r * size + c for r in range(size) for c in range(size)}
-        # Example for Nim (more complex, depends on max items/piles)
-        elif hasattr(env, 'initial_piles') and isinstance(env, BaseEnvironment):
-             # This needs a robust mapping based on max possible removals per pile
-             # Let's use a simple sequential index for now, assuming a fixed max state space
-             # This is NOT robust and needs proper implementation matching the network output size.
-             print("Warning: Using placeholder action indexing for Nim. Needs proper implementation.")
-             max_piles = len(env.initial_piles)
-             # Estimate max items based on initial state (highly approximate)
-             max_items = max(env.initial_piles) if env.initial_piles else 1
-             mapping = {}
-             idx = 0
-             for p_idx in range(max_piles):
-                 for n_items in range(1, max_items + 1): # Assume max removal = max items
-                     mapping[(p_idx, n_items)] = idx
-                     idx += 1
-             # Check if calculated size matches network's expected size
-             expected_size = self.network._calculate_policy_size(env) if self.network else -1
-             if idx != expected_size:
-                 print(f"Warning: Nim action map size ({idx}) doesn't match expected network policy size ({expected_size}).")
-             return mapping
-
-        else:
-             print("Warning: Cannot create action index map for this environment type.")
-             return {}
-
+        winner = sim_env.get_winning_player()
+        if winner is None:  # Draw
+            return 0.0
+        # Return +1 if the player who started the rollout won, -1 otherwise
+        return 1.0 if winner == player_at_rollout_start else -1.0
 
     def _backpropagate(self, node: MCTSNode, value: float):
-        """Backpropagate the value estimate up the tree."""
+        """Backpropagate the rollout value up the tree."""
         current_node = node
-        # Value is from the perspective of the player whose turn it was *at the evaluated node*.
+        # Value is from the perspective of the player whose turn it was *at the start of the rollout*.
         # As we go up, the perspective flips for the parent.
         while current_node is not None:
             current_node.visit_count += 1
             # Update total value (W). The value should be relative to the player whose turn it is *at the parent node*.
-            # Since 'value' is from the child's perspective, we add it directly if the parent is the same player,
-            # or negate it if the parent is the opponent. In zero-sum games, we negate at each step up.
+            # Since 'value' is from the child's perspective (start of rollout), we negate it at each step up.
             current_node.total_value += value
             value = -value  # Flip value for the parent (opponent's perspective)
             current_node = current_node.parent
 
     def search(self, env: BaseEnvironment, state: StateType) -> MCTSNode:
-        """Run MCTS search using the neural network."""
-        if self.network is None:
-            raise ValueError("MCTS search requires a network for AlphaZero.")
-
+        """Run MCTS search from the given state using UCB1 and random rollouts."""
         # Set the root to a new node corresponding to the current state
-        # We might want to reuse the tree if possible, but for now, start fresh.
-        self.reset_root() # Start fresh search for each call
-
-        # The root node represents the state *before* any action is taken in this search.
-        # We need an initial evaluation of the root state if it's not expanded.
-        # However, the expansion happens during the first simulation's selection phase.
+        self.reset_root()  # Start fresh search for each call
 
         for _ in range(self.num_simulations):
             # Start from the root node and a copy of the environment set to the initial state
             node = self.root
             sim_env = env.copy()
-            sim_env.set_state(state) # Ensure simulation starts from the correct state
+            sim_env.set_state(state)  # Ensure simulation starts from the correct state
 
-            # 1. Selection: Traverse the tree using PUCT until a leaf node is reached
+            # 1. Selection: Traverse the tree using UCB1 until a leaf node is reached
             node, sim_env = self._select(node, sim_env)
 
-            # 2. Expansion & Evaluation: If the game is not over at the leaf node,
-            #    expand it using the network and get the value estimate.
-            value = 0.0 # Default value
+            # 2. Expansion: If the game is not over and the node hasn't been expanded, expand it.
+            value = 0.0  # Default value
             if not sim_env.is_game_over():
-                # Expand the node, get policy priors for children, and evaluate the current state (sim_env)
-                value = self._expand_and_evaluate(node, sim_env)
-                # Value is from the perspective of the player whose turn it is in sim_env (the node just expanded)
+                if not node.is_expanded():
+                    self._expand(node, sim_env)
+                    # After expansion, usually perform a rollout from one of the new children.
+                    # Or, more commonly, rollout from the expanded node itself *before* selecting a child.
+                    # Let's rollout from the state reached *after* selection (sim_env).
+                    value = self._rollout(sim_env)
+                else:
+                    # If node was already expanded but selection ended here (e.g., terminal state reached during selection),
+                    # we still need a value. Rollout is one option, or use terminal state value.
+                    # Since selection stops *before* entering a terminal state in the loop condition,
+                    # this 'else' block might be less common. Let's assume rollout is the default.
+                    value = self._rollout(sim_env)  # Rollout from the state reached
+
             else:
                 # Game ended during selection phase. Determine the outcome.
                 winner = sim_env.get_winning_player()
-                # The value should be from the perspective of the player whose turn it *would* have been
-                # at this terminal node (which is sim_env.get_current_player()).
+                # Value should be from the perspective of the player whose turn it *would* have been.
                 player_at_terminal_node = sim_env.get_current_player()
 
                 if winner is None:  # Draw
                     value = 0.0
-                # If the player whose turn it is at the terminal node is the winner
-                elif winner == player_at_terminal_node:
-                    # This seems counter-intuitive for backpropagation.
-                    # Let's define value from the perspective of the *parent* node's player.
-                    # The parent player made the move leading to this terminal state.
-                    # If the parent's move resulted in a win for the parent (winner != player_at_terminal_node), value is +1.
-                    # If the parent's move resulted in a loss for the parent (winner == player_at_terminal_node), value is -1.
-                    value = -1.0 # Parent lost
-                else: # Opponent won (parent won)
-                    value = 1.0 # Parent won
-
-                # Note: The backpropagation negates this value for the node itself.
-                # Let's rethink: Value should be from the perspective of the player whose turn it is *at the node being evaluated*.
-                # If node is terminal:
-                #   If draw: value = 0
-                #   If player P (whose turn it would be) won: value = +1 (impossible state, P already won)
-                #   If player P lost: value = -1 (opponent won on previous turn)
-                # Let's use the perspective of the player who *just moved* to reach this state.
-                # The player who just moved is `1 - sim_env.get_current_player()` (for 2 players).
-                player_who_just_moved = (sim_env.get_current_player() + sim_env.num_players -1) % sim_env.num_players
-
-                if winner is None: # Draw
-                    value = 0.0
-                elif winner == player_who_just_moved: # Player who moved won
+                # Perspective adjustment for backpropagation (similar to AlphaZero logic):
+                # Value from the perspective of the player who *just moved* to reach this state.
+                player_who_just_moved = (
+                    sim_env.get_current_player() + sim_env.num_players - 1
+                ) % sim_env.num_players
+                if winner == player_who_just_moved:  # Player who moved won
                     value = 1.0
-                else: # Player who moved lost
+                else:  # Player who moved lost (or draw handled above)
                     value = -1.0
-                # This value is now from the perspective of the player who made the move into this state.
-                # Backpropagation needs to handle alternating perspectives correctly.
 
             # 3. Backpropagation: Update visit counts and values up the tree
             self._backpropagate(node, value)
 
         return self.root
+
+
+# --- AlphaZero MCTS Subclass ---
+
+
+class AlphaZeroMCTS(MCTS):
+    """MCTS algorithm adapted for AlphaZero (PUCT + Network Evaluation)."""
+
+    def __init__(
+        self,
+        exploration_constant: float = 1.0,  # c_puct in AlphaZero
+        num_simulations: int = 100,
+        network: AlphaZeroNet = None,  # Network is required
+        discount_factor: float = 1.0,  # Usually 1.0 for AlphaZero MCTS value (consistency)
+        # TODO: Add dirichlet_epsilon and dirichlet_alpha for root noise
+    ):
+        if network is None:
+            raise ValueError("AlphaZeroMCTS requires a network.")
+
+        # Call parent init, but exploration constant is now c_puct
+        super().__init__(
+            exploration_constant=exploration_constant,
+            discount_factor=discount_factor,  # Keep for consistency, though not used in backprop value calc
+            num_simulations=num_simulations,
+        )
+        self.network = network
+        # self.dirichlet_epsilon = dirichlet_epsilon
+        # self.dirichlet_alpha = dirichlet_alpha
+
+    # Override selection to use PUCT score
+    def _select(
+        self, node: MCTSNode, env: BaseEnvironment
+    ) -> Tuple[MCTSNode, BaseEnvironment]:
+        """Select child node with highest PUCT score until a leaf node is reached."""
+        while node.is_expanded() and not env.is_game_over():
+            parent_visits = node.visit_count
+            # Select the action corresponding to the child with the highest PUCT score
+            best_item = max(
+                node.children.items(),
+                key=lambda item: self._puct_score(item[1], parent_visits),
+            )
+            action, node = best_item
+            env.step(action)  # Update the environment state as we traverse
+        return node, env
+
+    # Override expansion to use network priors
+    def _expand(self, node: MCTSNode, env: BaseEnvironment):
+        """Expand the leaf node using prior probabilities from the network."""
+        if node.is_expanded() or env.is_game_over():
+            return
+
+        current_state_obs = env.get_observation()
+        legal_actions = env.get_legal_actions()
+
+        if not legal_actions:
+            print(
+                "Warning: Expanding node with no legal actions despite not being game over."
+            )
+            return  # Cannot expand
+
+        # Get policy priors and value from the network
+        # TODO: Add device handling
+        policy_logits_tensor, _ = self.network(
+            current_state_obs
+        )  # Value not needed here, only for evaluation
+        policy_logits = policy_logits_tensor.squeeze(0).cpu().detach().numpy()
+
+        # --- Map policy outputs to legal actions ---
+        # TODO: Move this mapping logic to AlphaZeroNet or a dedicated utility. Critical dependency.
+        action_priors = self._get_policy_for_legal_actions(
+            policy_logits, legal_actions, env
+        )
+
+        # Add Dirichlet noise to root node priors during training self-play
+        # if node.parent is None and self.dirichlet_epsilon > 0:
+        #     action_priors = self._add_dirichlet_noise(action_priors, legal_actions)
+
+        # Expand the node with legal actions and their priors
+        node.expand(action_priors)
+
+    # Override rollout with network evaluation
+    def _rollout(self, env: BaseEnvironment) -> float:
+        """Evaluate the leaf node state using the network's value head."""
+        if env.is_game_over():
+            # Handle terminal state reached during selection (should be handled in search loop)
+            print("Warning: _rollout called on a terminal state.")
+            return 0.0  # Or determine actual outcome
+
+        current_state_obs = env.get_observation()
+        # TODO: Add device handling
+        _, value_tensor = self.network(current_state_obs)
+        value = value_tensor.squeeze(0).cpu().item()  # Get scalar value
+
+        # Value is from the perspective of the current player in 'env'
+        return value
+
+    # Backpropagation remains the same (negating value at each step)
+
+    # Search loop needs modification to call network evaluation instead of rollout
+    def search(self, env: BaseEnvironment, state: StateType) -> MCTSNode:
+        """Run MCTS search using PUCT selection and network evaluation."""
+        self.reset_root()
+
+        for _ in range(self.num_simulations):
+            node = self.root
+            sim_env = env.copy()
+            sim_env.set_state(state)
+
+            # 1. Selection (using PUCT)
+            node, sim_env = self._select(node, sim_env)
+
+            # 2. Expansion & Evaluation
+            value = 0.0
+            if not sim_env.is_game_over():
+                # Expand node using network policy priors
+                if not node.is_expanded():
+                    self._expand(node, sim_env)
+                # Evaluate the reached state using network value head
+                value = self._rollout(
+                    sim_env
+                )  # Re-use _rollout name for network evaluation
+                # Value is from the perspective of the player whose turn it is in sim_env
+            else:
+                # Game ended during selection. Determine outcome.
+                winner = sim_env.get_winning_player()
+                # Value from perspective of player who *just moved* to reach this state.
+                player_who_just_moved = (
+                    sim_env.get_current_player() + sim_env.num_players - 1
+                ) % sim_env.num_players
+                if winner is None:
+                    value = 0.0
+                elif winner == player_who_just_moved:
+                    value = 1.0
+                else:
+                    value = -1.0
+
+            # 3. Backpropagation
+            self._backpropagate(node, value)
+
+        return self.root
+
+    # --- Helper methods specific to AlphaZeroMCTS ---
+
+    def _puct_score(self, node: MCTSNode, parent_visits: int) -> float:
+        """Calculate the PUCT score for a node."""
+        # Use self.exploration_constant as c_puct
+        if node.visit_count == 0:
+            # If node hasn't been visited, U is based only on prior and parent visits
+            # Ensure parent_visits > 0 for sqrt
+            safe_parent_visits = max(1, parent_visits)
+            u_score = (
+                self.exploration_constant * node.prior * math.sqrt(safe_parent_visits)
+            )
+            return u_score  # Q score is 0 initially
+        else:
+            # Q(s,a) + U(s,a)
+            q_score = node.value  # Mean action value (Q)
+            u_score = (
+                self.exploration_constant
+                * node.prior
+                * math.sqrt(parent_visits)
+                / (1 + node.visit_count)
+            )
+            return q_score + u_score
+
+    # TODO: Move these mapping functions out of MCTS - they belong with the Network/Environment logic
+    def _get_policy_for_legal_actions(
+        self,
+        policy_output: np.ndarray,
+        legal_actions: List[ActionType],
+        env: BaseEnvironment,
+    ) -> Dict[ActionType, float]:
+        """
+        Placeholder: Maps raw network policy output to priors for legal actions.
+        CRITICAL: Needs a concrete implementation matching AlphaZeroNet structure.
+        """
+        action_priors = {}
+        policy_sum_legal = 0.0
+        action_to_index_map = self._create_action_index_map(env)
+
+        if not action_to_index_map:
+            print("Warning: Action-to-index map empty. Using uniform priors.")
+            if legal_actions:
+                prior = 1.0 / len(legal_actions)
+                return {action: prior for action in legal_actions}
+            else:
+                return {}
+
+        # Assume policy_output are logits, apply softmax implicitly via normalization
+        raw_priors = {}
+        for action in legal_actions:
+            action_key = tuple(action) if isinstance(action, list) else action
+            idx = action_to_index_map.get(action_key)
+            if idx is not None and 0 <= idx < len(policy_output):
+                # Use exp(logit) as raw prior score before normalization
+                raw_prior = float(np.exp(policy_output[idx]))
+                raw_priors[action_key] = raw_prior
+                policy_sum_legal += raw_prior
+            else:
+                print(
+                    f"Warning: Action {action_key} not found in map or index out of bounds."
+                )
+                raw_priors[action_key] = 0.0  # Assign zero prior if mapping fails
+
+        # Normalize the raw priors (effectively softmax over legal actions)
+        if policy_sum_legal > 1e-8:
+            for action, raw_prior in raw_priors.items():
+                action_priors[action] = raw_prior / policy_sum_legal
+        elif legal_actions:
+            print(
+                "Warning: Sum of exp(logits) for legal actions is near zero. Using uniform priors."
+            )
+            prior = 1.0 / len(legal_actions)
+            action_priors = {action: prior for action in legal_actions}
+        else:
+            action_priors = {}
+
+        return action_priors
+
+    # TODO: Move this mapping function out of MCTS
+    def _create_action_index_map(self, env: BaseEnvironment) -> Dict[ActionType, int]:
+        """
+        Placeholder: Creates a map from hashable action representation to policy index.
+        CRITICAL: Needs specific implementation per environment type matching AlphaZeroNet.
+        """
+        # Use the network's helper method if available
+        if hasattr(self.network, "get_action_index_map"):
+            return self.network.get_action_index_map(env)
+
+        # Fallback to previous placeholder logic (less ideal)
+        print(
+            "Warning: Using placeholder _create_action_index_map in MCTS. Move this logic."
+        )
+        if hasattr(env, "board_size") and isinstance(env, BaseEnvironment):
+            size = env.board_size
+            return {(r, c): r * size + c for r in range(size) for c in range(size)}
+        elif hasattr(env, "initial_piles") and isinstance(env, BaseEnvironment):
+            print("Warning: Using placeholder action indexing for Nim.")
+            max_piles = len(env.initial_piles)
+            max_items = max(env.initial_piles) if env.initial_piles else 1
+            mapping = {}
+            idx = 0
+            for p_idx in range(max_piles):
+                for n_items in range(1, max_items + 1):
+                    mapping[(p_idx, n_items)] = idx
+                    idx += 1
+            expected_size = (
+                self.network._calculate_policy_size(env) if self.network else -1
+            )
+            if idx != expected_size:
+                print(
+                    f"Warning: Nim action map size ({idx}) != expected network policy size ({expected_size})."
+                )
+            return mapping
+        else:
+            print("Warning: Cannot create action index map for this environment type.")
+            return {}
+
+    # def _add_dirichlet_noise(self, priors: Dict[ActionType, float], legal_actions: List[ActionType]) -> Dict[ActionType, float]:
+    #     """Adds Dirichlet noise to the root node priors for exploration."""
+    #     noise = np.random.dirichlet([self.dirichlet_alpha] * len(legal_actions))
+    #     noisy_priors = {}
+    #     for i, action in enumerate(legal_actions):
+    #         action_key = tuple(action) if isinstance(action, list) else action
+    #         noisy_priors[action_key] = (1 - self.dirichlet_epsilon) * priors.get(action_key, 0) + self.dirichlet_epsilon * noise[i]
+    #     return noisy_priors

@@ -21,14 +21,12 @@ class MCTSAgent(Agent):
             exploration_constant: Exploration constant (c) for UCB1.
         """
         self.env = env  # Keep env reference mainly for copy()
-        # TODO: MuZero doesn't need an env?
+        # Ensure MCTSAgent uses the base MCTS class with UCB1
         self.mcts = MCTS(
             num_simulations=num_simulations,
             exploration_constant=exploration_constant,
-            discount_factor=1.0,  # Discount factor within the search tree
+            discount_factor=1.0,  # Discount factor for rollouts in base MCTS
         )
-
-    # Update action return type hint
     def act(self, state: StateType) -> ActionType:
         """
         Perform MCTS search and choose the best action.
@@ -67,4 +65,5 @@ class MCTSAgent(Agent):
 
     def reset(self) -> None:
         """Reset the MCTS search tree."""
-        self.mcts.root = MCTSNode()
+        # Use the reset_root method for consistency
+        self.mcts.reset_root()

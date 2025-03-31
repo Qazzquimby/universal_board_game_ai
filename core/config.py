@@ -40,7 +40,9 @@ class AlphaZeroConfig:
     weight_decay: float = 0.0001
     hidden_layer_size: int = 128 # Size for the MLP hidden layers
     num_hidden_layers: int = 2 # Number of hidden layers in the MLP
-    # Add other relevant hyperparameters like batch size, epochs later for training
+    replay_buffer_size: int = 10000 # Max size of the replay buffer
+    batch_size: int = 64 # Batch size for training
+    # TODO: Add other training params: epochs_per_update, learning rate schedule etc.
 
 
 # --- Training Configuration ---

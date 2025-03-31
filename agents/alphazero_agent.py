@@ -1,13 +1,13 @@
 import random
 from pathlib import Path
-from typing import List, Tuple
+from collections import deque  # Use deque for replay buffer
 
 import torch
 import numpy as np
 
 from core.agent_interface import Agent
 from environments.base import BaseEnvironment, StateType, ActionType
-from algorithms.mcts import MCTS
+from algorithms.mcts import AlphaZeroMCTS  # Use the specialized MCTS subclass
 from models.networks import AlphaZeroNet
 from core.config import AlphaZeroConfig
 
@@ -39,21 +39,24 @@ class AlphaZeroAgent(Agent):
         # self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         # self.network.to(self.device)
 
-        # Initialize MCTS
-        # We will modify MCTS to accept the network and use PUCT
-        self.mcts = MCTS(
+        # Initialize AlphaZeroMCTS
+        self.mcts = AlphaZeroMCTS(
             exploration_constant=config.cpuct,  # Use cpuct for PUCT formula
             num_simulations=config.num_simulations,
-            discount_factor=1.0,  # Typically 1.0 for AlphaZero MCTS value
             network=self.network,  # Pass the network to MCTS
+            # TODO: Add dirichlet noise parameters from config if/when implemented
         )
 
-        # Placeholder for experience buffer (for training)
-        self.replay_buffer = []  # TODO: Implement a proper replay buffer
+        # Experience buffer for training (stores (state, policy_target, value))
+        # TODO: Make buffer size configurable
+        self.replay_buffer = deque(maxlen=config.replay_buffer_size)
+        # Temporary storage for the current game's history before assigning final outcome
+        self._current_episode_history = []
 
     def act(self, state: StateType, train: bool = False) -> ActionType:
         """
         Choose an action using MCTS guided by the neural network.
+        If train=True, also stores the state and MCTS policy target for learning.
 
         Args:
             state: The current environment state observation.
@@ -98,28 +101,118 @@ class AlphaZeroAgent(Agent):
 
         chosen_action = actions[chosen_action_index]
 
-        # TODO: Store the search statistics (state, policy target, value) for training
-        # policy_target = np.zeros(self.network._calculate_policy_size(self.env))
-        # for i, action in enumerate(actions):
-        #     # Map action to policy index - Requires a consistent mapping function
-        #     action_idx = self._map_action_to_policy_index(action) # Needs implementation
-        #     if action_idx is not None:
-        #          policy_target[action_idx] = visit_counts[i] / np.sum(visit_counts)
-        # self.replay_buffer.append((state, policy_target, None)) # Value comes later
+        # --- Store data for training if in training mode ---
+        if train:
+            # Calculate policy target based on visit counts
+            policy_target = self._calculate_policy_target(
+                root_node, actions, visit_counts
+            )
+            # Store state and policy target temporarily. The final outcome (value) will be added later.
+            # Ensure state is copied or immutable if necessary
+            # state_copy = deepcopy(state) # Or rely on environment state structure
+            self._current_episode_history.append(
+                {"state": state, "policy_target": policy_target}
+            )
 
         return chosen_action
 
-    def learn(self, episode_history: List[Tuple[StateType, ActionType, float, bool]]):
+    def _calculate_policy_target(self, root_node, actions, visit_counts) -> np.ndarray:
+        """Calculates the policy target vector based on MCTS visit counts."""
+        policy_size = self.network._calculate_policy_size(self.env)
+        policy_target = np.zeros(policy_size, dtype=np.float32)
+        total_visits = np.sum(visit_counts)
+
+        if total_visits > 0:
+            # TODO: Move action mapping logic out of MCTS and into Network/Agent/Util
+            # Use the MCTS instance's (potentially problematic) mapping for now
+            action_map = self.mcts._create_action_index_map(self.env)
+            if not action_map:
+                print(
+                    "Warning: Cannot create action map in _calculate_policy_target. Policy target will be zeros."
+                )
+                return policy_target
+
+            for i, action in enumerate(actions):
+                action_key = tuple(action) if isinstance(action, list) else action
+                action_idx = action_map.get(action_key)
+                if action_idx is not None and 0 <= action_idx < policy_size:
+                    policy_target[action_idx] = visit_counts[i] / total_visits
+                else:
+                    print(
+                        f"Warning: Action {action_key} not found in map or index out of bounds during policy target calculation."
+                    )
+        else:
+            # Handle case with no visits (should be rare if search runs)
+            # Maybe return uniform distribution over legal actions? Or zeros?
+            print(
+                "Warning: No visits recorded in MCTS root. Policy target will be zeros."
+            )
+
+        return policy_target
+
+    def finish_episode(self, final_outcome: float):
         """
-        Update the neural network based on experience.
-        (Placeholder - Training logic will be more complex involving the replay buffer)
+        Called at the end of a self-play episode. Assigns the final outcome
+        to all steps in the temporary history and adds them to the replay buffer.
         """
+        num_steps = len(self._current_episode_history)
+        for i, step_data in enumerate(self._current_episode_history):
+            # The value target is the final game outcome (+1 win, -1 loss, 0 draw)
+            # from the perspective of the player *at that state*.
+            # If the current player at step i eventually won, value is +1. If they lost, -1.
+            # Assuming final_outcome is from player 0's perspective.
+            # Need state to know whose turn it was.
+            state_at_step = step_data["state"]
+            player_at_step = state_at_step.get(
+                "current_player", -1
+            )  # Get player from state
+
+            if player_at_step == 0:
+                value_target = final_outcome
+            elif player_at_step == 1:
+                value_target = -final_outcome  # Flip outcome for opponent
+            else:
+                print(
+                    f"Warning: Unknown player {player_at_step} at step {i}. Cannot assign value target."
+                )
+                value_target = 0.0  # Default to 0 if player unknown
+
+            # Add the experience tuple (state, policy_target, value_target) to replay buffer
+            self.replay_buffer.append(
+                (step_data["state"], step_data["policy_target"], value_target)
+            )
+
+        # Clear the temporary history
+        self._current_episode_history = []
+
+    def learn(self):  # Removed episode_history argument, learns from buffer
+        """
+        Update the neural network by sampling from the replay buffer.
+        (Placeholder - Actual implementation needed)
+        """
+        if (
+            len(self.replay_buffer) < self.config.batch_size
+        ):  # Need config for batch_size
+            return  # Not enough data to train yet
+
         # TODO: Implement the actual learning step:
-        # 1. Sample data from the replay buffer.
+        # 1. Sample a batch from self.replay_buffer.
+        #    batch = random.sample(self.replay_buffer, self.config.batch_size)
         # 2. Format data into batches (states, target policies, target values).
+        #    states_batch = torch.stack([self.network._flatten_state(s) for s, _, _ in batch])
+        #    policy_targets_batch = torch.stack([torch.tensor(p, dtype=torch.float32) for _, p, _ in batch])
+        #    value_targets_batch = torch.tensor([[v] for _, _, v in batch], dtype=torch.float32)
         # 3. Perform gradient descent step on the network.
+        #    self.network.train()
+        #    self.optimizer.zero_grad()
+        #    policy_logits, value_preds = self.network(states_batch) # Need to adapt forward for batch
+        #    loss = self.calculate_loss(policy_logits, value_preds, policy_targets_batch, value_targets_batch)
+        #    loss.backward()
+        #    self.optimizer.step()
+        #    self.network.eval()
+
         print(
-            "AlphaZeroAgent.learn() called - Placeholder, training not implemented yet."
+            f"AlphaZeroAgent.learn() called - Placeholder. Buffer size: {len(self.replay_buffer)}"
         )
         pass
 
@@ -162,10 +255,12 @@ class AlphaZeroAgent(Agent):
             return False
 
     def reset(self) -> None:
-        """Reset the MCTS search tree."""
+        """Reset agent state (e.g., MCTS tree, episode history)."""
         self.mcts.reset_root()
+        self._current_episode_history = []  # Clear temp history on reset
 
     # --- Helper methods (potentially needed later) ---
+    # TODO: Move action mapping logic here or into network/utils
     # def _map_action_to_policy_index(self, action: ActionType) -> Optional[int]:
     #     """Maps an environment action to the corresponding index in the policy vector."""
     #     # This needs to be implemented based on how actions are structured
