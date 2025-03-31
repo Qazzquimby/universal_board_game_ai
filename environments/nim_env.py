@@ -31,8 +31,8 @@ class NimEnv(BaseEnvironment):
         if num_players != 2:
             raise ValueError("Nim is currently implemented for 2 players only.")
 
-        self.initial_piles = tuple(initial_piles)  # Use tuple for immutability
-        self.num_players = num_players
+        self.initial_piles = tuple(initial_piles)
+        self._num_players = num_players # Use private attribute
 
         # State tracking
         self.piles: Optional[np.ndarray] = None
@@ -43,6 +43,10 @@ class NimEnv(BaseEnvironment):
         self.last_action: Optional[NimActionType] = None
 
         self.reset()
+
+    @property
+    def num_players(self) -> int:
+        return self._num_players
 
     def reset(self) -> StateType:
         """Reset the game to the initial pile configuration."""
@@ -91,7 +95,7 @@ class NimEnv(BaseEnvironment):
             self.done = False
             self.winner = None
             reward = 0.0
-            self.current_player = (self.current_player + 1) % self.num_players
+            self.current_player = (self.current_player + 1) % self._num_players
 
         return self.get_observation(), reward, self.done
 
@@ -146,7 +150,7 @@ class NimEnv(BaseEnvironment):
 
     def copy(self) -> "NimEnv":
         """Create a deep copy of the Nim environment."""
-        new_env = NimEnv(list(self.initial_piles), self.num_players)
+        new_env = NimEnv(list(self.initial_piles), self._num_players)
         new_env.piles = self.piles.copy()
         new_env.current_player = self.current_player
         new_env.done = self.done

@@ -213,11 +213,11 @@ class AlphaZeroAgent(Agent):
         total_loss = value_loss + policy_loss
         return total_loss, value_loss, policy_loss
 
-    # Conforms to Agent interface, but ignores history argument
-    def learn(self, episode_history: List[tuple] = None):
+
+    # Conforms to Agent interface (no arguments)
+    def learn(self):
         """
         Update the neural network by sampling from the internal replay buffer.
-        The episode_history argument is ignored for this agent.
         """
         if len(self.replay_buffer) < self.config.batch_size:
             # print(f"Skipping learn step: Buffer size {len(self.replay_buffer)} < Batch size {self.config.batch_size}")

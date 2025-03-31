@@ -3,6 +3,7 @@ import random
 from typing import List, Tuple, Optional, Dict
 
 import numpy as np
+import torch
 
 from environments.base import ActionType, StateType, BaseEnvironment
 from models.networks import AlphaZeroNet
@@ -173,10 +174,11 @@ class MCTS:
                     value = 0.0
                 # Perspective adjustment for backpropagation (similar to AlphaZero logic):
                 # Value from the perspective of the player who *just moved* to reach this state.
+                # Use the num_players property from the environment
                 player_who_just_moved = (
                     sim_env.get_current_player() + sim_env.num_players - 1
                 ) % sim_env.num_players
-                if winner == player_who_just_moved:  # Player who moved won
+                if winner == player_who_just_moved: # Player who moved won
                     value = 1.0
                 else:  # Player who moved lost (or draw handled above)
                     value = -1.0
@@ -252,9 +254,11 @@ class AlphaZeroMCTS(MCTS):
         # Ensure network is in eval mode for this prediction step
         self.network.eval()
         with torch.no_grad():
-            policy_logits_tensor, _ = self.network(flat_state) # Pass flattened tensor
+            policy_logits_tensor, _ = self.network(flat_state)  # Pass flattened tensor
 
-        policy_logits = policy_logits_tensor.squeeze(0).cpu().numpy() # No detach needed with torch.no_grad()
+        policy_logits = (
+            policy_logits_tensor.squeeze(0).cpu().numpy()
+        )  # No detach needed with torch.no_grad()
 
         # --- Map policy outputs to legal actions ---
         # TODO: Move this mapping logic to AlphaZeroNet or a dedicated utility. Critical dependency.
@@ -284,9 +288,9 @@ class AlphaZeroMCTS(MCTS):
         # Ensure network is in eval mode for this prediction step
         self.network.eval()
         with torch.no_grad():
-             _, value_tensor = self.network(flat_state) # Pass flattened tensor
+            _, value_tensor = self.network(flat_state)  # Pass flattened tensor
 
-        value = value_tensor.squeeze(0).cpu().item() # Get scalar value
+        value = value_tensor.squeeze(0).cpu().item()  # Get scalar value
 
         # Value is from the perspective of the current player in 'env'
         return value
@@ -321,6 +325,7 @@ class AlphaZeroMCTS(MCTS):
                 # Game ended during selection. Determine outcome.
                 winner = sim_env.get_winning_player()
                 # Value from perspective of player who *just moved* to reach this state.
+                # Use the num_players property from the environment
                 player_who_just_moved = (
                     sim_env.get_current_player() + sim_env.num_players - 1
                 ) % sim_env.num_players

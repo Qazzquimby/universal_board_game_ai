@@ -18,18 +18,17 @@ class Agent(abc.ABC):
         """
         pass
 
-    def learn(self, episode_history: List[tuple]) -> None:
+    # Removed episode_history from base class learn method.
+    # Agents are responsible for their own learning mechanisms.
+    # Implementations might learn from internal buffers or require specific data passed from a training loop.
+    def learn(self) -> None:
         """
-        Update the agent's internal state based on experience from an episode.
-        Not all agents learn (e.g., RandomAgent). Agents learning from internal
-        buffers (like AlphaZero) might ignore the episode_history argument.
-        Default implementation does nothing.
-
-        Args:
-            episode_history: A list of (state, action, reward, done) tuples from an episode,
-                             where 'state' is the state *before* the action was taken.
+        Perform a learning step.
+        Not all agents learn (e.g., RandomAgent). Default implementation does nothing.
+        Subclasses should implement their specific learning logic (e.g., sampling from a buffer,
+        processing a trajectory provided differently).
         """
-        pass  # Optional method
+        pass # Optional method
 
     def save(self) -> None:
         """

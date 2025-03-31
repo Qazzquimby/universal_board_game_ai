@@ -46,6 +46,12 @@ class BaseEnvironment(abc.ABC):
         """
         pass
 
+    @property
+    @abc.abstractmethod
+    def num_players(self) -> int:
+        """Number of players in the game."""
+        pass
+
     @abc.abstractmethod
     def get_current_player(self) -> int:
         """

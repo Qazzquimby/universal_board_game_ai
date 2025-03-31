@@ -24,12 +24,12 @@ class FourInARow(BaseEnvironment):
             num_players: Number of players in the game
             max_steps: Maximum number of steps before the game is considered a draw
         """
-        self.board_size = board_size
-        self.num_players = num_players
-        self.max_steps = max_steps
+        self._board_size = board_size
+        self._num_players = num_players
+        self._max_steps = max_steps
 
         # Action space: all possible (row, col) combinations
-        self.num_actions = board_size * board_size
+        self.num_actions = self._board_size * self._board_size # Use internal attribute
 
         # State tracking
         self.board = None
@@ -42,6 +42,14 @@ class FourInARow(BaseEnvironment):
 
         self.reset()
 
+    @property
+    def num_players(self) -> int:
+        return self._num_players
+
+    @property
+    def board_size(self) -> int:
+        return self._board_size
+
     # Ensure method signatures match EnvInterface
     def reset(self) -> StateType:
         """
@@ -51,7 +59,7 @@ class FourInARow(BaseEnvironment):
             observation: The initial observation
         """
         # Initialize an empty board
-        self.board = np.zeros((self.board_size, self.board_size), dtype=np.int8)
+        self.board = np.zeros((self._board_size, self._board_size), dtype=np.int8)
         self.current_player = 0
         self.done = False
         self.winner = None
@@ -128,7 +136,7 @@ class FourInARow(BaseEnvironment):
         row, col = action
 
         # Check if position is within bounds
-        if row < 0 or row >= self.board_size or col < 0 or col >= self.board_size:
+        if row < 0 or row >= self._board_size or col < 0 or col >= self._board_size:
             return False
 
         # Check if position is empty
@@ -147,7 +155,7 @@ class FourInARow(BaseEnvironment):
         player = self.current_player
         player_piece = player + 1
         board = self.board
-        size = self.board_size
+        size = self._board_size
         win_condition = 4  # Connect-4 style
 
         # --- Check Horizontal ---
@@ -253,8 +261,8 @@ class FourInARow(BaseEnvironment):
             A list of valid actions as (row, col) tuples
         """
         valid_actions = []
-        for row in range(self.board_size):
-            for col in range(self.board_size):
+        for row in range(self._board_size):
+            for col in range(self._board_size):
                 if self.board[row, col] == 0:
                     valid_actions.append((row, col))
         return valid_actions
@@ -286,12 +294,12 @@ class FourInARow(BaseEnvironment):
         pass
 
     # Ensure method signatures match EnvInterface
-    def copy(self) -> "FourInARow":  # Or EnvInterface if we want covariance
+    def copy(self) -> "FourInARow":
         """Create a copy of the environment"""
         new_env = FourInARow(
-            board_size=self.board_size,
-            num_players=self.num_players,
-            max_steps=self.max_steps,
+            board_size=self._board_size,
+            num_players=self._num_players,
+            max_steps=self._max_steps,
         )
         new_env.board = self.board.copy()
         new_env.current_player = self.current_player
