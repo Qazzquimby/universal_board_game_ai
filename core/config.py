@@ -22,8 +22,8 @@ class MainConfig:
     ql_save_file: str = "q_agent_{board_size}x{board_size}.pkl"
 
     # Testing settings
-    num_games_test: int = 100
-    elo_k_factor: int = 32
+    num_games_test: int = 50
+    elo_k_factor: int = 64
     elo_iterations: int = 100
     elo_baseline_agent: str = "Random"
     elo_baseline_rating: float = 1000.0

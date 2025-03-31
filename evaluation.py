@@ -20,7 +20,7 @@ def _play_one_game(env: EnvInterface, agent0: Agent, agent1: Agent) -> Optional[
     Returns:
         The index of the winning player (0 or 1), or None for a draw.
     """
-    state = env.get_observation() # Get initial state from env
+    state = env.get_observation()  # Get initial state from env
     done = False
     winner = None
 
@@ -28,23 +28,27 @@ def _play_one_game(env: EnvInterface, agent0: Agent, agent1: Agent) -> Optional[
         current_player_idx = env.get_current_player()
         if current_player_idx == 0:
             action = agent0.act(state)
-            agent_name = type(agent0).__name__ # For logging
+            agent_name = type(agent0).__name__  # For logging
         else:
             action = agent1.act(state)
-            agent_name = type(agent1).__name__ # For logging
+            agent_name = type(agent1).__name__  # For logging
 
         if action is None:
-            print(f"Warning: Agent {agent_name} (Player {current_player_idx}) returned None action. Treating as loss.")
-            winner = 1 - current_player_idx # Opponent wins
-            break # End game
+            print(
+                f"Warning: Agent {agent_name} (Player {current_player_idx}) returned None action. Treating as loss."
+            )
+            winner = 1 - current_player_idx  # Opponent wins
+            break  # End game
 
         try:
             state, _, done = env.step(action)
-            winner = env.get_winning_player() # Get winner after step
+            winner = env.get_winning_player()  # Get winner after step
         except ValueError as e:
-             print(f"Warning: Invalid action {action} during testing by Player {current_player_idx} ({agent_name}). Error: {e}")
-             winner = 1 - current_player_idx # Opponent wins due to invalid move
-             break # End game
+            print(
+                f"Warning: Invalid action {action} during testing by Player {current_player_idx} ({agent_name}). Error: {e}"
+            )
+            winner = 1 - current_player_idx  # Opponent wins due to invalid move
+            break  # End game
 
     return winner
 
@@ -116,11 +120,15 @@ def run_test_games(
     num_games_half = num_games // 2
 
     # --- Games where agent1 starts ---
-    print(f"Running {num_games_half} games with {agent1_name} starting (as Player 0)...")
-    for _ in tqdm(range(num_games_half), desc=f"{agent1_name} (P0) vs {agent2_name} (P1)"):
-        game_env = env.copy() # Use a fresh copy for each game
+    print(
+        f"Running {num_games_half} games with {agent1_name} starting (as Player 0)..."
+    )
+    for _ in tqdm(
+        range(num_games_half), desc=f"{agent1_name} (P0) vs {agent2_name} (P1)"
+    ):
+        game_env = env.copy()  # Use a fresh copy for each game
         game_env.reset()
-        winner = _play_one_game(game_env, agent1, agent2) # agent1 is P0, agent2 is P1
+        winner = _play_one_game(game_env, agent1, agent2)  # agent1 is P0, agent2 is P1
 
         if winner == 0:
             results[agent1_name] += 1
@@ -131,16 +139,20 @@ def run_test_games(
 
     # --- Games where agent2 starts ---
     num_games_remaining = num_games - num_games_half
-    print(f"Running {num_games_remaining} games with {agent2_name} starting (as Player 0)...")
-    for _ in tqdm(range(num_games_remaining), desc=f"{agent2_name} (P0) vs {agent1_name} (P1)"):
-        game_env = env.copy() # Use a fresh copy for each game
+    print(
+        f"Running {num_games_remaining} games with {agent2_name} starting (as Player 0)..."
+    )
+    for _ in tqdm(
+        range(num_games_remaining), desc=f"{agent2_name} (P0) vs {agent1_name} (P1)"
+    ):
+        game_env = env.copy()  # Use a fresh copy for each game
         game_env.reset()
-        winner = _play_one_game(game_env, agent2, agent1) # agent2 is P0, agent1 is P1
+        winner = _play_one_game(game_env, agent2, agent1)  # agent2 is P0, agent1 is P1
 
         # Adjust win recording based on who was player 0 in this game
-        if winner == 0: # agent2 (P0) won
+        if winner == 0:  # agent2 (P0) won
             results[agent2_name] += 1
-        elif winner == 1: # agent1 (P1) won
+        elif winner == 1:  # agent1 (P1) won
             results[agent1_name] += 1
         else:
             results["draws"] += 1
@@ -252,11 +264,7 @@ def calculate_elo_ratings(
     return elo_ratings
 
 
-def run_evaluation(
-    env: EnvInterface,
-    agents: Dict[str, Agent],
-    config: MainConfig
-):
+def run_evaluation(env: EnvInterface, agents: Dict[str, Agent], config: MainConfig):
     """
     Runs the full evaluation suite: round-robin games and Elo calculation.
 
