@@ -1,9 +1,11 @@
 # Standard library imports
 import math
 import random
-from typing import Dict, List, Tuple, Any
+from typing import Dict, List, Tuple, Any, Optional
 
-from temp_env import BoardGameEnv
+# Local application imports
+# Use the generic EnvInterface
+from core.env_interface import EnvInterface, StateType, ActionType
 from core.agent_interface import Agent
 
 
@@ -24,10 +26,13 @@ class MCTSNode:
     def is_expanded(self) -> bool:
         return len(self.children) > 0
 
-    def expand(self, legal_actions: List[Tuple[int, int]]):
+    # Update action type hint
+    def expand(self, legal_actions: List[ActionType]):
         """Create child nodes for all legal actions"""
         for action in legal_actions:
-            if action not in self.children:
+            # Ensure action is hashable if it's not already (e.g., list)
+            action_key = tuple(action) if isinstance(action, list) else action
+            if action_key not in self.children:
                 self.children[action] = MCTSNode(parent=self)
 
 
@@ -57,6 +62,7 @@ class MCTS:
                 (self._ucb_score(child, node.visit_count), action, child)
                 for action, child in node.children.items()
             )[1:]
+            # Action here is the key from children dict, should be hashable
             env.step(action)
         return node, env
 
@@ -93,17 +99,17 @@ class MCTS:
                 legal_actions = sim_env.get_legal_actions()
                 node.expand(legal_actions)
                 value = self._rollout(sim_env)
-            else: # Terminal state found during selection
+            else:  # Terminal state found during selection
                 winner = sim_env.get_winning_player()
                 # Determine the player whose turn it *would* have been at this terminal node.
                 # This is the perspective needed for the first step of backpropagation.
                 player_at_terminal_node = sim_env.get_current_player()
 
-                if winner is None: # Draw
+                if winner is None:  # Draw
                     value = 0.0
-                elif winner == player_at_terminal_node: # Player whose turn it is wins
+                elif winner == player_at_terminal_node:  # Player whose turn it is wins
                     value = 1.0
-                else: # Player whose turn it is loses
+                else:  # Player whose turn it is loses
                     value = -1.0
                 # Note: This value is correct for the terminal node itself.
                 # Backpropagation will flip the sign for the parent.
@@ -116,22 +122,28 @@ class MCTS:
 class MCTSAgent(Agent):
     """Agent that uses MCTS to choose actions."""
 
-    def __init__(self, env: BoardGameEnv, num_simulations: int = 100, exploration_constant: float = 1.41):
+    def __init__(
+        self,
+        env: EnvInterface, # Use EnvInterface
+        num_simulations: int = 100,
+        exploration_constant: float = 1.41,
+    ):
         """
         Args:
             env: The game environment instance (used for copy).
             num_simulations: Number of MCTS simulations per move.
             exploration_constant: Exploration constant (c) for UCB1.
         """
-        self.env = env # Keep env reference mainly for copy()
+        self.env = env  # Keep env reference mainly for copy()
         # TODO: MuZero doesn't need an env?
         self.mcts = MCTS(
             num_simulations=num_simulations,
             exploration_constant=exploration_constant,
-            discount_factor=1.0, # Discount factor within the search tree
+            discount_factor=1.0,  # Discount factor within the search tree
         )
 
-    def act(self, state: Dict[str, Any]) -> Tuple[int, int]:
+    # Update action return type hint
+    def act(self, state: StateType) -> ActionType:
         """
         Perform MCTS search and choose the best action.
 
@@ -144,7 +156,7 @@ class MCTSAgent(Agent):
         # Ensure the MCTS root is reset or updated appropriately.
         # For stateless MCTS between moves, we run a fresh search each time.
         # If we wanted to reuse the tree, we'd need more logic here.
-        self.reset() # Reset the tree for a fresh search from the current state
+        self.reset()  # Reset the tree for a fresh search from the current state
 
         root_node = self.mcts.search(self.env, state)
 
@@ -158,10 +170,13 @@ class MCTSAgent(Agent):
             if legal_actions:
                 return random.choice(legal_actions)
             else:
-                return -1, -1  # No legal actions
+                # Return None if no action is possible, let caller handle it
+                return None
 
         # Choose the action leading to the most visited child node
-        best_action = max(root_node.children.items(), key=lambda item: item[1].visit_count)[0]
+        best_action = max(
+            root_node.children.items(), key=lambda item: item[1].visit_count
+        )[0]
         return best_action
 
     def reset(self) -> None:

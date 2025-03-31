@@ -4,13 +4,17 @@ from dataclasses import dataclass
 # Forward declare Agent if needed, or import later if circular dependency is resolved
 # from core.agent_interface import Agent
 
+
 @dataclass
 class MainConfig:
     """Configuration settings for the main script."""
+
     # Environment settings
     board_size: int = 4
     num_players: int = 2
-    env_max_steps: int = board_size * board_size + 1 # Max steps slightly more than board size
+    env_max_steps: int = (
+        board_size * board_size + 1
+    )  # Max steps slightly more than board size
 
     # Training settings
     num_episodes_train: int = 5000
@@ -35,6 +39,7 @@ class MainConfig:
     def __post_init__(self):
         # Dynamically create filename if needed
         self.ql_save_file = self.ql_save_file.format(board_size=self.board_size)
+
 
 # Example of creating a config instance
 # config = MainConfig()

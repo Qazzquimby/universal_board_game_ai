@@ -1,14 +1,19 @@
+from typing import Dict, List, Tuple, Any, Optional
+
 import numpy as np
-from typing import Dict, List, Tuple, Any
+
+from core.env_interface import EnvInterface, StateType
+
+BoardGameActionType = Tuple[int, int]
 
 
-class BoardGameEnv:
+class FourInARow(EnvInterface):
     """
     A board game environment following PettingZoo-like conventions.
     Implements a Connect-4 style game on a square board.
     """
 
-    metadata = {"render_modes": ["human"], "name": "connect4"}
+    metadata = {"render_modes": ["human"], "name": "four_in_a_row"}
 
     def __init__(self, board_size: int = 4, num_players: int = 2, max_steps: int = 100):
         """
@@ -37,7 +42,8 @@ class BoardGameEnv:
 
         self.reset()
 
-    def reset(self) -> Dict[str, Any]:
+    # Ensure method signatures match EnvInterface
+    def reset(self) -> StateType:
         """
         Reset the environment to initial state.
 
@@ -64,13 +70,18 @@ class BoardGameEnv:
 
         Returns:
             observation: The current observation after taking the action
-            reward: The reward for the current player
-            done: Whether the episode is done
+            reward: The reward received by the player who just acted.
+            done: Boolean indicating if the game has ended.
         """
         if self.is_game_over():
-            return self._get_observation(), 0.0, True
+            # Return current state, 0 reward for current player, and done=True
+            return (
+                self._get_observation(),
+                self.rewards.get(self.current_player, 0.0),
+                True,
+            )
 
-        row, col = action
+        row, col = action  # Assumes action is BoardGameActionType
         self.last_action = action
 
         # Reset rewards for all players
@@ -78,8 +89,16 @@ class BoardGameEnv:
 
         # Check if action is valid
         if not self._is_valid_action(action):
-            self.rewards[self.current_player] = -10.0
-            return self._get_observation(), self.rewards[self.current_player], False
+            # Penalize and return, game not done
+            # Note: Consistent reward handling is tricky. Should step return reward for the player
+            # who *just moved* or the player whose *turn it is now*?
+            # Let's assume it's the reward for the player who *just moved*.
+            # In case of invalid move, the current player didn't change.
+            # Assign a penalty.
+            penalty = -10.0
+            self.rewards[self.current_player] = penalty
+            # Game isn't done, state didn't change meaningfully (except maybe rewards dict)
+            return self._get_observation(), penalty, False
 
         # Place piece on the board
         self.board[row, col] = self.current_player + 1
@@ -98,15 +117,19 @@ class BoardGameEnv:
         # Check for draw
         elif self.step_count >= self.max_steps or np.all(self.board != 0):
             self.done = True
-            # All players get small positive reward for draw
+            # All players get 0 reward for draw (consistent with win/loss being +/- 1)
+            # Or keep 0.1 if desired, but 0 seems more standard for zero-sum games. Let's use 0.
             for player in range(self.num_players):
-                self.rewards[player] = 0.1
+                self.rewards[player] = 0.0
 
-        else:
-            # Switch to next player
+        # Store the reward for the player who just moved *before* switching player
+        reward_for_acting_player = self.rewards.get(self.current_player, 0.0)
+
+        if not self.done:
+            # Switch to next player only if game is not done
             self.current_player = (self.current_player + 1) % self.num_players
 
-        return self._get_observation(), self.rewards[self.current_player], self.done
+        return self._get_observation(), reward_for_acting_player, self.done
 
     def _is_valid_action(self, action: Tuple[int, int]) -> bool:
         """Check if an action is valid."""
@@ -122,6 +145,7 @@ class BoardGameEnv:
 
         return True
 
+    # Make private methods conventionally private
     def _check_win(self, row: int, col: int) -> bool:
         """
         Check if the player who just moved to (row, col) has won.
@@ -132,7 +156,7 @@ class BoardGameEnv:
         player_piece = player + 1
         board = self.board
         size = self.board_size
-        win_condition = 4 # Connect-4 style
+        win_condition = 4  # Connect-4 style
 
         # --- Check Horizontal ---
         count = 0
@@ -172,7 +196,7 @@ class BoardGameEnv:
             # Reset count if we hit the edge or a different piece *within the check range*
             # This handles cases where the winning line starts/ends near the check point
             if not (0 <= r < size and 0 <= c < size) or board[r, c] != player_piece:
-                 count = 0 # Reset if out of bounds or wrong piece
+                count = 0  # Reset if out of bounds or wrong piece
 
         # --- Check Anti-Diagonal (top-right to bottom-left) ---
         count = 0
@@ -189,11 +213,12 @@ class BoardGameEnv:
                     count = 0
             # Reset count if we hit the edge or a different piece *within the check range*
             if not (0 <= r < size and 0 <= c < size) or board[r, c] != player_piece:
-                 count = 0 # Reset if out of bounds or wrong piece
+                count = 0  # Reset if out of bounds or wrong piece
 
-        return False # No win found for this player on this move
+        return False  # No win found for this player on this move
 
-    def _get_observation(self) -> Dict[str, Any]:
+    # Ensure method signatures match EnvInterface
+    def get_observation(self) -> StateType:
         """Get the current observation of the environment."""
         return {
             "board": self.board.copy(),
@@ -203,8 +228,11 @@ class BoardGameEnv:
             "rewards": self.rewards.copy(),
             "winner": self.winner,
             "done": self.done,
+            # Add legal actions to observation? Optional, but can be useful for some agents.
+            # "legal_actions": self.get_legal_actions()
         }
 
+    # Ensure method signatures match EnvInterface
     def render(self, mode: str = "human") -> None:
         """
         Render the current state of the environment.
@@ -239,29 +267,36 @@ class BoardGameEnv:
                     valid_actions.append((row, col))
         return valid_actions
 
+    # Ensure method signatures match EnvInterface
     def is_game_over(self) -> bool:
         """Return whether the game is over."""
-        return self.done or not self.get_legal_actions()
+        # Game is over if done flag is set. Check for no legal actions might be redundant if done is set correctly.
+        return self.done
 
-    def get_winning_player(self) -> int:
+    # Ensure method signatures match EnvInterface
+    def get_winning_player(self) -> Optional[int]:
         """Return the winning player number, or None if no winner."""
         return self.winner
 
+    # This helper method isn't part of the interface, keep it if useful internally
     def is_draw(self) -> bool:
         """Return whether the game ended in a draw."""
         return self.is_game_over() and self.winner is None
 
+    # Ensure method signatures match EnvInterface
     def get_current_player(self) -> int:
         """Return the current player's number."""
         return self.current_player
 
+    # Ensure method signatures match EnvInterface
     def close(self) -> None:
         """Close the environment."""
         pass
 
-    def copy(self) -> "BoardGameEnv":
+    # Ensure method signatures match EnvInterface
+    def copy(self) -> "FourInARow":  # Or EnvInterface if we want covariance
         """Create a copy of the environment"""
-        new_env = BoardGameEnv(
+        new_env = FourInARow(
             board_size=self.board_size,
             num_players=self.num_players,
             max_steps=self.max_steps,
@@ -275,7 +310,8 @@ class BoardGameEnv:
         new_env.rewards = self.rewards.copy()
         return new_env
 
-    def set_state(self, state: dict) -> None:
+    # Ensure method signatures match EnvInterface
+    def set_state(self, state: StateType) -> None:
         """Set the environment state"""
         self.board = state["board"].copy()
         self.current_player = state["current_player"]

@@ -1,21 +1,23 @@
 import random
 from typing import Tuple, Dict, Any
 
-from temp_env import BoardGameEnv
+# Use the generic EnvInterface
+from core.env_interface import EnvInterface, StateType, ActionType
 from core.agent_interface import Agent
 
 
 class RandomAgent(Agent):
     """A simple random agent for demonstration. Does not learn."""
 
-    def __init__(self, env: BoardGameEnv):
+    def __init__(self, env: EnvInterface): # Use EnvInterface
         """
         Args:
             env: An instance of the BoardGameEnv (used for its copy method).
         """
-        self.env = env
+        self.env = env # Keep env reference mainly for copy()
 
-    def act(self, state: Dict[str, Any]) -> Tuple[int, int]:
+    # Update action return type hint
+    def act(self, state: StateType) -> ActionType:
         """Choose a random valid action based on the provided state."""
         # Create a temporary environment copy and set its state
         temp_env = self.env.copy()
@@ -26,4 +28,5 @@ class RandomAgent(Agent):
 
         if valid_actions:
             return random.choice(valid_actions)
-        return -1, -1
+        # Return None if no action is possible
+        return None
