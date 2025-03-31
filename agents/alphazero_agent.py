@@ -1,8 +1,10 @@
 import random
 from pathlib import Path
-from collections import deque  # Use deque for replay buffer
+from collections import deque
+from typing import List
 
 import torch
+import torch.optim as optim  # Import optimizer
 import torch.nn.functional as F
 import numpy as np
 
@@ -53,6 +55,14 @@ class AlphaZeroAgent(Agent):
         self.replay_buffer = deque(maxlen=config.replay_buffer_size)
         # Temporary storage for the current game's history before assigning final outcome
         self._current_episode_history = []
+
+        # Optimizer (managed internally by the agent)
+        self.optimizer = optim.AdamW(
+            self.network.parameters(),
+            lr=config.learning_rate,
+            weight_decay=config.weight_decay,
+        )
+        # TODO: Add scheduler if needed, managed here too
 
     def act(self, state: StateType, train: bool = False) -> ActionType:
         """
@@ -203,9 +213,11 @@ class AlphaZeroAgent(Agent):
         total_loss = value_loss + policy_loss
         return total_loss, value_loss, policy_loss
 
-    def learn(self, optimizer: torch.optim.Optimizer):
+    # Conforms to Agent interface, but ignores history argument
+    def learn(self, episode_history: List[tuple] = None):
         """
-        Update the neural network by sampling from the replay buffer.
+        Update the neural network by sampling from the internal replay buffer.
+        The episode_history argument is ignored for this agent.
         """
         if len(self.replay_buffer) < self.config.batch_size:
             # print(f"Skipping learn step: Buffer size {len(self.replay_buffer)} < Batch size {self.config.batch_size}")
@@ -236,7 +248,7 @@ class AlphaZeroAgent(Agent):
 
         # 3. Perform gradient descent step on the network.
         self.network.train()  # Ensure network is in training mode
-        optimizer.zero_grad()
+        self.optimizer.zero_grad()  # Use the agent's internal optimizer
 
         # Forward pass - network needs to handle batch input
         policy_logits, value_preds = self.network(states_batch)  # Pass the batch tensor
@@ -248,7 +260,7 @@ class AlphaZeroAgent(Agent):
 
         # Backward pass and optimizer step
         total_loss.backward()
-        optimizer.step()
+        self.optimizer.step()  # Use the agent's internal optimizer
 
         # Optional: Log losses (e.g., using TensorBoard or just printing)
         # print(f"  Learn Step: Total Loss={total_loss.item():.4f}, Value Loss={value_loss.item():.4f}, Policy Loss={policy_loss.item():.4f}")

@@ -100,13 +100,7 @@ if __name__ == "__main__":
     else:
         print("Loaded existing weights. Continuing training.")
 
-    # TODO: Move optimizer and scheduler setup into the agent?
-    optimizer = optim.AdamW(
-        agent.network.parameters(),
-        lr=config.alpha_zero.learning_rate,
-        weight_decay=config.alpha_zero.weight_decay,
-    )
-    # TODO: Add learning rate scheduler if needed
+    # Optimizer is now managed internally by the agent
 
     # --- Training Loop ---
     # TODO: Make number of training iterations configurable
@@ -131,10 +125,9 @@ if __name__ == "__main__":
 
         # 2. Learning Phase
         print("Running learning step...")
-        agent.network.train()  # Switch network to training mode
-        # TODO: Add epochs per learning step if desired
-        # Pass the optimizer to the learn method (or manage optimizer within agent)
-        agent.learn(optimizer)  # Call the agent's learning method
+        # agent.network.train() # Network mode is handled within agent.learn()
+        # TODO: Add epochs per learning step if desired (call learn multiple times)
+        agent.learn() # Call the agent's learning method (optimizer is internal)
 
         # 3. Save Checkpoint Periodically
         # TODO: Make save frequency configurable

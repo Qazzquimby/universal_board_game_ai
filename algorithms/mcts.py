@@ -245,12 +245,16 @@ class AlphaZeroMCTS(MCTS):
             )
             return  # Cannot expand
 
-        # Get policy priors and value from the network
+        # Get policy priors from the network
         # TODO: Add device handling
-        policy_logits_tensor, _ = self.network(
-            current_state_obs
-        )  # Value not needed here, only for evaluation
-        policy_logits = policy_logits_tensor.squeeze(0).cpu().detach().numpy()
+        # Flatten the state dictionary before passing to the network
+        flat_state = self.network._flatten_state(current_state_obs)
+        # Ensure network is in eval mode for this prediction step
+        self.network.eval()
+        with torch.no_grad():
+            policy_logits_tensor, _ = self.network(flat_state) # Pass flattened tensor
+
+        policy_logits = policy_logits_tensor.squeeze(0).cpu().numpy() # No detach needed with torch.no_grad()
 
         # --- Map policy outputs to legal actions ---
         # TODO: Move this mapping logic to AlphaZeroNet or a dedicated utility. Critical dependency.
@@ -275,8 +279,14 @@ class AlphaZeroMCTS(MCTS):
 
         current_state_obs = env.get_observation()
         # TODO: Add device handling
-        _, value_tensor = self.network(current_state_obs)
-        value = value_tensor.squeeze(0).cpu().item()  # Get scalar value
+        # Flatten the state dictionary before passing to the network
+        flat_state = self.network._flatten_state(current_state_obs)
+        # Ensure network is in eval mode for this prediction step
+        self.network.eval()
+        with torch.no_grad():
+             _, value_tensor = self.network(flat_state) # Pass flattened tensor
+
+        value = value_tensor.squeeze(0).cpu().item() # Get scalar value
 
         # Value is from the perspective of the current player in 'env'
         return value

@@ -21,10 +21,13 @@ class Agent(abc.ABC):
     def learn(self, episode_history: List[tuple]) -> None:
         """
         Update the agent's internal state based on experience from an episode.
-        Not all agents learn (e.g., RandomAgent). Default implementation does nothing.
+        Not all agents learn (e.g., RandomAgent). Agents learning from internal
+        buffers (like AlphaZero) might ignore the episode_history argument.
+        Default implementation does nothing.
 
         Args:
-            episode_history: A list of (state, action, reward, done) tuples from an episode.
+            episode_history: A list of (state, action, reward, done) tuples from an episode,
+                             where 'state' is the state *before* the action was taken.
         """
         pass  # Optional method
 
@@ -37,13 +40,10 @@ class Agent(abc.ABC):
             f"Save method not implemented for {self.__class__.__name__}"
         )
 
-    def load(self, filepath: str) -> bool:
+    def load(self) -> bool:
         """
         Load the agent's state.
         Default implementation raises NotImplementedError.
-
-        Args:
-            filepath: The path to load the agent state from.
 
         Returns:
             True if loading was successful, False otherwise.
