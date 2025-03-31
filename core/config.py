@@ -32,6 +32,16 @@ class MCTSConfig:
     num_simulations_short: int = 50
     num_simulations_long: int = 200
 
+@dataclass
+class AlphaZeroConfig:
+    num_simulations: int = 100 # MCTS simulations per move
+    cpuct: float = 1.0 # Exploration constant in PUCT formula
+    learning_rate: float = 0.001
+    weight_decay: float = 0.0001
+    hidden_layer_size: int = 128 # Size for the MLP hidden layers
+    num_hidden_layers: int = 2 # Number of hidden layers in the MLP
+    # Add other relevant hyperparameters like batch size, epochs later for training
+
 
 # --- Training Configuration ---
 @dataclass
@@ -56,6 +66,7 @@ class AppConfig:
     env: EnvConfig = field(default_factory=EnvConfig)
     q_learning: QLearningConfig = field(default_factory=QLearningConfig)
     mcts: MCTSConfig = field(default_factory=MCTSConfig)
+    alpha_zero: AlphaZeroConfig = field(default_factory=AlphaZeroConfig) # Add AlphaZero config
     training: TrainingConfig = field(default_factory=TrainingConfig)
     evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
 

@@ -1,7 +1,8 @@
 from typing import Dict
 
 from core.agent_interface import Agent
-from core.config import AppConfig, EnvConfig
+# Import all config types
+from core.config import AppConfig, EnvConfig, QLearningConfig, MCTSConfig, AlphaZeroConfig
 from environments.base import BaseEnvironment
 from environments.four_in_a_row import FourInARow
 from environments.nim_env import NimEnv
