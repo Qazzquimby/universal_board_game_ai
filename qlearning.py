@@ -1,3 +1,5 @@
+import os
+import pickle
 from collections import defaultdict
 
 import numpy as np
@@ -36,6 +38,8 @@ class QLearningAgent:
 
         # Initialize Q-table
         # Using defaultdict to handle new state-action pairs
+        # Convert inner defaultdict to regular dict for pickling if needed,
+        # but pickle should handle defaultdict directly.
         self.q_table = defaultdict(lambda: defaultdict(float))
 
     def _state_to_key(self, state):
@@ -108,4 +112,46 @@ class QLearningAgent:
 
     def decay_exploration(self):
         """Decay the exploration rate."""
-        self.exploration_rate *= self.exploration_decay
+        self.exploration_rate = max(
+            self.exploration_rate * self.exploration_decay, self.min_exploration
+        )
+
+    def save(self, filepath="q_agent.pkl"):
+        """Save the Q-table and exploration rate to a file."""
+        # Convert defaultdict to dict for potentially better compatibility
+        q_table_dict = {k: dict(v) for k, v in self.q_table.items()}
+        data = {
+            "q_table": q_table_dict,
+            "exploration_rate": self.exploration_rate,
+        }
+        try:
+            with open(filepath, "wb") as f:
+                pickle.dump(data, f)
+            print(f"Agent saved to {filepath}")
+        except Exception as e:
+            print(f"Error saving agent: {e}")
+
+    def load(self, filepath="q_agent.pkl"):
+        """Load the Q-table and exploration rate from a file."""
+        try:
+            if os.path.exists(filepath):
+                with open(filepath, "rb") as f:
+                    data = pickle.load(f)
+                # Restore defaultdict structure
+                self.q_table = defaultdict(
+                    lambda: defaultdict(float),
+                    {k: defaultdict(float, v) for k, v in data["q_table"].items()},
+                )
+                self.exploration_rate = data["exploration_rate"]
+                # Ensure exploration doesn't go below minimum after loading
+                self.exploration_rate = max(
+                    self.exploration_rate, self.min_exploration
+                )
+                print(f"Agent loaded from {filepath}")
+                return True
+            else:
+                print(f"Save file not found: {filepath}")
+                return False
+        except Exception as e:
+            print(f"Error loading agent: {e}")
+            return False

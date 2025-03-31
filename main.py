@@ -1,3 +1,6 @@
+import os
+import pickle
+import itertools
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -119,11 +122,19 @@ def plot_results(win_history, window_size=100):
     plt.show()
 
 
-def _run_test_games(env, agent1, agent2, num_games=100):
+def _run_test_games(env, agent1_name, agent1, agent2_name, agent2, num_games=100):
     """Run test games between two agents"""
-    results = {"agent1": 0, "agent2": 0, "draws": 0}
+    print(f"\n--- Testing {agent1_name} vs {agent2_name} ---")
+    results = {agent1_name: 0, agent2_name: 0, "draws": 0}
 
-    for _ in range(num_games):
+    # Ensure agents have exploration turned off for testing if applicable
+    original_exploration_rates = {}
+    for agent, name in [(agent1, agent1_name), (agent2, agent2_name)]:
+        if hasattr(agent, "exploration_rate"):
+            original_exploration_rates[name] = agent.exploration_rate
+            agent.exploration_rate = 0.0  # Turn off exploration
+
+    for game_num in range(num_games):
         state = env.reset()
         done = False
 
@@ -136,39 +147,91 @@ def _run_test_games(env, agent1, agent2, num_games=100):
 
         winner = env.get_winning_player()
         if winner == 0:
-            results["agent1"] += 1
+            results[agent1_name] += 1
         elif winner == 1:
-            results["agent2"] += 1
+            results[agent2_name] += 1
         else:
             results["draws"] += 1
 
+    # Restore original exploration rates
+    for agent, name in [(agent1, agent1_name), (agent2, agent2_name)]:
+        if name in original_exploration_rates:
+            agent.exploration_rate = original_exploration_rates[name]
+
     print(f"Results after {num_games} games:")
-    print(f"Agent1 wins: {results['agent1']}")
-    print(f"Agent2 wins: {results['agent2']}")
+    print(f"{agent1_name} wins: {results[agent1_name]}")
+    print(f"{agent2_name} wins: {results[agent2_name]}")
     print(f"Draws: {results['draws']}")
+    print("-" * (len(f"--- Testing {agent1_name} vs {agent2_name} ---")))
 
 
 # Example usage
 if __name__ == "__main__":
-    # Create environment
-    env = BoardGameEnv(board_size=4, num_players=2)
+    # --- Configuration ---
+    BOARD_SIZE = 4
+    NUM_PLAYERS = 2
+    NUM_EPISODES_TRAIN = 5000  # Set to 0 to skip training if loading
+    NUM_GAMES_TEST = 100
+    QL_SAVE_FILE = "q_agent_4x4.pkl"
+    PLOT_WINDOW = 200
 
-    # Create different agents
-    random_agent = RandomAgent(env)
+    # --- Environment Setup ---
+    env = BoardGameEnv(board_size=BOARD_SIZE, num_players=NUM_PLAYERS)
+
+    # --- Agent Initialization ---
     ql_agent = QLearningAgent(env)
-    mcts_agent = MCTSAgent(env)
 
-    # Train Q-learning agent
-    print("Training Q-learning agent...")
-    wins = train_agent(env, ql_agent, num_episodes=5000)
-    plot_results(wins, window_size=200)
+    # --- Load or Train Q-Learning Agent ---
+    if not ql_agent.load(QL_SAVE_FILE):
+        if NUM_EPISODES_TRAIN > 0:
+            print(f"Training Q-learning agent for {NUM_EPISODES_TRAIN} episodes...")
+            wins = train_agent(env, ql_agent, num_episodes=NUM_EPISODES_TRAIN)
+            plot_results(wins, window_size=PLOT_WINDOW)
+            ql_agent.save(QL_SAVE_FILE)
+        else:
+            print("Skipping Q-learning training as NUM_EPISODES_TRAIN is 0.")
+    else:
+        print("Loaded pre-trained Q-learning agent.")
+        # Optionally plot if training data were saved alongside agent
+        # plot_results(loaded_wins, window_size=PLOT_WINDOW)
 
-    # Test agents against each other
-    print("\nTesting MCTS vs Q-Learning...")
-    _run_test_games(env.copy(), mcts_agent, ql_agent)
+    # --- Define Agents for Testing ---
+    # Ensure agents used for testing have exploration turned off or minimized
+    # ql_agent.exploration_rate = ql_agent.min_exploration # Set low exploration for testing
+    # Or handled within _run_test_games
 
-    print("\nTesting Q-Learning vs Random...")
-    _run_test_games(env.copy(), ql_agent, random_agent)
+    agents = {
+        "QLearning": ql_agent,
+        "MCTS_100": MCTSAgent(env, num_simulations=100),
+        "MCTS_500": MCTSAgent(env, num_simulations=500), # Example of another MCTS variant
+        "Random": RandomAgent(env),
+    }
 
-    print("\nTesting MCTS vs MCTS...")
-    _run_test_games(env.copy(), mcts_agent, MCTSAgent(env))
+    # --- Round-Robin Testing ---
+    print("\n--- Starting Round-Robin Agent Testing ---")
+    agent_names = list(agents.keys())
+
+    # Use combinations_with_replacement for pairwise tests including self-play
+    for agent1_name, agent2_name in itertools.combinations_with_replacement(
+        agent_names, 2
+    ):
+        agent1 = agents[agent1_name]
+        agent2 = agents[agent2_name]
+
+        # Need a fresh copy of the env for each test pair
+        test_env = env.copy()
+
+        # If testing agent against itself, create a new instance for the opponent
+        if agent1_name == agent2_name:
+             # Re-create agent instance to avoid shared state issues (like MCTS tree)
+            if isinstance(agent2, MCTSAgent):
+                 agent2 = MCTSAgent(env, num_simulations=agent2.mcts.num_simulations)
+            # QLearning and Random agents are generally okay state-wise for self-play,
+            # but recreating MCTS is safer. If QL had internal state beyond Q-table,
+            # it might need recreation too.
+
+        _run_test_games(
+            test_env, agent1_name, agent1, agent2_name, agent2, num_games=NUM_GAMES_TEST
+        )
+
+    print("\n--- Agent Testing Complete ---")
