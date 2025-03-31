@@ -178,7 +178,7 @@ class MCTS:
                 player_who_just_moved = (
                     sim_env.get_current_player() + sim_env.num_players - 1
                 ) % sim_env.num_players
-                if winner == player_who_just_moved: # Player who moved won
+                if winner == player_who_just_moved:  # Player who moved won
                     value = 1.0
                 else:  # Player who moved lost (or draw handled above)
                     value = -1.0
@@ -216,6 +216,8 @@ class AlphaZeroMCTS(MCTS):
         # self.dirichlet_epsilon = dirichlet_epsilon
         # self.dirichlet_alpha = dirichlet_alpha
 
+    # --- Overridden methods from base MCTS ---
+
     # Override selection to use PUCT score
     def _select(
         self, node: MCTSNode, env: BaseEnvironment
@@ -232,7 +234,36 @@ class AlphaZeroMCTS(MCTS):
             env.step(action)  # Update the environment state as we traverse
         return node, env
 
-    # Override expansion to use network priors
+    # --- Helper methods specific to AlphaZeroMCTS ---
+
+    def _puct_score(self, node: MCTSNode, parent_visits: int) -> float:
+        """Calculate the PUCT score for a node."""
+        # Use self.exploration_constant as c_puct
+        if node.visit_count == 0:
+            # If node hasn't been visited, U is based only on prior and parent visits
+            # Ensure parent_visits > 0 for sqrt
+            safe_parent_visits = max(1, parent_visits)
+            u_score = (
+                self.exploration_constant * node.prior * math.sqrt(safe_parent_visits)
+            )
+            return u_score  # Q score is 0 initially
+        else:
+            # Q(s,a) + U(s,a)
+            q_score = node.value  # Mean action value (Q)
+            u_score = (
+                self.exploration_constant
+                * node.prior
+                * math.sqrt(parent_visits)
+                / (1 + node.visit_count)
+            )
+            return q_score + u_score
+
+    # Removed _get_policy_for_legal_actions and _create_action_index_map
+    # Action mapping is now handled by the network's get_action_index method
+
+    # --- Overridden methods from base MCTS ---
+
+    # Override expansion to use network priors and network's action mapping
     def _expand(self, node: MCTSNode, env: BaseEnvironment):
         """Expand the leaf node using prior probabilities from the network."""
         if node.is_expanded() or env.is_game_over():
@@ -249,22 +280,46 @@ class AlphaZeroMCTS(MCTS):
 
         # Get policy priors from the network
         # TODO: Add device handling
-        # Flatten the state dictionary before passing to the network
         flat_state = self.network._flatten_state(current_state_obs)
-        # Ensure network is in eval mode for this prediction step
         self.network.eval()
         with torch.no_grad():
-            policy_logits_tensor, _ = self.network(flat_state)  # Pass flattened tensor
+            policy_logits_tensor, _ = self.network(flat_state)
 
-        policy_logits = (
-            policy_logits_tensor.squeeze(0).cpu().numpy()
-        )  # No detach needed with torch.no_grad()
+        policy_logits = policy_logits_tensor.squeeze(0).cpu().numpy()
 
-        # --- Map policy outputs to legal actions ---
-        # TODO: Move this mapping logic to AlphaZeroNet or a dedicated utility. Critical dependency.
-        action_priors = self._get_policy_for_legal_actions(
-            policy_logits, legal_actions, env
-        )
+        # --- Map policy outputs to legal actions using network's mapping ---
+        action_priors = {}
+        policy_sum_legal = 0.0
+        raw_priors = {}
+
+        for action in legal_actions:
+            action_key = tuple(action) if isinstance(action, list) else action
+            # Use network's method to get the index
+            idx = self.network.get_action_index(action_key)
+
+            if idx is not None and 0 <= idx < len(policy_logits):
+                # Use exp(logit) as raw prior score before normalization
+                raw_prior = float(np.exp(policy_logits[idx]))
+                raw_priors[action_key] = raw_prior
+                policy_sum_legal += raw_prior
+            else:
+                print(
+                    f"Warning: Action {action_key} could not be mapped to a valid index by network. Assigning zero prior."
+                )
+                raw_priors[action_key] = 0.0  # Assign zero prior if mapping fails
+
+        # Normalize the raw priors (effectively softmax over legal actions)
+        if policy_sum_legal > 1e-8:
+            for action, raw_prior in raw_priors.items():
+                action_priors[action] = raw_prior / policy_sum_legal
+        elif legal_actions:
+            print(
+                "Warning: Sum of exp(logits) for legal actions is near zero. Using uniform priors."
+            )
+            prior = 1.0 / len(legal_actions)
+            action_priors = {action: prior for action in legal_actions}
+        else:
+            action_priors = {}  # No legal actions to assign priors to
 
         # Add Dirichlet noise to root node priors during training self-play
         # if node.parent is None and self.dirichlet_epsilon > 0:
@@ -283,21 +338,17 @@ class AlphaZeroMCTS(MCTS):
 
         current_state_obs = env.get_observation()
         # TODO: Add device handling
-        # Flatten the state dictionary before passing to the network
         flat_state = self.network._flatten_state(current_state_obs)
-        # Ensure network is in eval mode for this prediction step
         self.network.eval()
         with torch.no_grad():
-            _, value_tensor = self.network(flat_state)  # Pass flattened tensor
+            _, value_tensor = self.network(flat_state)
 
-        value = value_tensor.squeeze(0).cpu().item()  # Get scalar value
+        value = value_tensor.squeeze(0).cpu().item()
 
         # Value is from the perspective of the current player in 'env'
         return value
 
-    # Backpropagation remains the same (negating value at each step)
-
-    # Search loop needs modification to call network evaluation instead of rollout
+    # Override search loop to use network evaluation instead of rollout
     def search(self, env: BaseEnvironment, state: StateType) -> MCTSNode:
         """Run MCTS search using PUCT selection and network evaluation."""
         self.reset_root()
@@ -313,19 +364,16 @@ class AlphaZeroMCTS(MCTS):
             # 2. Expansion & Evaluation
             value = 0.0
             if not sim_env.is_game_over():
-                # Expand node using network policy priors
+                # Expand node using network policy priors (calls overridden _expand)
                 if not node.is_expanded():
                     self._expand(node, sim_env)
-                # Evaluate the reached state using network value head
-                value = self._rollout(
-                    sim_env
-                )  # Re-use _rollout name for network evaluation
+                # Evaluate the reached state using network value head (calls overridden _rollout)
+                value = self._rollout(sim_env)
                 # Value is from the perspective of the player whose turn it is in sim_env
             else:
                 # Game ended during selection. Determine outcome.
                 winner = sim_env.get_winning_player()
                 # Value from perspective of player who *just moved* to reach this state.
-                # Use the num_players property from the environment
                 player_who_just_moved = (
                     sim_env.get_current_player() + sim_env.num_players - 1
                 ) % sim_env.num_players
@@ -336,7 +384,7 @@ class AlphaZeroMCTS(MCTS):
                 else:
                     value = -1.0
 
-            # 3. Backpropagation
+            # 3. Backpropagation (uses base class method)
             self._backpropagate(node, value)
 
         return self.root
@@ -365,104 +413,5 @@ class AlphaZeroMCTS(MCTS):
             )
             return q_score + u_score
 
-    # TODO: Move these mapping functions out of MCTS - they belong with the Network/Environment logic
-    def _get_policy_for_legal_actions(
-        self,
-        policy_output: np.ndarray,
-        legal_actions: List[ActionType],
-        env: BaseEnvironment,
-    ) -> Dict[ActionType, float]:
-        """
-        Placeholder: Maps raw network policy output to priors for legal actions.
-        CRITICAL: Needs a concrete implementation matching AlphaZeroNet structure.
-        """
-        action_priors = {}
-        policy_sum_legal = 0.0
-        action_to_index_map = self._create_action_index_map(env)
-
-        if not action_to_index_map:
-            print("Warning: Action-to-index map empty. Using uniform priors.")
-            if legal_actions:
-                prior = 1.0 / len(legal_actions)
-                return {action: prior for action in legal_actions}
-            else:
-                return {}
-
-        # Assume policy_output are logits, apply softmax implicitly via normalization
-        raw_priors = {}
-        for action in legal_actions:
-            action_key = tuple(action) if isinstance(action, list) else action
-            idx = action_to_index_map.get(action_key)
-            if idx is not None and 0 <= idx < len(policy_output):
-                # Use exp(logit) as raw prior score before normalization
-                raw_prior = float(np.exp(policy_output[idx]))
-                raw_priors[action_key] = raw_prior
-                policy_sum_legal += raw_prior
-            else:
-                print(
-                    f"Warning: Action {action_key} not found in map or index out of bounds."
-                )
-                raw_priors[action_key] = 0.0  # Assign zero prior if mapping fails
-
-        # Normalize the raw priors (effectively softmax over legal actions)
-        if policy_sum_legal > 1e-8:
-            for action, raw_prior in raw_priors.items():
-                action_priors[action] = raw_prior / policy_sum_legal
-        elif legal_actions:
-            print(
-                "Warning: Sum of exp(logits) for legal actions is near zero. Using uniform priors."
-            )
-            prior = 1.0 / len(legal_actions)
-            action_priors = {action: prior for action in legal_actions}
-        else:
-            action_priors = {}
-
-        return action_priors
-
-    # TODO: Move this mapping function out of MCTS
-    def _create_action_index_map(self, env: BaseEnvironment) -> Dict[ActionType, int]:
-        """
-        Placeholder: Creates a map from hashable action representation to policy index.
-        CRITICAL: Needs specific implementation per environment type matching AlphaZeroNet.
-        """
-        # Use the network's helper method if available
-        if hasattr(self.network, "get_action_index_map"):
-            return self.network.get_action_index_map(env)
-
-        # Fallback to previous placeholder logic (less ideal)
-        print(
-            "Warning: Using placeholder _create_action_index_map in MCTS. Move this logic."
-        )
-        if hasattr(env, "board_size") and isinstance(env, BaseEnvironment):
-            size = env.board_size
-            return {(r, c): r * size + c for r in range(size) for c in range(size)}
-        elif hasattr(env, "initial_piles") and isinstance(env, BaseEnvironment):
-            print("Warning: Using placeholder action indexing for Nim.")
-            max_piles = len(env.initial_piles)
-            max_items = max(env.initial_piles) if env.initial_piles else 1
-            mapping = {}
-            idx = 0
-            for p_idx in range(max_piles):
-                for n_items in range(1, max_items + 1):
-                    mapping[(p_idx, n_items)] = idx
-                    idx += 1
-            expected_size = (
-                self.network._calculate_policy_size(env) if self.network else -1
-            )
-            if idx != expected_size:
-                print(
-                    f"Warning: Nim action map size ({idx}) != expected network policy size ({expected_size})."
-                )
-            return mapping
-        else:
-            print("Warning: Cannot create action index map for this environment type.")
-            return {}
-
-    # def _add_dirichlet_noise(self, priors: Dict[ActionType, float], legal_actions: List[ActionType]) -> Dict[ActionType, float]:
-    #     """Adds Dirichlet noise to the root node priors for exploration."""
-    #     noise = np.random.dirichlet([self.dirichlet_alpha] * len(legal_actions))
-    #     noisy_priors = {}
-    #     for i, action in enumerate(legal_actions):
-    #         action_key = tuple(action) if isinstance(action, list) else action
-    #         noisy_priors[action_key] = (1 - self.dirichlet_epsilon) * priors.get(action_key, 0) + self.dirichlet_epsilon * noise[i]
-    #     return noisy_priors
+    # Removed _get_policy_for_legal_actions and _create_action_index_map
+    # Action mapping is now handled by the network's get_action_index method

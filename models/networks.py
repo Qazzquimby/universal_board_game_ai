@@ -1,10 +1,11 @@
 import torch
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-from typing import Tuple, List
+from typing import Tuple, List, Optional # Import Optional
 
-from environments.base import BaseEnvironment # To get action/observation space info
+from environments.base import BaseEnvironment, ActionType # Import ActionType
 
 class AlphaZeroNet(nn.Module):
     """
@@ -101,16 +102,55 @@ class AlphaZeroNet(nn.Module):
             return env.num_actions
         elif hasattr(env, 'board_size'): # Fallback for grid games
              return env.board_size * env.board_size
-        elif hasattr(env, 'initial_piles'): # Heuristic for Nim
-             # This is a rough upper bound, assumes max removal count = initial pile size
-             return sum(env.initial_piles)
+        elif hasattr(env, 'initial_piles'): # Specific logic for Nim
+             # Calculate size based on (pile_index, num_removed) pairs
+             # Requires knowing the maximum number removable from any pile,
+             # which depends on the initial state. Let's use the max initial pile size.
+             max_removable = max(env.initial_piles) if env.initial_piles else 1
+             num_piles = len(env.initial_piles)
+             return num_piles * max_removable
         else:
-            # Best guess: try getting legal actions and count? Very unreliable.
-            print("Warning: Cannot reliably determine policy size. Trying initial legal actions.")
-            try:
-                return len(env.get_legal_actions())
-            except Exception:
-                 raise ValueError("Environment needs a way to define its total action space size (e.g., num_actions attribute).")
+            raise ValueError(f"Cannot determine policy size for environment type: {type(env).__name__}")
+
+    def get_action_index(self, action: ActionType) -> Optional[int]:
+        """Maps an environment action to the corresponding index in the policy vector."""
+        env_type = type(self.env).__name__
+
+        if env_type == "FourInARow":
+            # Action is (row, col)
+            row, col = action
+            # Ensure board_size is accessible, maybe store it during init?
+            # Assuming env has board_size attribute accessible via self.env
+            if hasattr(self.env, 'board_size'):
+                 return row * self.env.board_size + col
+            else:
+                 print("Warning: Cannot get board_size from env in get_action_index")
+                 return None # Indicate failure
+        elif env_type == "NimEnv":
+            # Action is (pile_index, num_to_remove)
+            pile_idx, num_removed = action
+            if hasattr(self.env, 'initial_piles'):
+                 max_removable = max(self.env.initial_piles) if self.env.initial_piles else 1
+                 # Check bounds
+                 if 0 <= pile_idx < len(self.env.initial_piles) and 1 <= num_removed <= max_removable:
+                      # Map (pile_idx, num_removed) to a flat index
+                      # Example: index = pile_idx * max_removable + (num_removed - 1)
+                      return pile_idx * max_removable + (num_removed - 1)
+                 else:
+                      print(f"Warning: Invalid Nim action {action} for index calculation.")
+                      return None # Indicate failure
+            else:
+                 print("Warning: Cannot get initial_piles from env in get_action_index")
+                 return None # Indicate failure
+        else:
+            print(f"Warning: Action indexing not implemented for env type {env_type}")
+            return None # Indicate failure
+
+    # Optional: Inverse mapping (might be useful later)
+    # def get_action_from_index(self, index: int) -> Optional[ActionType]:
+    #     """Maps a policy vector index back to an environment action."""
+    #     # Implementation would depend on the logic in get_action_index
+    #     pass
 
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:

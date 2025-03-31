@@ -134,23 +134,18 @@ class AlphaZeroAgent(Agent):
         total_visits = np.sum(visit_counts)
 
         if total_visits > 0:
-            # TODO: Move action mapping logic out of MCTS and into Network/Agent/Util
-            # Use the MCTS instance's (potentially problematic) mapping for now
-            action_map = self.mcts._create_action_index_map(self.env)
-            if not action_map:
-                print(
-                    "Warning: Cannot create action map in _calculate_policy_target. Policy target will be zeros."
-                )
-                return policy_target
-
+            # Use the network's action mapping
             for i, action in enumerate(actions):
                 action_key = tuple(action) if isinstance(action, list) else action
-                action_idx = action_map.get(action_key)
+                # Get index from the network
+                action_idx = self.network.get_action_index(action_key)
+
                 if action_idx is not None and 0 <= action_idx < policy_size:
                     policy_target[action_idx] = visit_counts[i] / total_visits
                 else:
+                    # This warning might still occur if get_action_index fails for a valid action
                     print(
-                        f"Warning: Action {action_key} not found in map or index out of bounds during policy target calculation."
+                        f"Warning: Action {action_key} could not be mapped to index during policy target calculation."
                     )
         else:
             # Handle case with no visits (should be rare if search runs)
