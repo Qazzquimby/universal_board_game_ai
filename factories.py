@@ -1,17 +1,20 @@
 from typing import Dict
 
 from core.agent_interface import Agent
-# Import all config types
-from core.config import AppConfig, EnvConfig, QLearningConfig, MCTSConfig, AlphaZeroConfig
+from core.config import (
+    AppConfig,
+    EnvConfig,
+)
 from environments.base import BaseEnvironment
 from environments.four_in_a_row import FourInARow
 from environments.nim_env import NimEnv
 from agents.mcts_agent import MCTSAgent
 from agents.qlearning import (
     QLearningAgent,
-    train_agent as train_q_agent,
+    train_agent as train_q_agent,  # Keep Q-learning training here for now
 )
 from agents.random_agent import RandomAgent
+from agents.alphazero_agent import AlphaZeroAgent  # Import AlphaZeroAgent
 from utils.plotting import plot_results
 
 
@@ -44,9 +47,9 @@ def get_agents(env: BaseEnvironment, config: AppConfig) -> Dict[str, Agent]:
         print(
             f"Training Q-learning agent for {config.training.num_episodes} episodes..."
         )
-        ql_agent.exploration_rate = (
-            config.q_learning.exploration_rate
-        )  # Reset exploration for training
+
+        # Reset exploration for training
+        ql_agent.exploration_rate = config.q_learning.exploration_rate
         wins = train_q_agent(
             env,
             ql_agent,
@@ -55,18 +58,32 @@ def get_agents(env: BaseEnvironment, config: AppConfig) -> Dict[str, Agent]:
         )
         plot_results(wins, window_size=config.training.plot_window)
         ql_agent.save()  # Save uses internal path logic now
-        ql_agent.exploration_rate = (
-            config.q_learning.min_exploration
-        )  # Set low exploration after training/saving
+
+        # Set low exploration after training/saving
+        ql_agent.exploration_rate = config.q_learning.min_exploration
     else:
         print(f"Loaded pre-trained Q-learning agent.")
 
-    # Ensure Q-agent used for testing has exploration turned off or minimized.
+    # Ensure Q-agent used for testing has exploration turned off or minimized
     ql_agent.exploration_rate = config.q_learning.min_exploration
+
+    # --- AlphaZero Agent Initialization ---
+    # Instantiate AlphaZero agent and attempt to load weights.
+    # Training should happen separately via train_alphazero.py
+    az_agent = AlphaZeroAgent(env, config.alpha_zero)
+    if not az_agent.load():
+        print(
+            "WARNING: Could not load pre-trained AlphaZero weights. Agent will play randomly/poorly."
+        )
+        # Do NOT train here. Evaluation assumes agent is already trained.
+    else:
+        print("Loaded pre-trained AlphaZero agent.")
+    az_agent.network.eval()  # Ensure network is in eval mode for evaluation
 
     # --- Other Agents ---
     agents = {
         "QLearning": ql_agent,
+        "AlphaZero": az_agent,  # Add the AlphaZero agent
         "MCTS_50": MCTSAgent(
             env,
             num_simulations=config.mcts.num_simulations_short,

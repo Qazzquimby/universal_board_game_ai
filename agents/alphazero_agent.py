@@ -3,6 +3,7 @@ from pathlib import Path
 from collections import deque  # Use deque for replay buffer
 
 import torch
+import torch.nn.functional as F
 import numpy as np
 
 from core.agent_interface import Agent
@@ -185,36 +186,74 @@ class AlphaZeroAgent(Agent):
         # Clear the temporary history
         self._current_episode_history = []
 
-    def learn(self):  # Removed episode_history argument, learns from buffer
+    def _calculate_loss(
+        self, policy_logits, value_preds, policy_targets, value_targets
+    ):
+        """Calculates the combined loss for AlphaZero."""
+        # Value loss: Mean Squared Error
+        value_loss = F.mse_loss(value_preds, value_targets)
+
+        # Policy loss: Cross-Entropy between predicted policy logits and MCTS policy target
+        # Ensure targets are probabilities (sum to 1) and logits are raw scores
+        # CrossEntropyLoss expects logits as input and class indices or probabilities as target.
+        # Here, policy_targets are probabilities derived from MCTS visits.
+        policy_loss = F.cross_entropy(policy_logits, policy_targets)
+
+        # Combine losses (typically simple summation)
+        total_loss = value_loss + policy_loss
+        return total_loss, value_loss, policy_loss
+
+    def learn(self, optimizer: torch.optim.Optimizer):
         """
         Update the neural network by sampling from the replay buffer.
-        (Placeholder - Actual implementation needed)
         """
-        if (
-            len(self.replay_buffer) < self.config.batch_size
-        ):  # Need config for batch_size
+        if len(self.replay_buffer) < self.config.batch_size:
+            # print(f"Skipping learn step: Buffer size {len(self.replay_buffer)} < Batch size {self.config.batch_size}")
             return  # Not enough data to train yet
 
-        # TODO: Implement the actual learning step:
         # 1. Sample a batch from self.replay_buffer.
-        #    batch = random.sample(self.replay_buffer, self.config.batch_size)
-        # 2. Format data into batches (states, target policies, target values).
-        #    states_batch = torch.stack([self.network._flatten_state(s) for s, _, _ in batch])
-        #    policy_targets_batch = torch.stack([torch.tensor(p, dtype=torch.float32) for _, p, _ in batch])
-        #    value_targets_batch = torch.tensor([[v] for _, _, v in batch], dtype=torch.float32)
-        # 3. Perform gradient descent step on the network.
-        #    self.network.train()
-        #    self.optimizer.zero_grad()
-        #    policy_logits, value_preds = self.network(states_batch) # Need to adapt forward for batch
-        #    loss = self.calculate_loss(policy_logits, value_preds, policy_targets_batch, value_targets_batch)
-        #    loss.backward()
-        #    self.optimizer.step()
-        #    self.network.eval()
+        batch = random.sample(self.replay_buffer, self.config.batch_size)
 
-        print(
-            f"AlphaZeroAgent.learn() called - Placeholder. Buffer size: {len(self.replay_buffer)}"
+        # 2. Format data into batches (states, target policies, target values).
+        #    Need to handle device placement (e.g., self.device) if using GPU.
+        #    The network's _flatten_state expects a single state dict.
+        #    We need to process each state individually first, then stack.
+        states_list = [s for s, _, _ in batch]
+        policy_targets_list = [
+            torch.tensor(p, dtype=torch.float32) for _, p, _ in batch
+        ]
+        value_targets_list = [
+            torch.tensor([v], dtype=torch.float32) for _, _, v in batch
+        ]  # Ensure value target is shape [1]
+
+        # Flatten states and stack into a batch tensor
+        # TODO: Add device handling (e.g., .to(self.device))
+        states_batch = torch.stack(
+            [self.network._flatten_state(s) for s in states_list]
         )
-        pass
+        policy_targets_batch = torch.stack(policy_targets_list)
+        value_targets_batch = torch.stack(value_targets_list)
+
+        # 3. Perform gradient descent step on the network.
+        self.network.train()  # Ensure network is in training mode
+        optimizer.zero_grad()
+
+        # Forward pass - network needs to handle batch input
+        policy_logits, value_preds = self.network(states_batch)  # Pass the batch tensor
+
+        # Calculate loss
+        total_loss, value_loss, policy_loss = self._calculate_loss(
+            policy_logits, value_preds, policy_targets_batch, value_targets_batch
+        )
+
+        # Backward pass and optimizer step
+        total_loss.backward()
+        optimizer.step()
+
+        # Optional: Log losses (e.g., using TensorBoard or just printing)
+        # print(f"  Learn Step: Total Loss={total_loss.item():.4f}, Value Loss={value_loss.item():.4f}, Policy Loss={policy_loss.item():.4f}")
+
+        self.network.eval()  # Switch back to eval mode after training step
 
     def _get_save_path(self) -> Path:
         """Constructs the save file path for the network weights."""

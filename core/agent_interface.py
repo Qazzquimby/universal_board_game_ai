@@ -1,5 +1,6 @@
 import abc
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
+
 
 class Agent(abc.ABC):
     """Abstract base class for all agents."""
@@ -25,17 +26,16 @@ class Agent(abc.ABC):
         Args:
             episode_history: A list of (state, action, reward, done) tuples from an episode.
         """
-        pass # Optional method
+        pass  # Optional method
 
-    def save(self, filepath: str) -> None:
+    def save(self) -> None:
         """
         Save the agent's state (e.g., model weights, Q-table).
         Default implementation raises NotImplementedError.
-
-        Args:
-            filepath: The path to save the agent state to.
         """
-        raise NotImplementedError(f"Save method not implemented for {self.__class__.__name__}")
+        raise NotImplementedError(
+            f"Save method not implemented for {self.__class__.__name__}"
+        )
 
     def load(self, filepath: str) -> bool:
         """
@@ -48,11 +48,13 @@ class Agent(abc.ABC):
         Returns:
             True if loading was successful, False otherwise.
         """
-        raise NotImplementedError(f"Load method not implemented for {self.__class__.__name__}")
+        raise NotImplementedError(
+            f"Load method not implemented for {self.__class__.__name__}"
+        )
 
     def reset(self) -> None:
         """
         Reset any internal state of the agent (e.g., MCTS tree).
         Default implementation does nothing.
         """
-        pass # Optional method
+        pass  # Optional method

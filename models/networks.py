@@ -113,22 +113,24 @@ class AlphaZeroNet(nn.Module):
                  raise ValueError("Environment needs a way to define its total action space size (e.g., num_actions attribute).")
 
 
-    def forward(self, state_dict: dict) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Performs a forward pass.
+        Performs a forward pass. Accepts either a single flattened state tensor
+        or a batch of flattened state tensors.
 
         Args:
-            state_dict: The environment state observation dictionary.
+            x: A tensor representing the flattened state(s).
+               Shape [input_size] for single instance, or [batch_size, input_size] for batch.
 
         Returns:
             A tuple containing (policy_logits, value).
+            Shapes: policy_logits [batch_size, policy_size], value [batch_size, 1]
         """
-        flat_state = self._flatten_state(state_dict)
-        # Add batch dimension if not present
-        if flat_state.dim() == 1:
-            flat_state = flat_state.unsqueeze(0)
+        # Add batch dimension if processing a single instance
+        if x.dim() == 1:
+            x = x.unsqueeze(0)
 
-        shared_output = self.shared_net(flat_state)
+        shared_output = self.shared_net(x)
         policy_logits = self.policy_head(shared_output)
         value = self.value_head(shared_output)
         return policy_logits, value
@@ -145,8 +147,11 @@ class AlphaZeroNet(nn.Module):
             A tuple containing (policy_probabilities_numpy, value_numpy).
         """
         self.eval() # Set model to evaluation mode
+        flat_state = self._flatten_state(state_dict) # Flatten the input dict
+        # TODO: Add device handling if needed: flat_state = flat_state.to(self.device)
         with torch.no_grad():
-            policy_logits, value = self.forward(state_dict)
+            # Pass the flattened tensor to forward
+            policy_logits, value = self.forward(flat_state)
 
             # Apply softmax to get probabilities
             policy_probs = F.softmax(policy_logits, dim=1)
