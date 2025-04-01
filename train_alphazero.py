@@ -137,6 +137,68 @@ def save_game_log(
         print(f"Error saving game log for iter {iteration}, game {game_index}: {e}")
 
 
+# --- Helper Function for Loading Game Logs ---
+
+def load_game_logs_into_buffer(
+    agent: AlphaZeroAgent, env_name: str, buffer_limit: int
+):
+    """Loads existing game logs from LOG_DIR into the agent's replay buffer."""
+    loaded_games = 0
+    loaded_steps = 0
+    if not LOG_DIR.exists():
+        print("Log directory not found. Starting with an empty buffer.")
+        return
+
+    print(f"Scanning {LOG_DIR} for existing '{env_name}' game logs...")
+    log_files = sorted(LOG_DIR.glob(f"{env_name}_iter*.json")) # Sort for potential consistency
+
+    if not log_files:
+        print("No existing game logs found for this environment.")
+        return
+
+    for filepath in tqdm(log_files, desc="Loading Logs"):
+        if len(agent.replay_buffer) >= buffer_limit:
+            print(f"Replay buffer reached limit ({buffer_limit}). Stopping log loading.")
+            break
+        try:
+            with open(filepath, "r") as f:
+                game_data = json.load(f)
+
+            if not isinstance(game_data, list):
+                print(f"Warning: Skipping invalid log file (not a list): {filepath.name}")
+                continue
+
+            steps_in_game = 0
+            for step_data in game_data:
+                 if len(agent.replay_buffer) >= buffer_limit:
+                     break # Stop adding steps if buffer full mid-game
+
+                 # Extract required components for replay buffer
+                 state = step_data.get("state")
+                 policy_target_list = step_data.get("policy_target")
+                 value_target = step_data.get("value_target")
+
+                 if state is not None and policy_target_list is not None and value_target is not None:
+                     # Convert policy back to numpy array
+                     policy_target = np.array(policy_target_list, dtype=np.float32)
+                     agent.replay_buffer.append((state, policy_target, value_target))
+                     loaded_steps += 1
+                     steps_in_game += 1
+                 else:
+                     print(f"Warning: Skipping step with missing data in {filepath.name}")
+
+            if steps_in_game > 0:
+                loaded_games += 1
+
+        except json.JSONDecodeError:
+            print(f"Warning: Skipping corrupted JSON file: {filepath.name}")
+        except Exception as e:
+            print(f"Warning: Error processing log file {filepath.name}: {e}")
+
+    print(f"Loaded {loaded_steps} steps from {loaded_games} game logs into replay buffer.")
+    print(f"Current buffer size: {len(agent.replay_buffer)}/{buffer_limit}")
+
+
 # --- Main Training Function ---
 
 def run_training(config: AppConfig, env_name_override: str = None):
@@ -158,6 +220,11 @@ def run_training(config: AppConfig, env_name_override: str = None):
         print("Loaded existing weights. Continuing training.")
 
     # Optimizer is managed internally by the agent
+
+    # --- Load Existing Game Logs into Buffer ---
+    load_game_logs_into_buffer(
+        agent, config.env.name, config.alpha_zero.replay_buffer_size
+    )
 
     # --- Training Loop ---
     # Use values from config
