@@ -67,10 +67,14 @@ class MuZeroAgent(Agent):
 
         # Run MuZero MCTS search starting from the current observation
         # MuZeroMCTS internally handles representation, dynamics, prediction
-        # TODO: MuZero MCTS search needs the actual legal actions for the root node.
-        # This requires passing the environment or state to search, or modifying search signature.
-        # Let's assume search can get legal actions from the state dict for now.
-        root_node = self.mcts.search(state) # Pass observation dict
+        # Get legal actions from the *real* environment state for the root node
+        # Create a temporary env to get actions without modifying the main one?
+        # Or assume self.env reflects the state correctly. Let's assume self.env is correct.
+        # A cleaner way might be to pass env to act, but let's use self.env for now.
+        current_legal_actions = self.env.get_legal_actions()
+
+        # Pass observation and legal actions to MCTS search
+        root_node = self.mcts.search(state, current_legal_actions)
 
         # --- Action Selection (similar to AlphaZero) ---
         if not root_node.children:
@@ -143,7 +147,10 @@ class MuZeroAgent(Agent):
         # 4. Perform gradient descent step using self.optimizer.
 
         print(f"MuZeroAgent.learn() called - Placeholder. Buffer size: {len(self.replay_buffer)}")
-        pass # Complex implementation needed
+        # TODO: Implement the actual MuZero loss calculation and training step.
+        # This will involve calling network.representation, network.dynamics, network.prediction
+        # within the unrolling loop and comparing with targets (MCTS policy, n-step returns, actual rewards).
+        pass
 
 
     def _get_save_path(self) -> Path:

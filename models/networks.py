@@ -158,11 +158,37 @@ class AlphaZeroNet(nn.Module):
             print(f"Warning: Action indexing not implemented for env type {env_type}")
             return None  # Indicate failure
 
-    # Optional: Inverse mapping (might be useful later)
-    # def get_action_from_index(self, index: int) -> Optional[ActionType]:
-    #     """Maps a policy vector index back to an environment action."""
-    #     # Implementation would depend on the logic in get_action_index
-    #     pass
+    def get_action_from_index(self, index: int) -> Optional[ActionType]:
+        """Maps a policy vector index back to an environment action."""
+        env_type = type(self.env).__name__.lower()
+        policy_size = self._calculate_policy_size(self.env)
+
+        if not (0 <= index < policy_size):
+            # print(f"Warning: Index {index} out of bounds for policy size {policy_size}")
+            return None
+
+        if env_type == "connect4":
+            # Index directly corresponds to column
+            return index
+        elif env_type == "nimenv":
+            if hasattr(self.env, "initial_piles"):
+                max_removable = max(self.env.initial_piles) if self.env.initial_piles else 1
+                if max_removable == 0: return None # Avoid division by zero if max_removable is 0
+                pile_idx = index // max_removable
+                num_removed = (index % max_removable) + 1
+                # Basic check if this action could be valid (doesn't check current pile state)
+                if 0 <= pile_idx < len(self.env.initial_piles) and num_removed >= 1:
+                     return (pile_idx, num_removed)
+                else:
+                     # print(f"Warning: Could not reconstruct valid Nim action for index {index}")
+                     return None
+            else:
+                # print("Warning: Cannot get initial_piles for Nim action reconstruction.")
+                return None
+        else:
+            print(f"Warning: Inverse action mapping not implemented for env type {env_type}")
+            return None
+
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -381,6 +407,30 @@ class MuZeroNet(nn.Module):
                 return None
         else:
             return None
+
+    # Add inverse mapping for MuZeroNet as well (can reuse AlphaZeroNet's logic)
+    def get_action_from_index(self, index: int) -> Optional[ActionType]:
+        """Maps a policy vector index back to an environment action."""
+        env_type = type(self.env).__name__.lower()
+        policy_size = self._calculate_policy_size(self.env)
+
+        if not (0 <= index < policy_size):
+            return None
+
+        if env_type == "connect4":
+            return index
+        elif env_type == "nimenv":
+            if hasattr(self.env, "initial_piles"):
+                max_removable = max(self.env.initial_piles) if self.env.initial_piles else 1
+                if max_removable == 0: return None
+                pile_idx = index // max_removable
+                num_removed = (index % max_removable) + 1
+                if 0 <= pile_idx < len(self.env.initial_piles) and num_removed >= 1:
+                     return (pile_idx, num_removed)
+                else: return None
+            else: return None
+        else: return None
+
 
     def _encode_action(self, action: ActionType) -> torch.Tensor:
         """Encodes an action for input to the dynamics function."""
