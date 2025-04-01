@@ -148,11 +148,11 @@ class AlphaZeroAgent(Agent):
             policy_target = self._calculate_policy_target(
                 root_node, actions, visit_counts
             )
-            # Store state and policy target temporarily. The final outcome (value) will be added later.
-            # Ensure state is copied or immutable if necessary
-            # state_copy = deepcopy(state) # Or rely on environment state structure
+            # Store state, chosen action, and policy target temporarily.
+            # The final outcome (value) will be added later in finish_episode.
+            # Ensure state is copied or immutable if necessary (current state dicts seem okay)
             self._current_episode_history.append(
-                {"state": state, "policy_target": policy_target}
+                (state, chosen_action, policy_target) # Store as tuple
             )
 
         return chosen_action
@@ -189,19 +189,22 @@ class AlphaZeroAgent(Agent):
     def finish_episode(self, final_outcome: float):
         """
         Called at the end of a self-play episode. Assigns the final outcome
-        to all steps in the temporary history and adds them to the replay buffer.
+        to all steps in the temporary history, adds the necessary data to the
+        replay buffer, and returns the complete game history for logging.
+
+        Args:
+            final_outcome: The outcome for player 0 (+1 win, -1 loss, 0 draw).
+
+        Returns:
+            List[Tuple[StateType, ActionType, np.ndarray, float]]: The full game history,
+                where each tuple is (state, action, policy_target, value_target).
         """
+        processed_history = []
         num_steps = len(self._current_episode_history)
-        for i, step_data in enumerate(self._current_episode_history):
-            # The value target is the final game outcome (+1 win, -1 loss, 0 draw)
-            # from the perspective of the player *at that state*.
-            # If the current player at step i eventually won, value is +1. If they lost, -1.
-            # Assuming final_outcome is from player 0's perspective.
-            # Need state to know whose turn it was.
-            state_at_step = step_data["state"]
-            player_at_step = state_at_step.get(
-                "current_player", -1
-            )  # Get player from state
+
+        for i, (state_at_step, action_taken, policy_target) in enumerate(self._current_episode_history):
+            # Determine the value target from the perspective of the player at that state
+            player_at_step = state_at_step.get("current_player", -1)
 
             if player_at_step == 0:
                 value_target = final_outcome
@@ -209,17 +212,25 @@ class AlphaZeroAgent(Agent):
                 value_target = -final_outcome  # Flip outcome for opponent
             else:
                 print(
-                    f"Warning: Unknown player {player_at_step} at step {i}. Cannot assign value target."
+                    f"Warning: Unknown player {player_at_step} at step {i}. Assigning value target 0.0."
                 )
-                value_target = 0.0  # Default to 0 if player unknown
+                value_target = 0.0
 
             # Add the experience tuple (state, policy_target, value_target) to replay buffer
+            # Note: action_taken is NOT added to the replay buffer, only state, policy, value.
             self.replay_buffer.append(
-                (step_data["state"], step_data["policy_target"], value_target)
+                (state_at_step, policy_target, value_target)
             )
 
-        # Clear the temporary history
+            # Store the full step info for the returned history log
+            processed_history.append(
+                (state_at_step, action_taken, policy_target, value_target)
+            )
+
+        # Clear the temporary history *after* processing
         self._current_episode_history = []
+
+        return processed_history
 
     def _calculate_loss(
         self, policy_logits, value_preds, policy_targets, value_targets

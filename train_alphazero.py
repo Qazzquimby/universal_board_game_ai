@@ -1,17 +1,25 @@
 # Standard library imports
 import sys
-from typing import Tuple
+import json
+import datetime
+from pathlib import Path
+from typing import Tuple, List, Dict, Any
 
 # Third-party imports
 import torch.optim as optim
+import numpy as np # Needed for JSON conversion helper
 from tqdm import tqdm
 
 # Local application imports
 from core.config import AppConfig
-from environments.base import BaseEnvironment
+from environments.base import BaseEnvironment, StateType, ActionType
 from agents.alphazero_agent import AlphaZeroAgent
 from factories import get_environment
 from utils.plotting import plot_results
+
+PROJECT_ROOT = Path(__file__).parent.parent
+DATA_DIR = PROJECT_ROOT / "data"
+LOG_DIR = DATA_DIR / "game_logs"
 
 
 # --- Helper Function for Self-Play ---
@@ -32,9 +40,10 @@ def run_self_play_game(
         A tuple containing:
         - final_outcome: The outcome for player 0 (+1 win, -1 loss, 0 draw).
         - num_steps: The number of steps taken in the game.
+        - game_history: The processed game history list from the agent.
     """
     obs = env.reset()
-    agent.reset()  # Reset agent state (e.g., MCTS tree) for the new game
+    agent.reset() # Reset agent state (e.g., MCTS tree, internal history)
     done = False
     game_steps = 0
 
@@ -74,9 +83,58 @@ def run_self_play_game(
             final_outcome = 0.0
 
     # Tell the agent the final outcome to store experiences in the buffer
-    agent.finish_episode(final_outcome)
+    # AND get the processed history back for logging.
+    game_history = agent.finish_episode(final_outcome)
 
-    return final_outcome, game_steps
+    return final_outcome, game_steps, game_history
+
+
+# --- Helper Function for Saving Game Logs ---
+
+def _default_serializer(obj):
+    """JSON serializer for objects not serializable by default json code"""
+    if isinstance(obj, np.ndarray):
+        return obj.tolist() # Convert numpy arrays to lists
+    # Add other custom types here if needed
+    # Example: if isinstance(obj, SomeCustomClass): return obj.to_dict()
+    try:
+        return obj.__dict__ # Fallback for simple objects
+    except AttributeError:
+         raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
+
+
+def save_game_log(
+    game_history: List[Tuple[StateType, ActionType, np.ndarray, float]],
+    iteration: int,
+    game_index: int,
+    env_name: str,
+):
+    """Saves the processed game history to a JSON file."""
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        filename = f"{env_name}_iter{iteration:04d}_game{game_index:04d}_{timestamp}.json"
+        filepath = LOG_DIR / filename
+
+        # Prepare data for JSON (convert numpy arrays)
+        serializable_history = []
+        for state, action, policy, value in game_history:
+             # Ensure state is serializable (should be if it's dicts/lists/primitives)
+             # Ensure action is serializable (should be if int/tuple)
+             serializable_history.append(
+                 {
+                     "state": state,
+                     "action": action,
+                     "policy_target": policy.tolist(), # Convert numpy array
+                     "value_target": value,
+                 }
+             )
+
+        with open(filepath, "w") as f:
+            json.dump(serializable_history, f, indent=2) # Use default_serializer if needed later
+
+    except Exception as e:
+        print(f"Error saving game log for iter {iteration}, game {game_index}: {e}")
 
 
 # --- Main Training Function ---
@@ -121,11 +179,19 @@ def run_training(config: AppConfig, env_name_override: str = None):
         print(f"\n--- Iteration {iteration + 1}/{num_training_iterations} ---")
 
         # 1. Self-Play Phase
-        agent.network.eval()
+        agent.network.eval() # Ensure network is in eval mode for self-play actions
         print("Running self-play games...")
-        for _ in inner_loop_iterator:
-            outcome, steps = run_self_play_game(env, agent)
+        # Use enumerate to get game index for logging
+        current_iteration_games = 0
+        for game_idx in inner_loop_iterator:
+            outcome, steps, history = run_self_play_game(env, agent)
             game_outcomes.append(outcome)
+            current_iteration_games += 1
+
+            # Save the game log after each game
+            save_game_log(history, iteration + 1, game_idx + 1, config.env.name)
+
+        print(f"Completed {current_iteration_games} self-play games for iteration {iteration + 1}.")
 
         # 2. Learning Phase
         print("Running learning step...")
