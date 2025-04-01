@@ -80,6 +80,27 @@ class AlphaZeroAgent(Agent):
         # Ensure network is in evaluation mode for inference
         self.network.eval()
 
+        # --- Optional Debug Print: Network Prediction ---
+        if self.config.debug_mode:
+            try:
+                policy_np, value_np = self.network.predict(state)
+                print(f"[DEBUG Act] State: {state.get('board', state.get('piles', 'N/A'))}")
+                print(f"[DEBUG Act] Network Value Prediction: {value_np:.4f}")
+                # Print top N policy priors for brevity
+                top_k = 5
+                legal_actions = self.env.get_legal_actions() # Need env copy? No, predict doesn't change state
+                action_probs = {}
+                for action in legal_actions:
+                     idx = self.network.get_action_index(action)
+                     if idx is not None and 0 <= idx < len(policy_np):
+                          action_probs[action] = policy_np[idx]
+                sorted_probs = sorted(action_probs.items(), key=lambda item: item[1], reverse=True)
+                print(f"[DEBUG Act] Network Policy Priors (Top {top_k} Legal):")
+                for action, prob in sorted_probs[:top_k]:
+                    print(f"  - {action}: {prob:.4f}")
+            except Exception as e:
+                print(f"[DEBUG Act] Error during network predict debug: {e}")
+
         # Run MCTS search from the current state
         # The modified MCTS search will use the network
         root_node = self.mcts.search(self.env, state)
@@ -111,6 +132,15 @@ class AlphaZeroAgent(Agent):
             chosen_action_index = np.argmax(visit_counts)
 
         chosen_action = actions[chosen_action_index]
+
+        # --- Optional Debug Print: MCTS Results ---
+        if self.config.debug_mode:
+            print(f"[DEBUG Act] MCTS Visit Counts:")
+            sorted_visits = sorted(zip(actions, visit_counts), key=lambda item: item[1], reverse=True)
+            for action, visits in sorted_visits:
+                 print(f"  - {action}: {visits}")
+            print(f"[DEBUG Act] Chosen Action (Train={train}): {chosen_action}")
+
 
         # --- Store data for training if in training mode ---
         if train:
@@ -257,8 +287,9 @@ class AlphaZeroAgent(Agent):
         total_loss.backward()
         self.optimizer.step()  # Use the agent's internal optimizer
 
-        # Optional: Log losses (e.g., using TensorBoard or just printing)
-        # print(f"  Learn Step: Total Loss={total_loss.item():.4f}, Value Loss={value_loss.item():.4f}, Policy Loss={policy_loss.item():.4f}")
+        # Optional: Log losses
+        if self.config.debug_mode:
+             print(f"[DEBUG Learn] Step Losses: Total={total_loss.item():.4f}, Value={value_loss.item():.4f}, Policy={policy_loss.item():.4f}")
 
         self.network.eval()  # Switch back to eval mode after training step
 

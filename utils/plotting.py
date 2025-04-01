@@ -1,5 +1,5 @@
 import matplotlib.pyplot as plt
-import numpy as np
+
 
 def plot_results(win_history, window_size=100):
     """Plot the training results (win/loss/draw rates)."""
@@ -21,18 +21,29 @@ def plot_results(win_history, window_size=100):
             loss_rates.append(window.count(-1) / actual_window_size)
 
         episodes = range(actual_window_size - 1, len(win_history))
-        plt.plot(episodes, win_rates, "g-", label=f"Win Rate (Avg over {actual_window_size})")
-        plt.plot(episodes, draw_rates, "y-", label=f"Draw Rate (Avg over {actual_window_size})")
-        plt.plot(episodes, loss_rates, "r-", label=f"Loss Rate (Avg over {actual_window_size})")
+        plt.plot(
+            episodes, win_rates, "g-", label=f"Win Rate (Avg over {actual_window_size})"
+        )
+        plt.plot(
+            episodes,
+            draw_rates,
+            "y-",
+            label=f"Draw Rate (Avg over {actual_window_size})",
+        )
+        plt.plot(
+            episodes,
+            loss_rates,
+            "r-",
+            label=f"Loss Rate (Avg over {actual_window_size})",
+        )
         plt.legend()
-        plt.ylim(-0.1, 1.1) # Set Y-axis limits for rates
+        plt.ylim(-0.1, 1.1)  # Set Y-axis limits for rates
 
     else:
         # Plot raw outcomes if not enough data for smoothing
-        plt.plot(win_history, 'b.', label='Episode Outcome (1:Win, 0:Draw, -1:Loss)')
+        plt.plot(win_history, "b.", label="Episode Outcome (1:Win, 0:Draw, -1:Loss)")
         plt.legend()
-        plt.ylim(-1.1, 1.1) # Set Y-axis limits for outcomes
-
+        plt.ylim(-1.1, 1.1)  # Set Y-axis limits for outcomes
 
     plt.title("Agent Training Performance Over Time")
     plt.xlabel("Episode")

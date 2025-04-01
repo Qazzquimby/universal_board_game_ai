@@ -291,41 +291,35 @@ class AlphaZeroMCTS(MCTS):
         with torch.no_grad():
             policy_logits_tensor, _ = self.network(flat_state)
 
-        policy_logits = policy_logits_tensor.squeeze(0).cpu().numpy()
+        # Apply softmax to the raw logits to get probabilities over *all* actions
+        policy_probs = torch.softmax(policy_logits_tensor.squeeze(0), dim=0).cpu().numpy()
 
-        # --- Map policy outputs to legal actions using network's mapping ---
+        # --- Assign priors P(s,a) using the network's probabilities ---
         action_priors = {}
-        policy_sum_legal = 0.0
-        raw_priors = {}
-
         for action in legal_actions:
             action_key = tuple(action) if isinstance(action, list) else action
             # Use network's method to get the index
             idx = self.network.get_action_index(action_key)
 
-            if idx is not None and 0 <= idx < len(policy_logits):
-                # Use exp(logit) as raw prior score before normalization
-                raw_prior = float(np.exp(policy_logits[idx]))
-                raw_priors[action_key] = raw_prior
-                policy_sum_legal += raw_prior
+            if idx is not None and 0 <= idx < len(policy_probs):
+                # Use the probability from the softmax output directly as the prior
+                action_priors[action_key] = float(policy_probs[idx])
             else:
+                # This case should ideally not happen if action mapping is correct
                 print(
-                    f"Warning: Action {action_key} could not be mapped to a valid index by network. Assigning zero prior."
+                    f"Warning: Action {action_key} could not be mapped to a valid index by network during expansion. Assigning zero prior."
                 )
-                raw_priors[action_key] = 0.0  # Assign zero prior if mapping fails
+                action_priors[action_key] = 0.0
 
-        # Normalize the raw priors (effectively softmax over legal actions)
-        if policy_sum_legal > 1e-8:
-            for action, raw_prior in raw_priors.items():
-                action_priors[action] = raw_prior / policy_sum_legal
-        elif legal_actions:
-            print(
-                "Warning: Sum of exp(logits) for legal actions is near zero. Using uniform priors."
-            )
-            prior = 1.0 / len(legal_actions)
-            action_priors = {action: prior for action in legal_actions}
-        else:
-            action_priors = {}  # No legal actions to assign priors to
+        # Note: We do NOT re-normalize here. The PUCT formula uses the P(s,a)
+        # from the network's policy head distribution directly.
+        # If the sum of priors for legal actions is zero (e.g., network assigns zero prob to all legal moves),
+        # the selection might behave unexpectedly. Handle this?
+        # For now, let MCTS proceed; PUCT score will rely solely on Q-value if prior is 0.
+        if not action_priors and legal_actions:
+             print("Warning: All legal actions received zero prior probability from the network.")
+             # Fallback? Maybe uniform? Let's stick to network priors for now.
+             pass
 
         # Add Dirichlet noise to root node priors during training self-play
         # if node.parent is None and self.dirichlet_epsilon > 0:

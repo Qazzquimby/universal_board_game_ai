@@ -4,11 +4,11 @@ from typing import List
 # --- Environment Configuration ---
 @dataclass
 class EnvConfig:
-    name: str = "FourInARow" # Default environment
-    board_size: int = 4 # Specific to FourInARow
+    name: str = "FourInARow"  # Default environment
+    board_size: int = 4  # Specific to FourInARow
     num_players: int = 2
-    max_steps: int = field(init=False) # Calculated post-init
-    nim_piles: List[int] = field(default_factory=lambda: [3, 5, 7]) # Specific to Nim
+    max_steps: int = field(init=False)  # Calculated post-init
+    nim_piles: List[int] = field(default_factory=lambda: [3, 5, 7])  # Specific to Nim
 
     def __post_init__(self):
         # Calculate max_steps based on board_size if applicable
@@ -20,7 +20,7 @@ class EnvConfig:
 class QLearningConfig:
     learning_rate: float = 0.1
     discount_factor: float = 0.95
-    exploration_rate: float = 1.0 # Initial exploration
+    exploration_rate: float = 1.0  # Initial exploration
     exploration_decay: float = 0.999
     min_exploration: float = 0.01
 
@@ -28,21 +28,22 @@ class QLearningConfig:
 @dataclass
 class MCTSConfig:
     exploration_constant: float = 1.41
-    discount_factor: float = 1.0 # Discount within the search tree
+    discount_factor: float = 1.0  # Discount within the search tree
     num_simulations_short: int = 50
     num_simulations_long: int = 200
 
 
 @dataclass
 class AlphaZeroConfig:
-    num_simulations: int = 100 # MCTS simulations per move
-    cpuct: float = 1.0 # Exploration constant in PUCT formula
+    num_simulations: int = 100  # MCTS simulations per move
+    cpuct: float = 1.0  # Exploration constant in PUCT formula
     learning_rate: float = 0.001
     weight_decay: float = 0.0001
-    hidden_layer_size: int = 128 # Size for the MLP hidden layers
-    num_hidden_layers: int = 2 # Number of hidden layers in the MLP
+    hidden_layer_size: int = 128  # Size for the MLP hidden layers
+    num_hidden_layers: int = 2  # Number of hidden layers in the MLP
     replay_buffer_size: int = 10000
     batch_size: int = 64
+    debug_mode: bool = True  # Add flag for detailed debug prints
 
 
 # --- Training Configuration ---
@@ -53,7 +54,7 @@ class TrainingConfig:
     plot_window: int = 200
 
     # Specific to AlphaZero training loop in train_alphazero.py
-    num_iterations: int = 100
+    num_iterations: int = 2
     num_episodes_per_iteration: int = 25
 
 
@@ -78,6 +79,7 @@ class AppConfig:
     evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
     # Flag to indicate if running in smoke test mode (can be set by test runner)
     smoke_test: bool = False
+
 
 # Example usage:
 # config = AppConfig()
