@@ -30,8 +30,7 @@ class QLearningConfig:
 class MCTSConfig:
     exploration_constant: float = 1.41
     discount_factor: float = 1.0  # Discount within the search tree
-    num_simulations_short: int = 50
-    num_simulations_long: int = 200
+    num_simulations: int = 100 # Default simulations for the benchmark MCTS
 
 
 @dataclass
@@ -79,11 +78,8 @@ class TrainingConfig:
 # --- Evaluation Configuration ---
 @dataclass
 class EvaluationConfig:
-    num_games: int = 50
-    elo_k_factor: int = 64
-    elo_iterations: int = 100
-    elo_baseline_agent: str = "Random"
-    elo_baseline_rating: float = 1000.0
+    num_games: int = 50 # Number of games per matchup
+    # Elo parameters removed
 
 
 # --- Main Application Configuration ---

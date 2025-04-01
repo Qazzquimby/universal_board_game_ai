@@ -1,12 +1,9 @@
-import itertools
-import random
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 from tqdm import tqdm
 
 from core.agent_interface import Agent
-
-from core.config import EvaluationConfig, AppConfig
+from core.config import AppConfig
 from environments.base import BaseEnvironment
 
 
@@ -51,19 +48,11 @@ def _play_one_game(env: BaseEnvironment, agent0: Agent, agent1: Agent) -> Option
             winner = 1 - current_player_idx  # Opponent wins due to invalid move
             done = True  # Ensure loop terminates on error
 
-        # Debug print just before loop check
-        # print(f"  End of step: Player={current_player_idx}, Action={action}, Done={done}, Winner={winner}, State={state}")
         if done:
             break  # Exit loop immediately if done is set
 
-    # Add final check/debug print after loop
     final_winner = env.get_winning_player()
-    # print(f"Game End: Initial Winner={winner}, Final GetWinner={final_winner}, Done={env.is_game_over()}")
-    # Ensure we return the most reliable winner state
     return final_winner
-
-
-# Plotting moved to utils.plotting
 
 
 def run_test_games(
@@ -126,108 +115,6 @@ def run_test_games(
     return results
 
 
-# --- Elo Calculation Functions ---
-def calculate_expected_score(rating1: float, rating2: float) -> float:
-    """Calculate the expected score of player 1 against player 2."""
-    return 1 / (1 + 10 ** ((rating2 - rating1) / 400))
-
-
-def update_elo(
-    old_rating: float, expected_score: float, actual_score: float, k_factor: int = 32
-) -> float:
-    """Update Elo rating based on performance."""
-    return old_rating + k_factor * (actual_score - expected_score)
-
-
-def calculate_elo_ratings(
-    agent_names: List[str],
-    all_results: Dict[tuple, Dict],
-    eval_config: EvaluationConfig,  # Use EvaluationConfig
-) -> Dict[str, float]:
-    """
-    Calculate Elo ratings for agents based on pairwise game results.
-
-    Args:
-        agent_names: List of all agent names.
-        all_results: Dictionary where keys are sorted tuples (agent1_name, agent2_name)
-                     and values are results dictionaries from run_test_games.
-        baseline_agent: Name of the agent whose Elo is fixed.
-        baseline_rating: The fixed Elo rating for the baseline agent.
-        k_factor: Elo K-factor (sensitivity to recent results).
-        iterations: Number of iterations to run Elo updates for stabilization.
-
-    Returns:
-        Dictionary mapping agent names to their calculated Elo ratings.
-    """
-    print("\n--- Calculating Elo Ratings ---")
-    elo_ratings = {name: eval_config.elo_baseline_rating for name in agent_names}
-
-    for i in range(eval_config.elo_iterations):
-        new_ratings = elo_ratings.copy()
-        for (agent1_name, agent2_name), results in all_results.items():
-            # Ensure results dict contains the correct keys
-            if agent1_name not in results or agent2_name not in results:
-                print(
-                    f"Warning: Skipping Elo update for ({agent1_name}, {agent2_name}) due to missing keys in results: {results}"
-                )
-                continue
-
-            wins1 = results[agent1_name]
-            wins2 = results[agent2_name]
-            draws = results.get("draws", 0)  # Handle potential missing 'draws' key
-            total_games = wins1 + wins2 + draws
-
-            if total_games == 0:
-                continue
-
-            # Calculate scores from agent1's perspective
-            actual_score1 = (wins1 + 0.5 * draws) / total_games
-            expected_score1 = calculate_expected_score(
-                elo_ratings[agent1_name], elo_ratings[agent2_name]
-            )
-
-            # Calculate scores from agent2's perspective
-            actual_score2 = (wins2 + 0.5 * draws) / total_games
-            expected_score2 = calculate_expected_score(
-                elo_ratings[agent2_name], elo_ratings[agent1_name]
-            )
-
-            # Update ratings (using ratings from the start of the iteration)
-            # Don't update the baseline agent
-            if agent1_name != eval_config.elo_baseline_agent:
-                new_ratings[agent1_name] = update_elo(
-                    elo_ratings[agent1_name],
-                    expected_score1,
-                    actual_score1,
-                    eval_config.elo_k_factor,
-                )
-            if agent2_name != eval_config.elo_baseline_agent:
-                new_ratings[agent2_name] = update_elo(
-                    elo_ratings[agent2_name],
-                    expected_score2,
-                    actual_score2,
-                    eval_config.elo_k_factor,
-                )
-
-        # Ensure baseline agent rating remains fixed
-        new_ratings[eval_config.elo_baseline_agent] = eval_config.elo_baseline_rating
-        elo_ratings = new_ratings
-
-        # Optional: Print progress or check for convergence
-        # if i % 10 == 0:
-        #     print(f"Elo Iteration {i+1}/{iterations}")
-
-    # Print sorted Elo ratings
-    print(
-        f"\n--- Final Elo Ratings (Baseline: {eval_config.elo_baseline_agent} @ {eval_config.elo_baseline_rating:.0f}) ---"
-    )
-    sorted_elos = sorted(elo_ratings.items(), key=lambda item: item[1], reverse=True)
-    for name, rating in sorted_elos:
-        print(f"{name:<15}: {rating:.2f}")
-
-    return elo_ratings
-
-
 def run_evaluation(env: BaseEnvironment, agents: Dict[str, Agent], config: AppConfig):
     """
     Runs the full evaluation suite: round-robin games and Elo calculation.
@@ -235,36 +122,41 @@ def run_evaluation(env: BaseEnvironment, agents: Dict[str, Agent], config: AppCo
     Args:
         env: An instance of the environment (copies will be made).
         agents: Dictionary mapping agent names to agent instances.
-        config: The configuration object containing testing parameters.
+        config: The configuration object containing evaluation parameters.
     """
-    print("\n--- Starting Round-Robin Agent Testing ---")
+    print("\n--- Starting Agent Evaluation ---")
     agent_names = list(agents.keys())
-    all_results = {}  # Store results for Elo calculation
 
-    # Use combinations for unique pairwise tests
-    for agent1_name, agent2_name in itertools.combinations(agent_names, 2):
-        agent1 = agents[agent1_name]
-        agent2 = agents[agent2_name]
-
-        # Run games for this pair (handles both starting orders internally)
-        results = run_test_games(
-            env,
-            agent1_name,
-            agent1,
-            agent2_name,
-            agent2,
-            num_games=config.evaluation.num_games,  # Use EvaluationConfig field
+    # Ensure we have exactly the two agents we expect for the benchmark
+    if len(agent_names) != 2 or "AlphaZero" not in agents:
+        print(
+            f"Warning: Expected 'AlphaZero' and one 'MCTS_X' agent, but found: {agent_names}. Skipping evaluation."
         )
+        return
 
-        # Store results using a consistent key (sorted tuple of names)
-        result_key = tuple(sorted((agent1_name, agent2_name)))
-        all_results[result_key] = results
-
-    print("\n--- Agent Testing Complete ---")
-
-    # --- Elo Calculation ---
-    calculate_elo_ratings(
-        agent_names=agent_names,
-        all_results=all_results,
-        eval_config=config.evaluation,  # Pass EvaluationConfig
+    # Identify the MCTS agent name dynamically
+    mcts_agent_name = next(
+        (name for name in agent_names if name.startswith("MCTS_")), None
     )
+    if not mcts_agent_name:
+        print(
+            f"Warning: Could not find MCTS agent in agents: {agent_names}. Skipping evaluation."
+        )
+        return
+
+    agent1_name = "AlphaZero"
+    agent2_name = mcts_agent_name
+    agent1 = agents[agent1_name]
+    agent2 = agents[agent2_name]
+
+    # Run games between AlphaZero and the MCTS benchmark agent
+    run_test_games(
+        env,
+        agent1_name,
+        agent1,
+        agent2_name,
+        agent2,
+        num_games=config.evaluation.num_games,  # Use EvaluationConfig field
+    )
+
+    print("\n--- Agent Evaluation Complete ---")

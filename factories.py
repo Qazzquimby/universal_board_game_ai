@@ -9,8 +9,6 @@ from environments.base import BaseEnvironment
 from environments.connect4 import Connect4
 from environments.nim_env import NimEnv
 from agents.mcts_agent import MCTSAgent
-from agents.qlearning import QLearningAgent
-from agents.random_agent import RandomAgent
 from agents.alphazero_agent import AlphaZeroAgent
 
 # Import MuZeroAgent when ready
@@ -40,19 +38,7 @@ def get_environment(env_config: EnvConfig) -> BaseEnvironment:
 def get_agents(env: BaseEnvironment, config: AppConfig) -> Dict[str, Agent]:
     """Factory function to create agent instances for the given environment."""
 
-    # --- Q-Learning Agent Initialization ---
-    # Instantiate Q-learning agent and attempt to load Q-table.
-    # Training should happen separately via a dedicated script (e.g., train_qlearning.py).
-    ql_agent = QLearningAgent(env, config.q_learning)
-    if not ql_agent.load():
-        print(
-            "WARNING: Could not load pre-trained Q-table. Agent will play randomly/poorly."
-        )
-        # Do NOT train here. Evaluation assumes agent is already trained.
-    else:
-        print("Loaded pre-trained Q-learning agent.")
-    # Ensure Q-agent used for evaluation has exploration turned off or minimized
-    ql_agent.exploration_rate = config.q_learning.min_exploration
+    # QLearning and Random agents removed from evaluation setup
 
     # --- AlphaZero Agent Initialization ---
     # Instantiate AlphaZero agent and attempt to load weights.
@@ -62,30 +48,21 @@ def get_agents(env: BaseEnvironment, config: AppConfig) -> Dict[str, Agent]:
         print(
             "WARNING: Could not load pre-trained AlphaZero weights. Agent will play randomly/poorly."
         )
-        # Do NOT train here. Evaluation assumes agent is already trained.
     else:
         print("Loaded pre-trained AlphaZero agent.")
     az_agent.network.eval()  # Ensure network is in eval mode for evaluation
 
-    # --- Other Agents ---
+    # --- Benchmark MCTS Agent ---
+    mcts_agent_name = f"MCTS_{config.mcts.num_simulations}"
+    mcts_agent = MCTSAgent(
+        env,
+        num_simulations=config.mcts.num_simulations,
+        exploration_constant=config.mcts.exploration_constant,
+    )
+
     agents = {
-        "QLearning": ql_agent,
-        "AlphaZero": az_agent,  # Add the AlphaZero agent
-        "MCTS_50": MCTSAgent(
-            env,
-            num_simulations=config.mcts.num_simulations_short,
-            exploration_constant=config.mcts.exploration_constant,
-        ),
-        "MCTS_200": MCTSAgent(
-            env,
-            num_simulations=config.mcts.num_simulations_long,
-            exploration_constant=config.mcts.exploration_constant,
-        ),
-        "Random": RandomAgent(env),
+        "AlphaZero": az_agent,
+        mcts_agent_name: mcts_agent,
     }
 
-    # If running smoke test, remove the slower MCTS agent
-    if config.smoke_test and "MCTS_200" in agents:
-        print("Smoke test mode: Removing MCTS_200 agent.")
-        del agents["MCTS_200"]
     return agents
