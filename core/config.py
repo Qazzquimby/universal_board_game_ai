@@ -56,10 +56,14 @@ class MuZeroConfig:
     learning_rate: float = 0.001
     weight_decay: float = 0.0001
     hidden_state_size: int = 128 # Size of the latent state in dynamics/prediction
-    # TODO: Add support size for categorical value/reward if used later
-    # TODO: Add num_unroll_steps (k) for training
     replay_buffer_size: int = 10000
     batch_size: int = 32 # Smaller batch size might be needed due to unrolling
+    num_unroll_steps: int = 5 # Number of game steps to simulate in dynamics (k)
+    td_steps: int = 10 # Number of steps for n-step return calculation
+    value_loss_weight: float = 0.25 # Weight for value loss component
+    reward_loss_weight: float = 1.0 # Weight for reward loss component (often 1.0)
+    policy_loss_weight: float = 1.0 # Weight for policy loss component (often 1.0)
+    # TODO: Add support size for categorical value/reward if used later
     debug_mode: bool = False
 
 

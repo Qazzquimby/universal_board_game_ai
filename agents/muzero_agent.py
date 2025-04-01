@@ -1,7 +1,7 @@
 import random
 from pathlib import Path
 from collections import deque
-from typing import List, Tuple
+from typing import List, Tuple, Dict, Any # Added Dict and Any
 
 import torch
 import torch.optim as optim
@@ -16,6 +16,10 @@ from core.config import MuZeroConfig # Use the MuZero Config
 
 PROJECT_ROOT = Path(__file__).parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
+
+# Define the structure for trajectory steps stored in the buffer
+TrajectoryStep = Dict[str, Any] # Keys: 'obs', 'action', 'reward', 'done', 'policy_target'
+Trajectory = List[TrajectoryStep]
 
 
 class MuZeroAgent(Agent):
@@ -39,10 +43,10 @@ class MuZeroAgent(Agent):
         # Initialize MuZeroMCTS
         self.mcts = MuZeroMCTS(config, self.network)
 
-        # Experience buffer for training (stores sequences of (obs, action, reward))
-        # TODO: Implement proper trajectory storage and sampling
-        self.replay_buffer = deque(maxlen=config.replay_buffer_size)
-        self._current_episode_trajectory = [] # Store (obs, action, reward) tuples
+        # Experience buffer for training (stores complete game trajectories)
+        self.replay_buffer: deque[Trajectory] = deque(maxlen=config.replay_buffer_size)
+        # Temporary storage for the current game's trajectory steps
+        self._current_episode_trajectory: Trajectory = []
 
         # Optimizer (managed internally)
         self.optimizer = optim.AdamW(
@@ -61,7 +65,8 @@ class MuZeroAgent(Agent):
             train: If True, use temperature sampling for exploration.
 
         Returns:
-            The chosen action.
+            If train=False: The chosen action.
+            If train=True: A tuple containing (chosen_action, policy_target).
         """
         self.network.eval()
 
@@ -97,17 +102,48 @@ class MuZeroAgent(Agent):
 
         chosen_action = actions[chosen_action_index]
 
-        # TODO: Store search statistics (policy target) if needed for training?
-        # MuZero training often relies on re-analyzing trajectories later.
-        # For now, just store the basic trajectory info.
+        if train:
+            # Calculate policy target based on visit counts (similar to AlphaZero)
+            policy_target = self._calculate_policy_target(actions, visit_counts)
+            return chosen_action, policy_target
+        else:
+            return chosen_action
 
-        return chosen_action
+
+    # Add _calculate_policy_target helper (copied/adapted from AlphaZeroAgent)
+    def _calculate_policy_target(self, actions, visit_counts) -> np.ndarray:
+        """Calculates the policy target vector based on MCTS visit counts."""
+        policy_size = self.network._calculate_policy_size(self.env)
+        policy_target = np.zeros(policy_size, dtype=np.float32)
+        total_visits = np.sum(visit_counts)
+
+        if total_visits > 0:
+            for i, action in enumerate(actions):
+                action_key = tuple(action) if isinstance(action, list) else action
+                action_idx = self.network.get_action_index(action_key)
+                if action_idx is not None and 0 <= action_idx < policy_size:
+                    policy_target[action_idx] = visit_counts[i] / total_visits
+                else:
+                    print(f"Warning: Action {action_key} could not be mapped to index during policy target calculation.")
+        else:
+            print("Warning: No visits recorded in MCTS root. Policy target will be zeros.")
+        return policy_target
 
 
-    def observe(self, obs: StateType, action: ActionType, reward: float, done: bool):
-         """Stores the transition in the current trajectory."""
-         # Store observation *before* action, the action taken, and reward *after* action
-         self._current_episode_trajectory.append({'obs': obs, 'action': action, 'reward': reward, 'done': done})
+    def observe(self, obs: StateType, action: ActionType, reward: float, done: bool, policy_target: np.ndarray):
+         """
+         Stores the transition step, including the MCTS policy target for the
+         observation *before* the action was taken.
+         """
+         # Store observation *before* action, the action taken, reward *after* action,
+         # done flag, and the policy target corresponding to the observation.
+         self._current_episode_trajectory.append({
+             'obs': obs,
+             'action': action,
+             'reward': reward,
+             'done': done,
+             'policy_target': policy_target
+         })
 
     def finish_episode(self):
         """Called at the end of an episode to store the trajectory."""
