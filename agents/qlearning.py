@@ -154,33 +154,6 @@ class QLearningAgent(Agent):
         if not episode_history:
             return
 
-        # Determine the final outcome for the agent (player 0) from the last step
-        # The history stores (state_before_action, action, reward_after_action, done_after_action)
-        # We need the state *after* the last action to determine the winner.
-        # A bit tricky as the history doesn't store the final state directly.
-        # Let's assume the training loop provides the final outcome implicitly via reward structure.
-        # Revisit: A cleaner way might be to pass the final state or outcome explicitly,
-        # but let's try deriving it. Assume the last reward reflects the outcome for the player
-        # whose turn it *was* when the game ended.
-
-        # Alternative: Get winner from the *last state recorded* in the history.
-        # This state is the one *before* the last action was taken.
-        # If the game ended *after* the last action in the history, we need that info.
-        # Let's assume the training loop structure correctly determines the final reward
-        # for the agent and we can extract it.
-
-        # Simplification: Assume the final reward for the agent (player 0) can be determined
-        # by looking at the winner in the *final state* of the episode, which isn't directly
-        # in the history tuples.
-        # Let's modify the training loop (`train_agent`) to calculate the final reward
-        # and pass it, reverting the signature change for now, as deriving it is complex.
-        # --- REVERTING SIGNATURE CHANGE - Keeping final_reward_for_agent ---
-        # This highlights a potential weakness in the simple history format.
-        # A better format might include the next_state or the final outcome explicitly.
-
-        # --- Let's try deriving it from the last state's winner field ---
-        # This assumes the environment correctly sets the 'winner' field in the state dict
-        # even on the step *before* the game technically ends.
         last_state, _, _, last_done = episode_history[-1]
         final_reward_for_agent = 0.0
         if last_done:
@@ -218,8 +191,6 @@ class QLearningAgent(Agent):
             print("Warning: QLearningAgent.learn called on incomplete episode history.")
 
     # Note: decay_exploration is now handled within the training loop itself
-
-    # --- Agent Interface Methods ---
 
     # --- Agent Interface Methods ---
 
@@ -277,73 +248,91 @@ class QLearningAgent(Agent):
 
 
 # --- Training Function ---
-# TODO: Consider moving training logic to a dedicated Trainer class for better separation, especially if adding more complex training regimes (e.g., for AlphaZero/MuZero).
-from typing import Optional  # Need Optional for opponent type hint
-from agents.random_agent import RandomAgent  # Need RandomAgent for default opponent
+
+def _play_one_qlearning_selfplay_episode(env: BaseEnvironment, agent: QLearningAgent) -> Tuple[List[Tuple], float]:
+    """Plays one episode of self-play, returning history and final reward for player 0."""
+    obs = env.reset()
+    done = False
+    # Store history from player 0's perspective only
+    episode_history_p0 = []
+    current_trajectory = [] # Temp store for full (s, a, r, d) sequence
+
+    while not done:
+        current_player = env.get_current_player()
+        state = obs # Current observation before action
+
+        # Agent acts using its policy (epsilon-greedy)
+        action = agent.act(state)
+        if action is None:
+            print(f"Warning: Agent returned None action in state: {state}. Ending episode.")
+            # Penalize the player who couldn't move? Assume draw for now.
+            done = True
+            reward = 0.0
+            # Need to determine winner based on game rules if one player fails to move
+            winner = 1 - current_player # Assume opponent wins if player fails
+            break # Exit loop
+
+        next_obs, reward, done = env.step(action)
+
+        # Store step from the perspective of the player who acted
+        current_trajectory.append({
+            "player": current_player,
+            "state": state,
+            "action": action,
+            "reward": reward, # Reward received *after* this action
+            "done": done
+        })
+
+        # If the acting player was P0, store the state-action pair for learning later
+        if current_player == 0:
+             # Store state *before* action, action taken, reward *after* action, done *after* action
+             episode_history_p0.append((state, action, reward, done))
+
+        obs = next_obs
+
+    # Determine final outcome for player 0
+    winner = env.get_winning_player()
+    if winner == 0:
+        final_reward_for_agent0 = 1.0
+    elif winner is not None: # Player 1 won
+        final_reward_for_agent0 = -1.0
+    else: # Draw
+        final_reward_for_agent0 = 0.0
+
+    # Ensure the last 'done' flag in the history is correct
+    # If P1 made the last move ending the game, P0's history might not reflect done=True
+    if episode_history_p0 and not episode_history_p0[-1][-1] and done:
+         last_s, last_a, last_r, _ = episode_history_p0.pop()
+         episode_history_p0.append((last_s, last_a, last_r, True))
+
+    return episode_history_p0, final_reward_for_agent0
 
 
-def train_agent(
+def run_qlearning_training(
     env: BaseEnvironment,
     agent: QLearningAgent,
     num_episodes: int,
     q_config: QLearningConfig,
-    opponent: Optional[Agent] = None,
+    training_config: 'TrainingConfig' # Pass general training config too
 ):
-    """Train QLearning agent against an opponent (defaults to Random)."""
-    opponent = opponent or RandomAgent(env)
-    win_history = []
-    print(f"Starting Q-Learning training for {num_episodes} episodes...")
+    """Train QLearning agent using self-play."""
+    win_history_p0 = [] # Track outcomes for player 0
+    print(f"Starting Q-Learning self-play training for {num_episodes} episodes...")
 
     for episode in range(num_episodes):
-        obs = env.reset()
-        done = False
-        episode_history = []
+        # Play one episode of self-play
+        episode_history_p0, final_reward_for_agent0 = _play_one_qlearning_selfplay_episode(env, agent)
 
-        while not done:
-            current_player = env.get_current_player()
+        # Learn from the episode (only need history from P0's perspective)
+        if episode_history_p0:
+            agent.learn_from_episode(episode_history_p0, final_reward_for_agent0)
 
-            if current_player == 0:  # Agent being trained's turn
-                state = obs
-                action = agent.act(state)
-                if action is None:
-                    # This should ideally not happen if env has valid moves
-                    print(
-                        f"Warning: Agent {type(agent).__name__} returned None action in state: {state}. Skipping turn?"
-                    )
-                    # Decide how to handle: break, raise error, skip? For now, let's break episode.
-                    break
-                next_obs, reward, done = env.step(action)
-                episode_history.append((state, action, reward, done))
-                obs = next_obs
-            else:  # Opponent's turn
-                state = obs
-                action = opponent.act(state)
-                if action is None:
-                    print(
-                        f"Warning: Opponent {type(opponent).__name__} returned None action in state: {state}. Skipping turn?"
-                    )
-                    break  # Break episode if opponent can't move
-                obs, _, done = env.step(
-                    action
-                )  # Opponent reward/history not stored for agent
+        # Record outcome for player 0
+        if final_reward_for_agent0 > 0: outcome = 1
+        elif final_reward_for_agent0 < 0: outcome = -1
+        else: outcome = 0
+        win_history_p0.append(outcome)
 
-        # Determine final outcome for the agent (player 0)
-        winner = env.get_winning_player()
-        if winner == 0:
-            final_reward_for_agent = 1.0
-            outcome = 1
-        elif winner is not None:  # Opponent won
-            final_reward_for_agent = -1.0
-            outcome = -1
-        else:  # Draw
-            final_reward_for_agent = 0.0
-            outcome = 0
-
-        # Learn from the episode using the Q-learning specific method
-        if episode_history:
-            agent.learn_from_episode(episode_history, final_reward_for_agent)
-
-        win_history.append(outcome)
         # Decay exploration rate after each episode
         agent.exploration_rate = max(
             agent.exploration_rate * agent.config.exploration_decay,
@@ -351,21 +340,17 @@ def train_agent(
         )
 
         # Print progress occasionally
-        # Ensure plot_window exists in q_config, fall back if necessary
-        plot_window = getattr(q_config, "plot_window", 200)  # Use getattr for safety
-        print_interval = (
-            num_episodes // 20 if num_episodes >= 20 else 1
-        )  # Print ~20 times
+        plot_window = training_config.plot_window
+        print_interval = (num_episodes // 20 if num_episodes >= 20 else 1) # Print ~20 times
         if (episode + 1) % print_interval == 0:
-            # Use plot_window from TrainingConfig if available, else default
             window_size = plot_window if plot_window <= episode else episode + 1
             if window_size > 0:
-                win_rate = win_history[-window_size:].count(1) / window_size
-                draw_rate = win_history[-window_size:].count(0) / window_size
-                loss_rate = win_history[-window_size:].count(-1) / window_size
+                win_rate = win_history_p0[-window_size:].count(1) / window_size
+                draw_rate = win_history_p0[-window_size:].count(0) / window_size
+                loss_rate = win_history_p0[-window_size:].count(-1) / window_size
                 print(
                     f"Episode {episode + 1}/{num_episodes} | "
-                    f"Win Rate (last {window_size}): {win_rate:.2f} | "
+                    f"P0 Win Rate (last {window_size}): {win_rate:.2f} | "
                     f"Draw Rate: {draw_rate:.2f} | "
                     f"Loss Rate: {loss_rate:.2f} | "
                     f"Exploration: {agent.exploration_rate:.4f}"
@@ -375,5 +360,5 @@ def train_agent(
                     f"Episode {episode + 1}/{num_episodes} | Exploration: {agent.exploration_rate:.4f}"
                 )
 
-    print("Training complete.")
-    return win_history
+    print("Q-Learning Training complete.")
+    return win_history_p0

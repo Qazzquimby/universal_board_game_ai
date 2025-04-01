@@ -9,13 +9,11 @@ from environments.base import BaseEnvironment
 from environments.connect4 import Connect4
 from environments.nim_env import NimEnv
 from agents.mcts_agent import MCTSAgent
-from agents.qlearning import (
-    QLearningAgent,
-    train_agent as train_q_agent,  # Keep Q-learning training here for now
-)
+from agents.qlearning import QLearningAgent
 from agents.random_agent import RandomAgent
-from agents.alphazero_agent import AlphaZeroAgent  # Import AlphaZeroAgent
-from utils.plotting import plot_results
+from agents.alphazero_agent import AlphaZeroAgent
+# Import MuZeroAgent when ready
+# from agents.muzero_agent import MuZeroAgent
 
 
 def get_environment(env_config: EnvConfig) -> BaseEnvironment:
@@ -41,31 +39,18 @@ def get_environment(env_config: EnvConfig) -> BaseEnvironment:
 def get_agents(env: BaseEnvironment, config: AppConfig) -> Dict[str, Agent]:
     """Factory function to create agent instances for the given environment."""
 
-    # --- QLearning Agent Initialization & Training ---
+    # --- Q-Learning Agent Initialization ---
+    # Instantiate Q-learning agent and attempt to load Q-table.
+    # Training should happen separately via a dedicated script (e.g., train_qlearning.py).
     ql_agent = QLearningAgent(env, config.q_learning)
-    if not ql_agent.load():  # Load uses internal path logic now
-        print(
-            f"Training Q-learning agent for {config.training.num_episodes} episodes..."
-        )
-
-        # Reset exploration for training
-        ql_agent.exploration_rate = config.q_learning.exploration_rate
-        wins = train_q_agent(
-            env,
-            ql_agent,
-            num_episodes=config.training.num_episodes,
-            q_config=config.q_learning,
-        )
-        plot_results(wins, window_size=config.training.plot_window)
-        ql_agent.save()  # Save uses internal path logic now
-
-        # Set low exploration after training/saving
-        ql_agent.exploration_rate = config.q_learning.min_exploration
+    if not ql_agent.load():
+        print("WARNING: Could not load pre-trained Q-table. Agent will play randomly/poorly.")
+        # Do NOT train here. Evaluation assumes agent is already trained.
     else:
-        print(f"Loaded pre-trained Q-learning agent.")
-
-    # Ensure Q-agent used for testing has exploration turned off or minimized
+        print("Loaded pre-trained Q-learning agent.")
+    # Ensure Q-agent used for evaluation has exploration turned off or minimized
     ql_agent.exploration_rate = config.q_learning.min_exploration
+
 
     # --- AlphaZero Agent Initialization ---
     # Instantiate AlphaZero agent and attempt to load weights.
