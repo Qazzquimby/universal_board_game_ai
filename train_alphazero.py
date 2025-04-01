@@ -1,16 +1,14 @@
-# Standard library imports
 import sys
 import json
 import datetime
 from pathlib import Path
 from typing import Tuple, List, Dict, Any
 
-# Third-party imports
 import torch.optim as optim
-import numpy as np # Needed for JSON conversion helper
+import numpy as np
 from tqdm import tqdm
 
-# Local application imports
+
 from core.config import AppConfig
 from environments.base import BaseEnvironment, StateType, ActionType
 from agents.alphazero_agent import AlphaZeroAgent
@@ -22,12 +20,9 @@ DATA_DIR = PROJECT_ROOT / "data"
 LOG_DIR = DATA_DIR / "game_logs"
 
 
-# --- Helper Function for Self-Play ---
-
-
 def run_self_play_game(
     env: BaseEnvironment, agent: AlphaZeroAgent
-) -> Tuple[float, int]:
+) -> Tuple[float, int, List]:
     """
     Plays one game of self-play using the AlphaZero agent.
     The agent collects training data internally via agent.act(train=True).
@@ -43,15 +38,14 @@ def run_self_play_game(
         - game_history: The processed game history list from the agent.
     """
     obs = env.reset()
-    agent.reset() # Reset agent state (e.g., MCTS tree, internal history)
+    agent.reset()
     done = False
     game_steps = 0
 
     while not done:
         current_player = env.get_current_player()
-        state = obs  # Use the full observation dict
+        state = obs
 
-        # Use agent.act with train=True to enable data collection and exploration
         action = agent.act(state, train=True)
 
         if action is None:
@@ -72,8 +66,8 @@ def run_self_play_game(
             final_outcome = -1.0 if current_player == 0 else 1.0
             break
 
-    # Determine final outcome after the loop finishes
-    if "final_outcome" not in locals():  # If loop finished normally
+    # If loop finished normally
+    if "final_outcome" not in locals():
         winner = env.get_winning_player()
         if winner == 0:
             final_outcome = 1.0
@@ -82,25 +76,23 @@ def run_self_play_game(
         else:  # Draw
             final_outcome = 0.0
 
-    # Tell the agent the final outcome to store experiences in the buffer
-    # AND get the processed history back for logging.
     game_history = agent.finish_episode(final_outcome)
 
     return final_outcome, game_steps, game_history
 
 
-# --- Helper Function for Saving Game Logs ---
-
 def _default_serializer(obj):
     """JSON serializer for objects not serializable by default json code"""
     if isinstance(obj, np.ndarray):
-        return obj.tolist() # Convert numpy arrays to lists
+        return obj.tolist()  # Convert numpy arrays to lists
     # Add other custom types here if needed
     # Example: if isinstance(obj, SomeCustomClass): return obj.to_dict()
     try:
-        return obj.__dict__ # Fallback for simple objects
+        return obj.__dict__  # Fallback for simple objects
     except AttributeError:
-         raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
+        raise TypeError(
+            f"Object of type {obj.__class__.__name__} is not JSON serializable"
+        )
 
 
 def save_game_log(
@@ -113,35 +105,34 @@ def save_game_log(
     try:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        filename = f"{env_name}_iter{iteration:04d}_game{game_index:04d}_{timestamp}.json"
+        filename = (
+            f"{env_name}_iter{iteration:04d}_game{game_index:04d}_{timestamp}.json"
+        )
         filepath = LOG_DIR / filename
 
         # Prepare data for JSON (convert numpy arrays)
         serializable_history = []
         for state, action, policy, value in game_history:
-             # Ensure state is serializable (should be if it's dicts/lists/primitives)
-             # Ensure action is serializable (should be if int/tuple)
-             serializable_history.append(
-                 {
-                     "state": state,
-                     "action": action,
-                     "policy_target": policy.tolist(), # Convert numpy array
-                     "value_target": value,
-                 }
-             )
+            # Ensure state is serializable (should be if it's dicts/lists/primitives)
+            # Ensure action is serializable (should be if int/tuple)
+            serializable_history.append(
+                {
+                    "state": state,
+                    "action": action,
+                    "policy_target": policy.tolist(),  # Convert numpy array
+                    "value_target": value,
+                }
+            )
 
         with open(filepath, "w") as f:
-            json.dump(serializable_history, f, indent=2) # Use default_serializer if needed later
+            # Pass the custom serializer to handle numpy arrays within state dicts etc.
+            json.dump(serializable_history, f, indent=2, default=_default_serializer)
 
     except Exception as e:
         print(f"Error saving game log for iter {iteration}, game {game_index}: {e}")
 
 
-# --- Helper Function for Loading Game Logs ---
-
-def load_game_logs_into_buffer(
-    agent: AlphaZeroAgent, env_name: str, buffer_limit: int
-):
+def load_game_logs_into_buffer(agent: AlphaZeroAgent, env_name: str, buffer_limit: int):
     """Loads existing game logs from LOG_DIR into the agent's replay buffer."""
     loaded_games = 0
     loaded_steps = 0
@@ -150,7 +141,9 @@ def load_game_logs_into_buffer(
         return
 
     print(f"Scanning {LOG_DIR} for existing '{env_name}' game logs...")
-    log_files = sorted(LOG_DIR.glob(f"{env_name}_iter*.json")) # Sort for potential consistency
+    log_files = sorted(
+        LOG_DIR.glob(f"{env_name}_iter*.json")
+    )  # Sort for potential consistency
 
     if not log_files:
         print("No existing game logs found for this environment.")
@@ -158,34 +151,44 @@ def load_game_logs_into_buffer(
 
     for filepath in tqdm(log_files, desc="Loading Logs"):
         if len(agent.replay_buffer) >= buffer_limit:
-            print(f"Replay buffer reached limit ({buffer_limit}). Stopping log loading.")
+            print(
+                f"Replay buffer reached limit ({buffer_limit}). Stopping log loading."
+            )
             break
         try:
             with open(filepath, "r") as f:
                 game_data = json.load(f)
 
             if not isinstance(game_data, list):
-                print(f"Warning: Skipping invalid log file (not a list): {filepath.name}")
+                print(
+                    f"Warning: Skipping invalid log file (not a list): {filepath.name}"
+                )
                 continue
 
             steps_in_game = 0
             for step_data in game_data:
-                 if len(agent.replay_buffer) >= buffer_limit:
-                     break # Stop adding steps if buffer full mid-game
+                if len(agent.replay_buffer) >= buffer_limit:
+                    break  # Stop adding steps if buffer full mid-game
 
-                 # Extract required components for replay buffer
-                 state = step_data.get("state")
-                 policy_target_list = step_data.get("policy_target")
-                 value_target = step_data.get("value_target")
+                # Extract required components for replay buffer
+                state = step_data.get("state")
+                policy_target_list = step_data.get("policy_target")
+                value_target = step_data.get("value_target")
 
-                 if state is not None and policy_target_list is not None and value_target is not None:
-                     # Convert policy back to numpy array
-                     policy_target = np.array(policy_target_list, dtype=np.float32)
-                     agent.replay_buffer.append((state, policy_target, value_target))
-                     loaded_steps += 1
-                     steps_in_game += 1
-                 else:
-                     print(f"Warning: Skipping step with missing data in {filepath.name}")
+                if (
+                    state is not None
+                    and policy_target_list is not None
+                    and value_target is not None
+                ):
+                    # Convert policy back to numpy array
+                    policy_target = np.array(policy_target_list, dtype=np.float32)
+                    agent.replay_buffer.append((state, policy_target, value_target))
+                    loaded_steps += 1
+                    steps_in_game += 1
+                else:
+                    print(
+                        f"Warning: Skipping step with missing data in {filepath.name}"
+                    )
 
             if steps_in_game > 0:
                 loaded_games += 1
@@ -195,11 +198,11 @@ def load_game_logs_into_buffer(
         except Exception as e:
             print(f"Warning: Error processing log file {filepath.name}: {e}")
 
-    print(f"Loaded {loaded_steps} steps from {loaded_games} game logs into replay buffer.")
+    print(
+        f"Loaded {loaded_steps} steps from {loaded_games} game logs into replay buffer."
+    )
     print(f"Current buffer size: {len(agent.replay_buffer)}/{buffer_limit}")
 
-
-# --- Main Training Function ---
 
 def run_training(config: AppConfig, env_name_override: str = None):
     """Runs the AlphaZero training process."""
@@ -227,7 +230,6 @@ def run_training(config: AppConfig, env_name_override: str = None):
     )
 
     # --- Training Loop ---
-    # Use values from config
     num_training_iterations = config.training.num_iterations
     num_episodes_per_iteration = config.training.num_episodes_per_iteration
 
@@ -239,14 +241,17 @@ def run_training(config: AppConfig, env_name_override: str = None):
     # Disable tqdm if running smoke test to potentially avoid encoding issues
     use_tqdm = not config.smoke_test
     outer_loop_iterator = range(num_training_iterations)
-    inner_loop_iterator = tqdm(range(num_episodes_per_iteration), desc="Self-Play") if use_tqdm else range(num_episodes_per_iteration)
-
+    inner_loop_iterator = (
+        tqdm(range(num_episodes_per_iteration), desc="Self-Play")
+        if use_tqdm
+        else range(num_episodes_per_iteration)
+    )
 
     for iteration in outer_loop_iterator:
         print(f"\n--- Iteration {iteration + 1}/{num_training_iterations} ---")
 
         # 1. Self-Play Phase
-        agent.network.eval() # Ensure network is in eval mode for self-play actions
+        agent.network.eval()  # Ensure network is in eval mode for self-play actions
         print("Running self-play games...")
         # Use enumerate to get game index for logging
         current_iteration_games = 0
@@ -258,13 +263,15 @@ def run_training(config: AppConfig, env_name_override: str = None):
             # Save the game log after each game
             save_game_log(history, iteration + 1, game_idx + 1, config.env.name)
 
-        print(f"Completed {current_iteration_games} self-play games for iteration {iteration + 1}.")
+        print(
+            f"Completed {current_iteration_games} self-play games for iteration {iteration + 1}."
+        )
 
         # 2. Learning Phase
         print("Running learning step...")
         # agent.network.train() # Network mode is handled within agent.learn()
         # TODO: Add epochs per learning step if desired (call learn multiple times)
-        agent.learn() # Call the agent's learning method (optimizer is internal)
+        agent.learn()
 
         # 3. Save Checkpoint Periodically
         # TODO: Make save frequency configurable
@@ -272,7 +279,6 @@ def run_training(config: AppConfig, env_name_override: str = None):
             print("Saving agent checkpoint...")
             agent.save()
 
-        # Print progress (e.g., buffer size, recent win rate)
         buffer_size = len(agent.replay_buffer)
         window_size = min(len(game_outcomes), 100)  # Look at last 100 games
         if window_size > 0:
@@ -286,7 +292,6 @@ def run_training(config: AppConfig, env_name_override: str = None):
                 f"  Recent Performance (last {window_size} games): Wins={win_rate:.2f}, Losses={loss_rate:.2f}, Draws={draw_rate:.2f}"
             )
 
-    # --- Final Save & Plot ---
     print("\nTraining complete. Saving final agent state.")
     agent.save()
 
@@ -296,8 +301,6 @@ def run_training(config: AppConfig, env_name_override: str = None):
     print("\n--- AlphaZero Training Finished ---")
 
 
-# --- Script Entry Point ---
-
 if __name__ == "__main__":
     # --- Configuration ---
     config = AppConfig()
@@ -305,6 +308,6 @@ if __name__ == "__main__":
 
     # --- Environment Selection (Optional: Add CLI arg parsing) ---
     if len(sys.argv) > 1:
-        env_override = sys.argv[1] # e.g., python train_alphazero.py Nim
+        env_override = sys.argv[1]  # e.g., python train_alphazero.py Nim
 
     run_training(config, env_name_override=env_override)
