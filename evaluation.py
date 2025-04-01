@@ -1,11 +1,11 @@
 import itertools
-import math # Need math for Elo
+import random
 from typing import Dict, List, Optional
 
 from tqdm import tqdm
 
 from core.agent_interface import Agent
-# Use specific config type
+
 from core.config import EvaluationConfig, AppConfig
 from environments.base import BaseEnvironment
 
@@ -49,12 +49,12 @@ def _play_one_game(env: BaseEnvironment, agent0: Agent, agent1: Agent) -> Option
                 f"Warning: Invalid action {action} during testing by Player {current_player_idx} ({agent_name}). Error: {e}"
             )
             winner = 1 - current_player_idx  # Opponent wins due to invalid move
-            done = True # Ensure loop terminates on error
+            done = True  # Ensure loop terminates on error
 
         # Debug print just before loop check
         # print(f"  End of step: Player={current_player_idx}, Action={action}, Done={done}, Winner={winner}, State={state}")
         if done:
-             break # Exit loop immediately if done is set
+            break  # Exit loop immediately if done is set
 
     # Add final check/debug print after loop
     final_winner = env.get_winning_player()
@@ -90,45 +90,33 @@ def run_test_games(
     """
     print(f"\n--- Testing {agent1_name} vs {agent2_name} ---")
     results = {agent1_name: 0, agent2_name: 0, "draws": 0}
-    num_games_half = num_games // 2
 
-    # --- Games where agent1 starts ---
-    print(
-        f"Running {num_games_half} games with {agent1_name} starting (as Player 0)..."
-    )
-    for _ in tqdm(
-        range(num_games_half), desc=f"{agent1_name} (P0) vs {agent2_name} (P1)"
-    ):
+    for i in tqdm(range(num_games), desc=f"{agent1_name} (P0) vs {agent2_name} (P1)"):
         game_env = env.copy()  # Use a fresh copy for each game
         game_env.reset()
-        winner = _play_one_game(game_env, agent1, agent2)  # agent1 is P0, agent2 is P1
+        if i % 2 == 0:
+            winner = _play_one_game(
+                game_env, agent1, agent2
+            )  # agent1 is P0, agent2 is P1
 
-        if winner == 0:
-            results[agent1_name] += 1
-        elif winner == 1:
-            results[agent2_name] += 1
+            if winner == 0:
+                results[agent1_name] += 1
+            elif winner == 1:
+                results[agent2_name] += 1
+            else:
+                results["draws"] += 1
         else:
-            results["draws"] += 1
+            winner = _play_one_game(
+                game_env, agent2, agent1
+            )  # agent2 is P0, agent1 is P1
 
-    # --- Games where agent2 starts ---
-    num_games_remaining = num_games - num_games_half
-    print(
-        f"Running {num_games_remaining} games with {agent2_name} starting (as Player 0)..."
-    )
-    for _ in tqdm(
-        range(num_games_remaining), desc=f"{agent2_name} (P0) vs {agent1_name} (P1)"
-    ):
-        game_env = env.copy()  # Use a fresh copy for each game
-        game_env.reset()
-        winner = _play_one_game(game_env, agent2, agent1)  # agent2 is P0, agent1 is P1
-
-        # Adjust win recording based on who was player 0 in this game
-        if winner == 0:  # agent2 (P0) won
-            results[agent2_name] += 1
-        elif winner == 1:  # agent1 (P1) won
-            results[agent1_name] += 1
-        else:
-            results["draws"] += 1
+            # Adjust win recording based on who was player 0 in this game
+            if winner == 0:  # agent2 (P0) won
+                results[agent2_name] += 1
+            elif winner == 1:  # agent1 (P1) won
+                results[agent1_name] += 1
+            else:
+                results["draws"] += 1
 
     print(f"--- Results after {num_games} games ({agent1_name} vs {agent2_name}) ---")
     print(f"{agent1_name} total wins: {results[agent1_name]}")
@@ -154,7 +142,7 @@ def update_elo(
 def calculate_elo_ratings(
     agent_names: List[str],
     all_results: Dict[tuple, Dict],
-    eval_config: EvaluationConfig # Use EvaluationConfig
+    eval_config: EvaluationConfig,  # Use EvaluationConfig
 ) -> Dict[str, float]:
     """
     Calculate Elo ratings for agents based on pairwise game results.
@@ -208,11 +196,17 @@ def calculate_elo_ratings(
             # Don't update the baseline agent
             if agent1_name != eval_config.elo_baseline_agent:
                 new_ratings[agent1_name] = update_elo(
-                    elo_ratings[agent1_name], expected_score1, actual_score1, eval_config.elo_k_factor
+                    elo_ratings[agent1_name],
+                    expected_score1,
+                    actual_score1,
+                    eval_config.elo_k_factor,
                 )
             if agent2_name != eval_config.elo_baseline_agent:
                 new_ratings[agent2_name] = update_elo(
-                    elo_ratings[agent2_name], expected_score2, actual_score2, eval_config.elo_k_factor
+                    elo_ratings[agent2_name],
+                    expected_score2,
+                    actual_score2,
+                    eval_config.elo_k_factor,
                 )
 
         # Ensure baseline agent rating remains fixed
@@ -259,7 +253,7 @@ def run_evaluation(env: BaseEnvironment, agents: Dict[str, Agent], config: AppCo
             agent1,
             agent2_name,
             agent2,
-            num_games=config.evaluation.num_games, # Use EvaluationConfig field
+            num_games=config.evaluation.num_games,  # Use EvaluationConfig field
         )
 
         # Store results using a consistent key (sorted tuple of names)
@@ -272,5 +266,5 @@ def run_evaluation(env: BaseEnvironment, agents: Dict[str, Agent], config: AppCo
     calculate_elo_ratings(
         agent_names=agent_names,
         all_results=all_results,
-        eval_config=config.evaluation # Pass EvaluationConfig
+        eval_config=config.evaluation,  # Pass EvaluationConfig
     )
