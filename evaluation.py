@@ -49,9 +49,18 @@ def _play_one_game(env: BaseEnvironment, agent0: Agent, agent1: Agent) -> Option
                 f"Warning: Invalid action {action} during testing by Player {current_player_idx} ({agent_name}). Error: {e}"
             )
             winner = 1 - current_player_idx  # Opponent wins due to invalid move
-            break  # End game
+            done = True # Ensure loop terminates on error
 
-    return winner
+        # Debug print just before loop check
+        # print(f"  End of step: Player={current_player_idx}, Action={action}, Done={done}, Winner={winner}, State={state}")
+        if done:
+             break # Exit loop immediately if done is set
+
+    # Add final check/debug print after loop
+    final_winner = env.get_winning_player()
+    # print(f"Game End: Initial Winner={winner}, Final GetWinner={final_winner}, Done={env.is_game_over()}")
+    # Ensure we return the most reliable winner state
+    return final_winner
 
 
 # Plotting moved to utils.plotting

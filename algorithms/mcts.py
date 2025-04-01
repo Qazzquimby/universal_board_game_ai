@@ -67,7 +67,10 @@ class MCTS:
         exploration_term = self.exploration_constant * math.sqrt(
             math.log(safe_parent_visits) / node.visit_count
         )
-        return node.value + exploration_term
+        # Maximize (-opponent_value + exploration) which is equivalent to (-node.value + exploration)
+        # node.value is from the perspective of the player whose turn it is AT the node.
+        # The parent selecting wants to maximize its own value, which is the negative of the child node's value.
+        return -node.value + exploration_term
 
     def _select(
         self, node: MCTSNode, env: BaseEnvironment
@@ -249,14 +252,17 @@ class AlphaZeroMCTS(MCTS):
             return u_score  # Q score is 0 initially
         else:
             # Q(s,a) + U(s,a)
-            q_score = node.value  # Mean action value (Q)
+            # Q(s,a) must be from the perspective of the player selecting at the PARENT node.
+            # node.value (q_score) is from the perspective of the player AT the node (the opponent).
+            # So, we use -node.value for the parent's perspective.
+            q_score_parent_perspective = -node.value
             u_score = (
                 self.exploration_constant
                 * node.prior
                 * math.sqrt(parent_visits)
                 / (1 + node.visit_count)
             )
-            return q_score + u_score
+            return q_score_parent_perspective + u_score
 
     # Removed _get_policy_for_legal_actions and _create_action_index_map
     # Action mapping is now handled by the network's get_action_index method
