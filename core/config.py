@@ -45,6 +45,23 @@ class AlphaZeroConfig:
     replay_buffer_size: int = 10000
     batch_size: int = 64
     debug_mode: bool = False
+    # MuZero specific - size of the hidden state representation
+    hidden_state_size: int = 128 # Example size, might need tuning
+
+
+@dataclass
+class MuZeroConfig:
+    # Inherit/share some params with AlphaZero? Or keep separate? Let's keep separate for now.
+    num_simulations: int = 50 # Reduced default for MuZero as it's more complex per sim
+    cpuct: float = 1.0
+    learning_rate: float = 0.001
+    weight_decay: float = 0.0001
+    hidden_state_size: int = 128 # Size of the latent state in dynamics/prediction
+    # TODO: Add support size for categorical value/reward if used later
+    # TODO: Add num_unroll_steps (k) for training
+    replay_buffer_size: int = 10000
+    batch_size: int = 32 # Smaller batch size might be needed due to unrolling
+    debug_mode: bool = False
 
 
 # --- Training Configuration ---
@@ -76,6 +93,7 @@ class AppConfig:
     q_learning: QLearningConfig = field(default_factory=QLearningConfig)
     mcts: MCTSConfig = field(default_factory=MCTSConfig)
     alpha_zero: AlphaZeroConfig = field(default_factory=AlphaZeroConfig)
+    muzero: MuZeroConfig = field(default_factory=MuZeroConfig) # Add MuZero config
     training: TrainingConfig = field(default_factory=TrainingConfig)
     evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
     # Flag to indicate if running in smoke test mode (can be set by test runner)

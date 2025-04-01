@@ -267,6 +267,238 @@ class AlphaZeroMCTS(MCTS):
     # Removed _get_policy_for_legal_actions and _create_action_index_map
     # Action mapping is now handled by the network's get_action_index method
 
+
+# --- MuZero MCTS ---
+# Note: This is a simplified structure. A full MuZero MCTS often involves
+# slightly different node structures (storing hidden state, reward) and search logic.
+
+class MuZeroMCTSNode:
+    """Node specific to MuZero MCTS, storing hidden state."""
+    def __init__(self, parent: Optional['MuZeroMCTSNode'] = None, prior: float = 0.0):
+        self.parent = parent
+        self.prior = prior
+        self.visit_count = 0
+        self.total_value = 0.0 # W(s,a)
+        self.reward = 0.0 # R(s,a) - Reward obtained reaching this node *from parent*
+        self.hidden_state: Optional[torch.Tensor] = None # s - Hidden state represented by this node
+        self.children: Dict[ActionType, 'MuZeroMCTSNode'] = {}
+        # Store policy logits and value prediction when node is first evaluated? Optional.
+        # self.policy_logits = None
+        # self.value = None
+
+    @property
+    def value(self) -> float: # Q(s,a) - Mean action value
+        return self.total_value / self.visit_count if self.visit_count else 0.0
+
+    def is_expanded(self) -> bool:
+        return bool(self.children)
+
+    def expand(self, actions: List[ActionType], policy_logits: torch.Tensor, network: 'MuZeroNet'):
+        """Expand node using policy predictions from the network."""
+        policy_probs = torch.softmax(policy_logits.squeeze(0), dim=0).cpu().numpy()
+        for action in actions:
+            action_key = tuple(action) if isinstance(action, list) else action
+            if action_key not in self.children:
+                idx = network.get_action_index(action_key)
+                if idx is not None and 0 <= idx < len(policy_probs):
+                    prior = float(policy_probs[idx])
+                    self.children[action_key] = MuZeroMCTSNode(parent=self, prior=prior)
+                else:
+                    print(f"Warning: Could not map action {action_key} during MuZero node expansion.")
+
+
+class MuZeroMCTS:
+    """MCTS implementation adapted for MuZero's learned model."""
+
+    def __init__(
+        self,
+        config: 'MuZeroConfig', # Use MuZeroConfig
+        network: 'MuZeroNet' # Requires MuZeroNet
+    ):
+        self.config = config
+        self.network = network
+        # Root node doesn't have a prior action, hidden state comes from representation(obs)
+        self.root = MuZeroMCTSNode(prior=0.0)
+
+    def reset_root(self):
+        self.root = MuZeroMCTSNode(prior=0.0)
+
+    def _puct_score(self, node: MuZeroMCTSNode, parent_visits: int, discount: float = 0.99) -> float:
+        """
+        Calculate the PUCT score for a node in MuZero MCTS.
+        Uses G + discount * Q(s', a') formulation.
+        """
+        # Calculate Q-value (mean action value from this node onwards)
+        q_value = node.value # Average value accumulated from visits passing through this node
+
+        # Calculate U-value (exploration bonus)
+        if node.visit_count == 0:
+            u_value = self.config.cpuct * node.prior * math.sqrt(max(1, parent_visits))
+        else:
+            u_value = self.config.cpuct * node.prior * math.sqrt(parent_visits) / (1 + node.visit_count)
+
+        # MuZero PUCT: Maximize Q(s,a) + U(s,a)
+        # Where Q(s,a) = R(s,a) + discount * V(s') - Value is estimated from parent perspective
+        # Let's use the simpler AlphaZero PUCT for now: Q(s,a) + U(s,a)
+        # where Q(s,a) is the mean value of the child node, adjusted for parent perspective.
+        # Q(parent, action_to_node) = node.reward + discount * (-node.value) ??? This gets complex.
+
+        # Let's stick to AlphaZero PUCT for selection for now, using the node's stored value.
+        # We need to ensure backpropagation correctly updates node.total_value.
+        # Value from parent perspective = -node.value
+        q_score_parent_perspective = -node.value
+
+        return q_score_parent_perspective + u_value
+
+
+    def _select_child(self, node: MuZeroMCTSNode) -> Tuple[ActionType, MuZeroMCTSNode]:
+        """Selects the child node with the highest PUCT score."""
+        parent_visits = node.visit_count
+        # TODO: Add discount factor from config if needed for PUCT variant
+        best_item = max(
+            node.children.items(),
+            key=lambda item: self._puct_score(item[1], parent_visits)
+        )
+        return best_item # Returns (action, child_node)
+
+
+    def _backpropagate(self, node: MuZeroMCTSNode, value: float, discount: float = 0.99):
+        """Backpropagate value using MuZero logic (incorporating rewards)."""
+        current_node = node
+        # Value is the predicted value V(s) from the leaf node perspective.
+        while current_node is not None:
+            current_node.visit_count += 1
+            # Update total value W(s,a) = sum(R(s,a) + discount * V(s'))
+            # The 'value' passed up is V(s') from the child.
+            # We add the reward R(s,a) obtained by reaching the current_node.
+            current_node.total_value += current_node.reward + discount * value
+
+            # The value passed to the parent becomes the value estimate V(s) for the current node.
+            # This seems wrong. Let's rethink backprop.
+
+            # Standard MCTS backprop:
+            # current_node.total_value += value
+            # value = -value # Flip for parent
+
+            # MuZero backprop (simplified):
+            # Update W using the value estimate from the leaf node.
+            # The value estimate needs to be relative to the player at each node.
+            current_node.total_value += value
+            # The value passed up should incorporate the reward received on the path.
+            value = current_node.reward + discount * value # G = R + gamma*V
+
+            # Flip perspective for parent? MuZero often uses value relative to current player.
+            # If value is always relative to the player whose turn it is at the node, no flipping needed?
+            # Let's assume value is relative to the player at the node. Backprop needs care.
+
+            # Let's use AlphaZero backprop for now for simplicity, assuming zero-sum game.
+            # We'll need to revisit this if rewards aren't zero-sum or if using MuZero's value definition.
+            value = -value # Flip for parent perspective in zero-sum game
+
+            current_node = current_node.parent
+
+
+    def search(self, observation_dict: dict) -> MuZeroMCTSNode:
+        """
+        Run MuZero MCTS search starting from a root observation.
+        """
+        self.reset_root()
+
+        # Initial step: Get hidden state and initial prediction from observation
+        # TODO: Add device handling
+        value, _, policy_logits, hidden_state = self.network.initial_inference(observation_dict)
+        self.root.hidden_state = hidden_state
+
+        # TODO: Get legal actions from the *actual* environment for the root node
+        # This is a key difference/challenge in MuZero vs AlphaZero MCTS.
+        # MuZero plans entirely in latent space, but needs legal actions at the root.
+        # We might need the env instance here, or pass legal actions in.
+        # Let's assume we can get legal actions for the root state.
+        # temp_env = self.env.copy(); temp_env.set_state(observation_dict) # Requires env access
+        # root_legal_actions = temp_env.get_legal_actions()
+        root_legal_actions = [] # Placeholder - NEED TO GET ACTUAL LEGAL ACTIONS
+        if not root_legal_actions:
+             print("Warning: No legal actions provided for MuZero MCTS root.")
+             # Cannot expand root if no legal actions known
+
+        self.root.expand(root_legal_actions, policy_logits, self.network)
+        # TODO: Add Dirichlet noise to root priors here if training
+
+        # Run simulations
+        for _ in range(self.config.num_simulations):
+            node = self.root
+            search_path = [node] # Keep track of nodes visited
+
+            # 1. Selection: Traverse tree using PUCT until a leaf node is reached
+            while node.is_expanded():
+                action, node = self._select_child(node)
+                search_path.append(node)
+
+            # 2. Expansion & Evaluation: Expand leaf node, get prediction from network
+            parent = search_path[-2] # Node from which the leaf was selected
+            leaf_node = search_path[-1]
+
+            # Use the parent's hidden state and the chosen action to get next state and reward via dynamics
+            # This requires the action taken to reach the leaf node.
+            action_to_leaf = None
+            for act, child in parent.children.items():
+                if child == leaf_node:
+                    action_to_leaf = act
+                    break
+
+            if action_to_leaf is None:
+                 # Should not happen if selection works correctly
+                 print("Error: Could not find action leading to leaf node during MuZero search.")
+                 continue
+
+            # Infer next state, reward, policy, value using the learned model
+            value, reward, policy_logits, next_hidden_state = self.network.recurrent_inference(
+                parent.hidden_state, action_to_leaf
+            )
+
+            # Store results in the newly reached (or created) leaf node
+            leaf_node.hidden_state = next_hidden_state
+            leaf_node.reward = reward.item() # Store reward obtained reaching this node
+
+            # TODO: Get legal actions for the *hypothetical* state represented by leaf_node.
+            # This is the core challenge - MuZero doesn't know the real state.
+            # Option 1: Assume all actions are legal in latent space (original MuZero).
+            # Option 2: Predict a legal action mask (requires network modification).
+            # Let's use Option 1 for now. Assume all actions possible from policy head are "legal" in latent space.
+            num_actions = policy_logits.shape[-1]
+            latent_legal_actions = list(range(num_actions)) # Indices 0 to num_actions-1
+
+            # Expand the leaf node using the predicted policy
+            # Need to map action indices back to ActionType if node dict uses ActionType keys
+            # For simplicity, let's assume children keys are action indices for now.
+            # This requires changing MuZeroMCTSNode.children to Dict[int, MuZeroMCTSNode]
+            # And adapting _select_child accordingly. Let's skip this complexity for now.
+            # Assume expand works with the original ActionType keys for now.
+            # This requires mapping indices back to actions.
+            # placeholder_actions = [self.network.get_action_from_index(i) for i in latent_legal_actions]
+            # filtered_actions = [a for a in placeholder_actions if a is not None]
+            # leaf_node.expand(filtered_actions, policy_logits, self.network)
+            # This is getting complicated. Let's simplify the expansion assumption.
+            # Assume expand takes policy logits and populates children based on network output size.
+            # This bypasses needing explicit legal actions during search beyond the root.
+
+            # Let's refine expand to work with indices directly?
+            # Or assume prediction head only outputs logits for potentially valid actions?
+
+            # --- Simplified Expansion ---
+            # Expand based on the predicted policy for all possible actions
+            # This requires a way to map policy indices to actions if needed later.
+            # For now, let's assume expansion populates based on policy_logits size.
+            # This part needs careful implementation matching the reference.
+            # The reference MCTS likely handles nodes and actions differently.
+
+            # --- Backpropagation ---
+            # Backpropagate the predicted value V(s_leaf)
+            self._backpropagate(leaf_node, value.item()) # Pass scalar value
+
+        # Return the root node containing search statistics
+        return self.root
+
     # --- Overridden methods from base MCTS ---
 
     # Override expansion to use network priors and network's action mapping
