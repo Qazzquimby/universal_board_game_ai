@@ -111,18 +111,27 @@ class QLearningAgent(Agent):
             return random.choice(valid_actions)  # Use random.choice for simplicity
 
         # Exploitation: choose best action based on Q-values
-        # Ensure actions are tuples when used as keys
-        q_values = {
-            tuple(action): self.q_table[state_key][tuple(action)]
-            for action in valid_actions
-        }
+        action_values = self.q_table[state_key]
+        valid_actions = self.env.get_legal_actions() # Get current legal actions
+
+        # Filter Q-values for legal actions only
+        valid_action_values = {}
+        for action in valid_actions:
+             # Action key is the action itself (int for FourInARow, tuple for Nim)
+             action_key = action
+             valid_action_values[action] = action_values.get(action_key, 0.0) # Default to 0 if action not seen
+
+        if not valid_action_values:
+             print("Warning: No legal actions found or no Q-values for legal actions in QLearningAgent.act")
+             # Fallback to random if no Q-values are known for legal actions
+             return random.choice(valid_actions) if valid_actions else None
 
         # If all Q-values for valid actions are the same (e.g., all 0 for an unseen state), choose randomly
-        if len(set(q_values.values())) <= 1:
+        if len(set(valid_action_values.values())) <= 1:
             return random.choice(valid_actions)
 
         # Otherwise, choose the action with the highest Q-value
-        best_action = max(q_values.items(), key=lambda item: item[1])[0]
+        best_action = max(valid_action_values, key=valid_action_values.get)
         return best_action
 
     # This method is specific to QLearning's Monte Carlo update strategy
@@ -175,8 +184,9 @@ class QLearningAgent(Agent):
             for t in reversed(range(len(episode_history))):
                 state, action, _, _ = episode_history[t] # reward in history tuple is ignored for MC
                 state_key = self._state_to_key(state)
-                # Ensure action is hashable (already handled in act, but double-check)
-                action_key = tuple(action) if isinstance(action, list) else action
+                # Action key is now just the action itself if it's simple (like int for FourInARow)
+                # or tuple for complex actions (like Nim)
+                action_key = action # Assumes action is already hashable (int or tuple)
 
                 # Monte Carlo target is the discounted final reward from this state onwards
                 # Monte Carlo target is the discounted final reward from this state onwards

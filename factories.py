@@ -6,7 +6,7 @@ from core.config import (
     EnvConfig,
 )
 from environments.base import BaseEnvironment
-from environments.four_in_a_row import FourInARow
+from environments.four_in_a_row import Connect4
 from environments.nim_env import NimEnv
 from agents.mcts_agent import MCTSAgent
 from agents.qlearning import (
@@ -21,11 +21,13 @@ from utils.plotting import plot_results
 def get_environment(env_config: EnvConfig) -> BaseEnvironment:
     """Factory function to create environment instances."""
     if env_config.name.lower() == "fourinarow":
+        # Use connect4 specific dimensions from config
         print(
-            f"Using FourInARow environment ({env_config.board_size}x{env_config.board_size})"
+            f"Using FourInARow environment ({env_config.connect4_width}x{env_config.connect4_height})"
         )
-        return FourInARow(
-            board_size=env_config.board_size,
+        return Connect4(
+            width=env_config.connect4_width,
+            height=env_config.connect4_height,
             num_players=env_config.num_players,
             max_steps=env_config.max_steps,
         )

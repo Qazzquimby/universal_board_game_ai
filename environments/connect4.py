@@ -4,32 +4,36 @@ import numpy as np
 
 from environments.base import BaseEnvironment, StateType
 
-BoardGameActionType = Tuple[int, int]
+# Action is now just the column index
+ColumnActionType = int
 
 
-class FourInARow(BaseEnvironment):
+class Connect4(BaseEnvironment):
     """
-    A board game environment following PettingZoo-like conventions.
-    Implements a Connect-4 style game on a square board.
+    Implements the standard Connect-4 game with gravity.
+    Board size is width x height (e.g., 7 columns x 6 rows).
     """
 
-    metadata = {"render_modes": ["human"], "name": "four_in_a_row"}
+    metadata = {"render_modes": ["human"], "name": "connect4"}
 
-    def __init__(self, board_size: int = 4, num_players: int = 2, max_steps: int = 100):
+    def __init__(
+        self, width: int = 7, height: int = 6, num_players: int = 2, max_steps: int = 43
+    ):
         """
-        Initialize the board game environment.
+        Initialize the Connect-4 environment.
 
         Args:
-            board_size: The size of the board (board_size x board_size)
-            num_players: Number of players in the game
-            max_steps: Maximum number of steps before the game is considered a draw
+            width: Number of columns (default 7).
+            height: Number of rows (default 6).
+            num_players: Number of players (default 2).
+            max_steps: Maximum number of steps before draw (default width*height + 1).
         """
-        self._board_size = board_size
+        self._width = width
+        self._height = height
         self._num_players = num_players
         self._max_steps = max_steps
 
-        # Action space: all possible (row, col) combinations
-        self.num_actions = self._board_size * self._board_size  # Use internal attribute
+        self.num_actions = self._width
 
         # State tracking
         self.board = None
@@ -47,8 +51,12 @@ class FourInARow(BaseEnvironment):
         return self._num_players
 
     @property
-    def board_size(self) -> int:
-        return self._board_size
+    def width(self) -> int:
+        return self._width
+
+    @property
+    def height(self) -> int:
+        return self._height
 
     # Ensure method signatures match EnvInterface
     def reset(self) -> StateType:
@@ -58,8 +66,8 @@ class FourInARow(BaseEnvironment):
         Returns:
             observation: The initial observation
         """
-        # Initialize an empty board
-        self.board = np.zeros((self._board_size, self._board_size), dtype=np.int8)
+        # Initialize an empty board (height x width)
+        self.board = np.zeros((self._height, self._width), dtype=np.int8)
         self.current_player = 0
         self.done = False
         self.winner = None
@@ -69,12 +77,12 @@ class FourInARow(BaseEnvironment):
 
         return self.get_observation()
 
-    def step(self, action: Tuple[int, int]) -> Tuple[Dict[str, Any], float, bool]:
+    def step(self, action: ColumnActionType) -> Tuple[Dict[str, Any], float, bool]:
         """
-        Take a step in the environment.
+        Take a step in the environment by dropping a piece in a column.
 
         Args:
-            action: A tuple (row, col) representing the position to place a piece
+            action: The column index where the piece is dropped.
 
         Returns:
             observation: The current observation after taking the action
@@ -89,22 +97,37 @@ class FourInARow(BaseEnvironment):
                 True,
             )
 
-        row, col = action  # Assumes action is BoardGameActionType
-        self.last_action = action
+        col = action  # Action is the column index
+        self.last_action = col  # Store the column chosen
 
         # Reset rewards for all players
         self.rewards = {i: 0.0 for i in range(self.num_players)}
 
         # Check if action is valid
-        if not self._is_valid_action(action):
-            # Raise error for invalid actions, consistent with NimEnv
-            raise ValueError(f"Invalid action {action} for board state.")
+        if not self._is_valid_action(col):
+            # Raise error for invalid actions (column full or out of bounds)
+            raise ValueError(f"Invalid action (column {col}) for board state.")
 
-        # Place piece on the board
+        # Find the lowest available row in the chosen column (gravity)
+        row = -1
+        for r in range(
+            self._height - 1, -1, -1
+        ):  # Iterate from bottom row (height-1) up to 0
+            if self.board[r, col] == 0:
+                row = r
+                break
+
+        # This check should be redundant if _is_valid_action is correct, but safety first
+        if row == -1:
+            raise ValueError(
+                f"Column {col} is full, but was considered a valid action."
+            )
+
+        # Place piece on the board at the calculated row
         self.board[row, col] = self.current_player + 1
         self.step_count += 1
 
-        # Check for win
+        # Check for win starting from the placed piece's location (row, col)
         if self._check_win(row, col):
             self.done = True
             self.winner = self.current_player
@@ -131,18 +154,14 @@ class FourInARow(BaseEnvironment):
 
         return self.get_observation(), reward_for_acting_player, self.done
 
-    def _is_valid_action(self, action: Tuple[int, int]) -> bool:
-        """Check if an action is valid."""
-        row, col = action
-
-        # Check if position is within bounds
-        if row < 0 or row >= self._board_size or col < 0 or col >= self._board_size:
+    def _is_valid_action(self, col: ColumnActionType) -> bool:
+        """Check if dropping a piece in the column is valid."""
+        # Check column bounds
+        if not (0 <= col < self._width):
             return False
-
-        # Check if position is empty
-        if self.board[row, col] != 0:
+        # Check if the top cell (row 0) of the column is empty
+        if self.board[0, col] != 0:
             return False
-
         return True
 
     # Make private methods conventionally private
@@ -155,12 +174,13 @@ class FourInARow(BaseEnvironment):
         player = self.current_player
         player_piece = player + 1
         board = self.board
-        size = self._board_size
-        win_condition = 4  # Connect-4 style
+        height = self._height
+        width = self._width
+        win_condition = 4
 
         # --- Check Horizontal ---
         count = 0
-        for c in range(size):
+        for c in range(width):  # Iterate through columns
             if board[row, c] == player_piece:
                 count += 1
                 if count >= win_condition:
@@ -171,7 +191,7 @@ class FourInARow(BaseEnvironment):
 
         # --- Check Vertical ---
         count = 0
-        for r in range(size):
+        for r in range(height):  # Iterate through rows
             if board[r, col] == player_piece:
                 count += 1
                 if count >= win_condition:
@@ -185,35 +205,36 @@ class FourInARow(BaseEnvironment):
         # Iterate along the diagonal line passing through (row, col)
         for i in range(-(win_condition - 1), win_condition):
             r, c = row + i, col + i
-            if 0 <= r < size and 0 <= c < size:
+            if 0 <= r < height and 0 <= c < width:  # Check against height and width
                 if board[r, c] == player_piece:
                     count += 1
                     if count >= win_condition:
                         self.winner = player
                         return True
                 else:
-                    count = 0
-            # Reset count if we hit the edge or a different piece *within the check range*
-            # This handles cases where the winning line starts/ends near the check point
-            if not (0 <= r < size and 0 <= c < size) or board[r, c] != player_piece:
-                count = 0  # Reset if out of bounds or wrong piece
+                    count = 0  # Reset count if sequence breaks
+            # No need for explicit reset on out-of-bounds, loop structure handles it.
+            # Reset count only if the sequence of player pieces is broken.
+            elif count > 0:  # If we were in a sequence and went out of bounds
+                count = 0
 
         # --- Check Anti-Diagonal (top-right to bottom-left) ---
         count = 0
         # Iterate along the anti-diagonal line passing through (row, col)
         for i in range(-(win_condition - 1), win_condition):
             r, c = row + i, col - i
-            if 0 <= r < size and 0 <= c < size:
+            if 0 <= r < height and 0 <= c < width:  # Check against height and width
                 if board[r, c] == player_piece:
                     count += 1
                     if count >= win_condition:
                         self.winner = player
                         return True
                 else:
-                    count = 0
-            # Reset count if we hit the edge or a different piece *within the check range*
-            if not (0 <= r < size and 0 <= c < size) or board[r, c] != player_piece:
-                count = 0  # Reset if out of bounds or wrong piece
+                    count = 0  # Reset count if sequence breaks
+            # No need for explicit reset on out-of-bounds, loop structure handles it.
+            # Reset count only if the sequence of player pieces is broken.
+            elif count > 0:  # If we were in a sequence and went out of bounds
+                count = 0
 
         return False  # No win found for this player on this move
 
@@ -242,29 +263,34 @@ class FourInARow(BaseEnvironment):
         """
         if mode == "human":
             print(f"Step: {self.step_count}, Player: {self.current_player + 1}")
-            for row in range(self.board_size):
-                row_str = ""
-                for col in range(self.board_size):
-                    cell = self.board[row, col]
+            # Print column numbers
+            print("  " + " ".join(map(str, range(self._width))))
+            print(" +" + "--" * self._width + "+")
+            for r in range(self._height):
+                row_str = f"{r}|"  # Print row numbers
+                for c in range(self._width):
+                    cell = self.board[r, c]
                     if cell == 0:
-                        row_str += "· "
+                        row_str += " ·"
                     else:
-                        row_str += f"{cell} "
-                print(row_str)
+                        # Use different symbols or colors in a GUI
+                        row_str += f" {int(cell)}"  # Player number (1 or 2)
+                print(row_str + " |")
+            print(" +" + "--" * self._width + "+")
             print()
 
-    def get_legal_actions(self) -> List[Tuple[int, int]]:
+    def get_legal_actions(self) -> List[ColumnActionType]:
         """
-        Get a list of all valid actions.
+        Get a list of all valid actions (non-full column indices).
 
         Returns:
-            A list of valid actions as (row, col) tuples
+            A list of valid column indices.
         """
         valid_actions = []
-        for row in range(self._board_size):
-            for col in range(self._board_size):
-                if self.board[row, col] == 0:
-                    valid_actions.append((row, col))
+        for col in range(self._width):  # Iterate through columns
+            # A column is a legal action if its top cell (row 0) is empty
+            if self.board[0, col] == 0:
+                valid_actions.append(col)
         return valid_actions
 
     # Ensure method signatures match EnvInterface
@@ -294,10 +320,11 @@ class FourInARow(BaseEnvironment):
         pass
 
     # Ensure method signatures match EnvInterface
-    def copy(self) -> "FourInARow":
+    def copy(self) -> "Connect4":
         """Create a copy of the environment"""
-        new_env = FourInARow(
-            board_size=self._board_size,
+        new_env = Connect4(
+            width=self._width,
+            height=self._height,
             num_players=self._num_players,
             max_steps=self._max_steps,
         )
