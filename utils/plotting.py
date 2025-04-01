@@ -1,53 +1,38 @@
 import matplotlib.pyplot as plt
+from typing import List
 
+def plot_losses(total_losses: List[float], value_losses: List[float], policy_losses: List[float]):
+    """Plots the training losses over iterations."""
+    if not total_losses: # Check if any losses were recorded
+        print("No loss data recorded to plot.")
+        return
 
-def plot_results(win_history, window_size=100):
-    """Plot the training results (win/loss/draw rates)."""
-    plt.figure(figsize=(12, 6))
+    iterations = range(1, len(total_losses) + 1)
 
-    # Calculate win/draw/loss rates using a sliding window
-    if len(win_history) >= window_size:
-        win_rates = []
-        draw_rates = []
-        loss_rates = []
+    plt.figure(figsize=(12, 8))
 
-        # Ensure window doesn't exceed history length
-        actual_window_size = min(window_size, len(win_history))
-
-        for i in range(len(win_history) - actual_window_size + 1):
-            window = win_history[i : i + actual_window_size]
-            win_rates.append(window.count(1) / actual_window_size)
-            draw_rates.append(window.count(0) / actual_window_size)
-            loss_rates.append(window.count(-1) / actual_window_size)
-
-        episodes = range(actual_window_size - 1, len(win_history))
-        plt.plot(
-            episodes, win_rates, "g-", label=f"Win Rate (Avg over {actual_window_size})"
-        )
-        plt.plot(
-            episodes,
-            draw_rates,
-            "y-",
-            label=f"Draw Rate (Avg over {actual_window_size})",
-        )
-        plt.plot(
-            episodes,
-            loss_rates,
-            "r-",
-            label=f"Loss Rate (Avg over {actual_window_size})",
-        )
-        plt.legend()
-        plt.ylim(-0.1, 1.1)  # Set Y-axis limits for rates
-
-    else:
-        # Plot raw outcomes if not enough data for smoothing
-        plt.plot(win_history, "b.", label="Episode Outcome (1:Win, 0:Draw, -1:Loss)")
-        plt.legend()
-        plt.ylim(-1.1, 1.1)  # Set Y-axis limits for outcomes
-
-    plt.title("Agent Training Performance Over Time")
-    plt.xlabel("Episode")
-    plt.ylabel("Rate / Outcome")
+    # Plot Total Loss
+    plt.subplot(3, 1, 1) # 3 rows, 1 column, 1st subplot
+    plt.plot(iterations, total_losses, 'b-', label='Total Loss')
+    plt.title('Training Losses Over Iterations')
+    plt.ylabel('Total Loss')
     plt.grid(True)
-    plt.tight_layout()
+    plt.legend()
+
+    # Plot Value Loss
+    plt.subplot(3, 1, 2) # 3 rows, 1 column, 2nd subplot
+    plt.plot(iterations, value_losses, 'r-', label='Value Loss')
+    plt.ylabel('Value Loss')
+    plt.grid(True)
+    plt.legend()
+
+    # Plot Policy Loss
+    plt.subplot(3, 1, 3) # 3 rows, 1 column, 3rd subplot
+    plt.plot(iterations, policy_losses, 'g-', label='Policy Loss')
+    plt.xlabel('Training Iteration (Learn Step)')
+    plt.ylabel('Policy Loss')
+    plt.grid(True)
+    plt.legend()
+
+    plt.tight_layout() # Adjust layout to prevent overlap
     plt.show()

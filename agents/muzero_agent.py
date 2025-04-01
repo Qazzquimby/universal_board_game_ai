@@ -1,7 +1,7 @@
 import random
 from pathlib import Path
 from collections import deque
-from typing import List, Tuple, Dict, Any # Added Dict and Any
+from typing import List, Tuple, Dict, Any  # Added Dict and Any
 
 import torch
 import torch.optim as optim
@@ -10,15 +10,14 @@ import numpy as np
 
 from core.agent_interface import Agent
 from environments.base import BaseEnvironment, StateType, ActionType
-from algorithms.mcts import MuZeroMCTS # Use the MuZero MCTS
-from models.networks import MuZeroNet # Use the MuZero Network
-from core.config import MuZeroConfig # Use the MuZero Config
-
-PROJECT_ROOT = Path(__file__).parent.parent
-DATA_DIR = PROJECT_ROOT / "data"
+from algorithms.mcts import MuZeroMCTS  # Use the MuZero MCTS
+from models.networks import MuZeroNet  # Use the MuZero Network
+from core.config import MuZeroConfig, DATA_DIR  # Use the MuZero Config
 
 # Define the structure for trajectory steps stored in the buffer
-TrajectoryStep = Dict[str, Any] # Keys: 'obs', 'action', 'reward', 'done', 'policy_target'
+TrajectoryStep = Dict[
+    str, Any
+]  # Keys: 'obs', 'action', 'reward', 'done', 'policy_target'
 Trajectory = List[TrajectoryStep]
 
 
@@ -83,18 +82,24 @@ class MuZeroAgent(Agent):
 
         # --- Action Selection (similar to AlphaZero) ---
         if not root_node.children:
-            print("Warning: MuZero MCTS root has no children after search. Choosing random action.")
+            print(
+                "Warning: MuZero MCTS root has no children after search. Choosing random action."
+            )
             # Need actual legal actions from the real environment state
-            legal_actions = self.env.get_legal_actions() # Assumes env reflects current state
+            legal_actions = (
+                self.env.get_legal_actions()
+            )  # Assumes env reflects current state
             return random.choice(legal_actions) if legal_actions else None
 
-        visit_counts = np.array([child.visit_count for child in root_node.children.values()])
+        visit_counts = np.array(
+            [child.visit_count for child in root_node.children.values()]
+        )
         actions = list(root_node.children.keys())
 
         if train:
             # TODO: Implement temperature logic
             temperature = 1.0
-            visit_counts_temp = visit_counts**(1.0 / temperature)
+            visit_counts_temp = visit_counts ** (1.0 / temperature)
             action_probs = visit_counts_temp / np.sum(visit_counts_temp)
             chosen_action_index = np.random.choice(len(actions), p=action_probs)
         else:
@@ -108,7 +113,6 @@ class MuZeroAgent(Agent):
             return chosen_action, policy_target
         else:
             return chosen_action
-
 
     # Add _calculate_policy_target helper (copied/adapted from AlphaZeroAgent)
     def _calculate_policy_target(self, actions, visit_counts) -> np.ndarray:
@@ -124,33 +128,44 @@ class MuZeroAgent(Agent):
                 if action_idx is not None and 0 <= action_idx < policy_size:
                     policy_target[action_idx] = visit_counts[i] / total_visits
                 else:
-                    print(f"Warning: Action {action_key} could not be mapped to index during policy target calculation.")
+                    print(
+                        f"Warning: Action {action_key} could not be mapped to index during policy target calculation."
+                    )
         else:
-            print("Warning: No visits recorded in MCTS root. Policy target will be zeros.")
+            print(
+                "Warning: No visits recorded in MCTS root. Policy target will be zeros."
+            )
         return policy_target
 
-
-    def observe(self, obs: StateType, action: ActionType, reward: float, done: bool, policy_target: np.ndarray):
-         """
-         Stores the transition step, including the MCTS policy target for the
-         observation *before* the action was taken.
-         """
-         # Store observation *before* action, the action taken, reward *after* action,
-         # done flag, and the policy target corresponding to the observation.
-         self._current_episode_trajectory.append({
-             'obs': obs,
-             'action': action,
-             'reward': reward,
-             'done': done,
-             'policy_target': policy_target
-         })
+    def observe(
+        self,
+        obs: StateType,
+        action: ActionType,
+        reward: float,
+        done: bool,
+        policy_target: np.ndarray,
+    ):
+        """
+        Stores the transition step, including the MCTS policy target for the
+        observation *before* the action was taken.
+        """
+        # Store observation *before* action, the action taken, reward *after* action,
+        # done flag, and the policy target corresponding to the observation.
+        self._current_episode_trajectory.append(
+            {
+                "obs": obs,
+                "action": action,
+                "reward": reward,
+                "done": done,
+                "policy_target": policy_target,
+            }
+        )
 
     def finish_episode(self):
         """Called at the end of an episode to store the trajectory."""
         if self._current_episode_trajectory:
-             self.replay_buffer.append(self._current_episode_trajectory)
+            self.replay_buffer.append(self._current_episode_trajectory)
         self._current_episode_trajectory = []
-
 
     def learn(self):
         """
@@ -159,7 +174,7 @@ class MuZeroAgent(Agent):
         (Placeholder - Actual implementation is complex)
         """
         if len(self.replay_buffer) < self.config.batch_size:
-            return # Not enough data
+            return  # Not enough data
 
         # 1. Sample a batch of trajectories from replay_buffer.
         #    batch_trajectories = random.sample(self.replay_buffer, self.config.batch_size)
@@ -182,12 +197,13 @@ class MuZeroAgent(Agent):
         # 3. Average losses across the batch.
         # 4. Perform gradient descent step using self.optimizer.
 
-        print(f"MuZeroAgent.learn() called - Placeholder. Buffer size: {len(self.replay_buffer)}")
+        print(
+            f"MuZeroAgent.learn() called - Placeholder. Buffer size: {len(self.replay_buffer)}"
+        )
         # TODO: Implement the actual MuZero loss calculation and training step.
         # This will involve calling network.representation, network.dynamics, network.prediction
         # within the unrolling loop and comparing with targets (MCTS policy, n-step returns, actual rewards).
         pass
-
 
     def _get_save_path(self) -> Path:
         """Constructs the save file path for the network weights."""
@@ -210,8 +226,10 @@ class MuZeroAgent(Agent):
         filepath = self._get_save_path()
         try:
             if filepath.exists():
-                map_location = torch.device('cpu')
-                self.network.load_state_dict(torch.load(filepath, map_location=map_location))
+                map_location = torch.device("cpu")
+                self.network.load_state_dict(
+                    torch.load(filepath, map_location=map_location)
+                )
                 self.network.eval()
                 print(f"MuZero network loaded from {filepath}")
                 return True

@@ -12,10 +12,7 @@ from core.agent_interface import Agent
 from environments.base import BaseEnvironment, StateType, ActionType
 from algorithms.mcts import AlphaZeroMCTS  # Use the specialized MCTS subclass
 from models.networks import AlphaZeroNet
-from core.config import AlphaZeroConfig
-
-PROJECT_ROOT = Path(__file__).parent.parent
-DATA_DIR = PROJECT_ROOT / "data"
+from core.config import AlphaZeroConfig, DATA_DIR
 
 
 class AlphaZeroAgent(Agent):
@@ -84,17 +81,23 @@ class AlphaZeroAgent(Agent):
         if self.config.debug_mode:
             try:
                 policy_np, value_np = self.network.predict(state)
-                print(f"[DEBUG Act] State: {state.get('board', state.get('piles', 'N/A'))}")
+                print(
+                    f"[DEBUG Act] State: {state.get('board', state.get('piles', 'N/A'))}"
+                )
                 print(f"[DEBUG Act] Network Value Prediction: {value_np:.4f}")
                 # Print top N policy priors for brevity
                 top_k = 5
-                legal_actions = self.env.get_legal_actions() # Need env copy? No, predict doesn't change state
+                legal_actions = (
+                    self.env.get_legal_actions()
+                )  # Need env copy? No, predict doesn't change state
                 action_probs = {}
                 for action in legal_actions:
-                     idx = self.network.get_action_index(action)
-                     if idx is not None and 0 <= idx < len(policy_np):
-                          action_probs[action] = policy_np[idx]
-                sorted_probs = sorted(action_probs.items(), key=lambda item: item[1], reverse=True)
+                    idx = self.network.get_action_index(action)
+                    if idx is not None and 0 <= idx < len(policy_np):
+                        action_probs[action] = policy_np[idx]
+                sorted_probs = sorted(
+                    action_probs.items(), key=lambda item: item[1], reverse=True
+                )
                 print(f"[DEBUG Act] Network Policy Priors (Top {top_k} Legal):")
                 for action, prob in sorted_probs[:top_k]:
                     print(f"  - {action}: {prob:.4f}")
@@ -136,11 +139,12 @@ class AlphaZeroAgent(Agent):
         # --- Optional Debug Print: MCTS Results ---
         if self.config.debug_mode:
             print(f"[DEBUG Act] MCTS Visit Counts:")
-            sorted_visits = sorted(zip(actions, visit_counts), key=lambda item: item[1], reverse=True)
+            sorted_visits = sorted(
+                zip(actions, visit_counts), key=lambda item: item[1], reverse=True
+            )
             for action, visits in sorted_visits:
-                 print(f"  - {action}: {visits}")
+                print(f"  - {action}: {visits}")
             print(f"[DEBUG Act] Chosen Action (Train={train}): {chosen_action}")
-
 
         # --- Store data for training if in training mode ---
         if train:
@@ -152,7 +156,7 @@ class AlphaZeroAgent(Agent):
             # The final outcome (value) will be added later in finish_episode.
             # Ensure state is copied or immutable if necessary (current state dicts seem okay)
             self._current_episode_history.append(
-                (state, chosen_action, policy_target) # Store as tuple
+                (state, chosen_action, policy_target)  # Store as tuple
             )
 
         return chosen_action
@@ -202,7 +206,9 @@ class AlphaZeroAgent(Agent):
         processed_history = []
         num_steps = len(self._current_episode_history)
 
-        for i, (state_at_step, action_taken, policy_target) in enumerate(self._current_episode_history):
+        for i, (state_at_step, action_taken, policy_target) in enumerate(
+            self._current_episode_history
+        ):
             # Determine the value target from the perspective of the player at that state
             player_at_step = state_at_step.get("current_player", -1)
 
@@ -218,9 +224,7 @@ class AlphaZeroAgent(Agent):
 
             # Add the experience tuple (state, policy_target, value_target) to replay buffer
             # Note: action_taken is NOT added to the replay buffer, only state, policy, value.
-            self.replay_buffer.append(
-                (state_at_step, policy_target, value_target)
-            )
+            self.replay_buffer.append((state_at_step, policy_target, value_target))
 
             # Store the full step info for the returned history log
             processed_history.append(
@@ -249,7 +253,6 @@ class AlphaZeroAgent(Agent):
         total_loss = value_loss + policy_loss
         return total_loss, value_loss, policy_loss
 
-
     # Conforms to Agent interface (no arguments)
     def learn(self):
         """
@@ -257,7 +260,7 @@ class AlphaZeroAgent(Agent):
         """
         if len(self.replay_buffer) < self.config.batch_size:
             # print(f"Skipping learn step: Buffer size {len(self.replay_buffer)} < Batch size {self.config.batch_size}")
-            return  # Not enough data to train yet
+            return None  # Return None if no learning happened
 
         # 1. Sample a batch from self.replay_buffer.
         batch = random.sample(self.replay_buffer, self.config.batch_size)
@@ -300,9 +303,14 @@ class AlphaZeroAgent(Agent):
 
         # Optional: Log losses
         if self.config.debug_mode:
-             print(f"[DEBUG Learn] Step Losses: Total={total_loss.item():.4f}, Value={value_loss.item():.4f}, Policy={policy_loss.item():.4f}")
+            print(
+                f"[DEBUG Learn] Step Losses: Total={total_loss.item():.4f}, Value={value_loss.item():.4f}, Policy={policy_loss.item():.4f}"
+            )
 
         self.network.eval()  # Switch back to eval mode after training step
+
+        # Return losses for monitoring
+        return total_loss.item(), value_loss.item(), policy_loss.item()
 
     def _get_save_path(self) -> Path:
         """Constructs the save file path for the network weights."""

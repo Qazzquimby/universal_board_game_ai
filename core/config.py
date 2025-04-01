@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import List
 
 # --- Environment Configuration ---
@@ -30,7 +31,7 @@ class QLearningConfig:
 class MCTSConfig:
     exploration_constant: float = 1.41
     discount_factor: float = 1.0  # Discount within the search tree
-    num_simulations: int = 100 # Default simulations for the benchmark MCTS
+    num_simulations: int = 100  # Default simulations for the benchmark MCTS
 
 
 @dataclass
@@ -45,24 +46,24 @@ class AlphaZeroConfig:
     batch_size: int = 64
     debug_mode: bool = False
     # MuZero specific - size of the hidden state representation
-    hidden_state_size: int = 128 # Example size, might need tuning
+    hidden_state_size: int = 128  # Example size, might need tuning
 
 
 @dataclass
 class MuZeroConfig:
     # Inherit/share some params with AlphaZero? Or keep separate? Let's keep separate for now.
-    num_simulations: int = 50 # Reduced default for MuZero as it's more complex per sim
+    num_simulations: int = 50  # Reduced default for MuZero as it's more complex per sim
     cpuct: float = 1.0
     learning_rate: float = 0.001
     weight_decay: float = 0.0001
-    hidden_state_size: int = 128 # Size of the latent state in dynamics/prediction
+    hidden_state_size: int = 128  # Size of the latent state in dynamics/prediction
     replay_buffer_size: int = 10000
-    batch_size: int = 32 # Smaller batch size might be needed due to unrolling
-    num_unroll_steps: int = 5 # Number of game steps to simulate in dynamics (k)
-    td_steps: int = 10 # Number of steps for n-step return calculation
-    value_loss_weight: float = 0.25 # Weight for value loss component
-    reward_loss_weight: float = 1.0 # Weight for reward loss component (often 1.0)
-    policy_loss_weight: float = 1.0 # Weight for policy loss component (often 1.0)
+    batch_size: int = 32  # Smaller batch size might be needed due to unrolling
+    num_unroll_steps: int = 5  # Number of game steps to simulate in dynamics (k)
+    td_steps: int = 10  # Number of steps for n-step return calculation
+    value_loss_weight: float = 0.25  # Weight for value loss component
+    reward_loss_weight: float = 1.0  # Weight for reward loss component (often 1.0)
+    policy_loss_weight: float = 1.0  # Weight for policy loss component (often 1.0)
     # TODO: Add support size for categorical value/reward if used later
     debug_mode: bool = False
 
@@ -82,7 +83,7 @@ class TrainingConfig:
 # --- Evaluation Configuration ---
 @dataclass
 class EvaluationConfig:
-    num_games: int = 50 # Number of games per matchup
+    num_games: int = 50  # Number of games per matchup
     # Elo parameters removed
 
 
@@ -93,12 +94,20 @@ class AppConfig:
     q_learning: QLearningConfig = field(default_factory=QLearningConfig)
     mcts: MCTSConfig = field(default_factory=MCTSConfig)
     alpha_zero: AlphaZeroConfig = field(default_factory=AlphaZeroConfig)
-    muzero: MuZeroConfig = field(default_factory=MuZeroConfig) # Add MuZero config
+    muzero: MuZeroConfig = field(default_factory=MuZeroConfig)  # Add MuZero config
     training: TrainingConfig = field(default_factory=TrainingConfig)
     evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
     # Flag to indicate if running in smoke test mode (can be set by test runner)
     smoke_test: bool = False
 
+
+PROJECT_ROOT = Path(__file__).resolve().parents
+for parent in PROJECT_ROOT:
+    if (parent / ".git").exists():
+        PROJECT_ROOT = parent
+        break
+
+DATA_DIR = PROJECT_ROOT / "data"
 
 # Example usage:
 # config = AppConfig()

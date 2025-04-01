@@ -8,11 +8,7 @@ import numpy as np
 
 from environments.base import BaseEnvironment, StateType, ActionType
 from core.agent_interface import Agent
-from core.config import QLearningConfig, TrainingConfig
-
-# Define data directory relative to project root
-PROJECT_ROOT = Path(__file__).parent.parent
-DATA_DIR = PROJECT_ROOT / "data"
+from core.config import QLearningConfig, TrainingConfig, DATA_DIR
 
 
 class QLearningAgent(Agent):

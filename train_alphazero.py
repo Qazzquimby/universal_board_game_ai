@@ -9,14 +9,12 @@ import numpy as np
 from tqdm import tqdm
 
 
-from core.config import AppConfig
+from core.config import AppConfig, DATA_DIR
 from environments.base import BaseEnvironment, StateType, ActionType
 from agents.alphazero_agent import AlphaZeroAgent
 from factories import get_environment
-from utils.plotting import plot_results
+from utils.plotting import plot_losses  # Import the new plotting function
 
-PROJECT_ROOT = Path(__file__).parent.parent
-DATA_DIR = PROJECT_ROOT / "data"
 LOG_DIR = DATA_DIR / "game_logs"
 
 
@@ -236,7 +234,10 @@ def run_training(config: AppConfig, env_name_override: str = None):
     print(f"Starting AlphaZero training for {num_training_iterations} iterations...")
     print(f"({num_episodes_per_iteration} self-play games per iteration)")
 
-    game_outcomes = []
+    # Lists to store losses for plotting
+    total_losses = []
+    value_losses = []
+    policy_losses = []
 
     # Disable tqdm if running smoke test to potentially avoid encoding issues
     use_tqdm = not config.smoke_test
@@ -255,9 +256,10 @@ def run_training(config: AppConfig, env_name_override: str = None):
         print("Running self-play games...")
         # Use enumerate to get game index for logging
         current_iteration_games = 0
+        # No need to track game outcomes for plotting anymore
         for game_idx in inner_loop_iterator:
-            outcome, steps, history = run_self_play_game(env, agent)
-            game_outcomes.append(outcome)
+            _, _, history = run_self_play_game(env, agent)  # Discard outcome and steps
+            # game_outcomes.append(outcome) # Removed
             current_iteration_games += 1
 
             # Save the game log after each game
@@ -271,7 +273,12 @@ def run_training(config: AppConfig, env_name_override: str = None):
         print("Running learning step...")
         # agent.network.train() # Network mode is handled within agent.learn()
         # TODO: Add epochs per learning step if desired (call learn multiple times)
-        agent.learn()
+        losses = agent.learn()
+        if losses:
+            total_loss, value_loss, policy_loss = losses
+            total_losses.append(total_loss)
+            value_losses.append(value_loss)
+            policy_losses.append(policy_loss)
 
         # 3. Save Checkpoint Periodically
         # TODO: Make save frequency configurable
@@ -279,24 +286,23 @@ def run_training(config: AppConfig, env_name_override: str = None):
             print("Saving agent checkpoint...")
             agent.save()
 
+        # Print buffer size and latest losses if available
         buffer_size = len(agent.replay_buffer)
-        window_size = min(len(game_outcomes), 100)  # Look at last 100 games
-        if window_size > 0:
-            win_rate = game_outcomes[-window_size:].count(1) / window_size
-            loss_rate = game_outcomes[-window_size:].count(-1) / window_size
-            draw_rate = game_outcomes[-window_size:].count(0) / window_size
+        print(
+            f"Iteration {iteration + 1} complete. Buffer size: {buffer_size}/{config.alpha_zero.replay_buffer_size}"
+        )
+        if total_losses:  # Check if any learning steps have occurred
             print(
-                f"Iteration {iteration + 1} complete. Buffer size: {buffer_size}/{config.alpha_zero.replay_buffer_size}"
-            )
-            print(
-                f"  Recent Performance (last {window_size} games): Wins={win_rate:.2f}, Losses={loss_rate:.2f}, Draws={draw_rate:.2f}"
+                f"  Latest Losses: Total={total_losses[-1]:.4f}, Value={value_losses[-1]:.4f}, Policy={policy_losses[-1]:.4f}"
             )
 
     print("\nTraining complete. Saving final agent state.")
     agent.save()
 
-    print("Plotting training results...")
-    plot_results(game_outcomes, window_size=config.training.plot_window)
+    print("Plotting training losses...")
+    plot_losses(
+        total_losses, value_losses, policy_losses
+    )  # Call the new plotting function
 
     print("\n--- AlphaZero Training Finished ---")
 
