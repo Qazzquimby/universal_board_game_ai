@@ -3,9 +3,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-from typing import Tuple, List, Optional # Import Optional
+from typing import Tuple, List, Optional  # Import Optional
 
-from environments.base import BaseEnvironment, ActionType # Import ActionType
+from environments.base import BaseEnvironment, ActionType  # Import ActionType
+
 
 class AlphaZeroNet(nn.Module):
     """
@@ -13,7 +14,13 @@ class AlphaZeroNet(nn.Module):
     Takes a flattened representation of the environment state.
     Outputs policy logits and a value prediction.
     """
-    def __init__(self, env: BaseEnvironment, hidden_layer_size: int = 128, num_hidden_layers: int = 2):
+
+    def __init__(
+        self,
+        env: BaseEnvironment,
+        hidden_layer_size: int = 128,
+        num_hidden_layers: int = 2,
+    ):
         super().__init__()
         self.env = env
 
@@ -44,7 +51,7 @@ class AlphaZeroNet(nn.Module):
         # Value head
         self.value_head = nn.Sequential(
             nn.Linear(hidden_layer_size, 1),
-            nn.Tanh() # Value prediction between -1 and 1
+            nn.Tanh(),  # Value prediction between -1 and 1
         )
 
         print(f"Initialized AlphaZeroNet:")
@@ -52,32 +59,35 @@ class AlphaZeroNet(nn.Module):
         print(f"  Policy size: {policy_size}")
         print(f"  Hidden layers: {num_hidden_layers} x {hidden_layer_size}")
 
-
     def _flatten_state(self, state_dict: dict) -> torch.Tensor:
         """Flattens the state dictionary into a single tensor."""
         flat_tensors = []
         # Process known keys first
-        if 'board' in state_dict:
-            board = state_dict['board']
+        if "board" in state_dict:
+            board = state_dict["board"]
             if isinstance(board, np.ndarray):
                 flat_tensors.append(torch.from_numpy(board).float().flatten())
             elif torch.is_tensor(board):
                 flat_tensors.append(board.float().flatten())
-        elif 'piles' in state_dict:
-            piles = state_dict['piles']
+        elif "piles" in state_dict:
+            piles = state_dict["piles"]
             if isinstance(piles, tuple):
                 flat_tensors.append(torch.tensor(piles, dtype=torch.float32))
             elif torch.is_tensor(piles):
-                 flat_tensors.append(piles.float())
+                flat_tensors.append(piles.float())
             elif isinstance(piles, np.ndarray):
-                 flat_tensors.append(torch.from_numpy(piles).float())
+                flat_tensors.append(torch.from_numpy(piles).float())
 
         # Add current player as a feature
-        flat_tensors.append(torch.tensor([state_dict.get('current_player', -1)], dtype=torch.float32))
+        flat_tensors.append(
+            torch.tensor([state_dict.get("current_player", -1)], dtype=torch.float32)
+        )
 
         # Concatenate all parts
         if not flat_tensors:
-             raise ValueError("Could not extract numerical data from state for network input.")
+            raise ValueError(
+                "Could not extract numerical data from state for network input."
+            )
 
         return torch.cat(flat_tensors)
 
@@ -98,60 +108,60 @@ class AlphaZeroNet(nn.Module):
         # For Nim: Max_piles * Max_items_per_pile (approximate, needs refinement)
         # Let's use a placeholder method that needs environment-specific implementation
         # or configuration.
-        if hasattr(env, 'num_actions'): # Like in FourInARow
+        if hasattr(env, "num_actions"):  # Like in connect4
             return env.num_actions
-        elif hasattr(env, 'board_size'): # Fallback for grid games
-             return env.board_size * env.board_size
-        elif hasattr(env, 'initial_piles'): # Specific logic for Nim
-             # Calculate size based on (pile_index, num_removed) pairs
-             # Requires knowing the maximum number removable from any pile,
-             # which depends on the initial state. Let's use the max initial pile size.
-             max_removable = max(env.initial_piles) if env.initial_piles else 1
-             num_piles = len(env.initial_piles)
-             return num_piles * max_removable
+        elif hasattr(env, "board_size"):  # Fallback for grid games
+            return env.board_size * env.board_size
+        elif hasattr(env, "initial_piles"):  # Specific logic for Nim
+            # Calculate size based on (pile_index, num_removed) pairs
+            # Requires knowing the maximum number removable from any pile,
+            # which depends on the initial state. Let's use the max initial pile size.
+            max_removable = max(env.initial_piles) if env.initial_piles else 1
+            num_piles = len(env.initial_piles)
+            return num_piles * max_removable
         else:
-            raise ValueError(f"Cannot determine policy size for environment type: {type(env).__name__}")
+            raise ValueError(
+                f"Cannot determine policy size for environment type: {type(env).__name__}"
+            )
 
     def get_action_index(self, action: ActionType) -> Optional[int]:
         """Maps an environment action to the corresponding index in the policy vector."""
-        env_type = type(self.env).__name__
+        env_type = type(self.env).__name__.lower()
 
-        if env_type == "FourInARow":
-            # Action is (row, col)
-            row, col = action
-            # Ensure board_size is accessible, maybe store it during init?
-            # Assuming env has board_size attribute accessible via self.env
-            if hasattr(self.env, 'board_size'):
-                 return row * self.env.board_size + col
-            else:
-                 print("Warning: Cannot get board_size from env in get_action_index")
-                 return None # Indicate failure
-        elif env_type == "NimEnv":
+        if env_type == "connect4":
+            return action  # column
+        elif env_type == "nimenv":
             # Action is (pile_index, num_to_remove)
             pile_idx, num_removed = action
-            if hasattr(self.env, 'initial_piles'):
-                 max_removable = max(self.env.initial_piles) if self.env.initial_piles else 1
-                 # Check bounds
-                 if 0 <= pile_idx < len(self.env.initial_piles) and 1 <= num_removed <= max_removable:
-                      # Map (pile_idx, num_removed) to a flat index
-                      # Example: index = pile_idx * max_removable + (num_removed - 1)
-                      return pile_idx * max_removable + (num_removed - 1)
-                 else:
-                      print(f"Warning: Invalid Nim action {action} for index calculation.")
-                      return None # Indicate failure
+            if hasattr(self.env, "initial_piles"):
+                max_removable = (
+                    max(self.env.initial_piles) if self.env.initial_piles else 1
+                )
+                # Check bounds
+                if (
+                    0 <= pile_idx < len(self.env.initial_piles)
+                    and 1 <= num_removed <= max_removable
+                ):
+                    # Map (pile_idx, num_removed) to a flat index
+                    # Example: index = pile_idx * max_removable + (num_removed - 1)
+                    return pile_idx * max_removable + (num_removed - 1)
+                else:
+                    print(
+                        f"Warning: Invalid Nim action {action} for index calculation."
+                    )
+                    return None  # Indicate failure
             else:
-                 print("Warning: Cannot get initial_piles from env in get_action_index")
-                 return None # Indicate failure
+                print("Warning: Cannot get initial_piles from env in get_action_index")
+                return None  # Indicate failure
         else:
             print(f"Warning: Action indexing not implemented for env type {env_type}")
-            return None # Indicate failure
+            return None  # Indicate failure
 
     # Optional: Inverse mapping (might be useful later)
     # def get_action_from_index(self, index: int) -> Optional[ActionType]:
     #     """Maps a policy vector index back to an environment action."""
     #     # Implementation would depend on the logic in get_action_index
     #     pass
-
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -186,8 +196,8 @@ class AlphaZeroNet(nn.Module):
         Returns:
             A tuple containing (policy_probabilities_numpy, value_numpy).
         """
-        self.eval() # Set model to evaluation mode
-        flat_state = self._flatten_state(state_dict) # Flatten the input dict
+        self.eval()  # Set model to evaluation mode
+        flat_state = self._flatten_state(state_dict)  # Flatten the input dict
         # TODO: Add device handling if needed: flat_state = flat_state.to(self.device)
         with torch.no_grad():
             # Pass the flattened tensor to forward
@@ -198,6 +208,6 @@ class AlphaZeroNet(nn.Module):
 
             # Move to CPU, detach, and convert to numpy
             policy_np = policy_probs.squeeze(0).cpu().numpy()
-            value_np = value.squeeze(0).cpu().item() # Get scalar value
+            value_np = value.squeeze(0).cpu().item()  # Get scalar value
 
         return policy_np, value_np

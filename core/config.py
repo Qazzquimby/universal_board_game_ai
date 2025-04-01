@@ -4,15 +4,16 @@ from typing import List
 # --- Environment Configuration ---
 @dataclass
 class EnvConfig:
-    name: str = "FourInARow"  # Default environment
-    board_size: int = 4  # Specific to FourInARow
+    name: str = "connect4"  # Default environment
+    width: int = 7
+    height: int = 6
     num_players: int = 2
     max_steps: int = field(init=False)  # Calculated post-init
     nim_piles: List[int] = field(default_factory=lambda: [3, 5, 7])  # Specific to Nim
 
     def __post_init__(self):
         # Calculate max_steps based on board_size if applicable
-        self.max_steps = self.board_size * self.board_size + 1
+        self.max_steps = self.width * self.height + 1
 
 
 # --- Agent-Specific Configurations ---
@@ -43,7 +44,7 @@ class AlphaZeroConfig:
     num_hidden_layers: int = 2  # Number of hidden layers in the MLP
     replay_buffer_size: int = 10000
     batch_size: int = 64
-    debug_mode: bool = True  # Add flag for detailed debug prints
+    debug_mode: bool = False
 
 
 # --- Training Configuration ---
@@ -54,7 +55,7 @@ class TrainingConfig:
     plot_window: int = 200
 
     # Specific to AlphaZero training loop in train_alphazero.py
-    num_iterations: int = 2
+    num_iterations: int = 100
     num_episodes_per_iteration: int = 25
 
 

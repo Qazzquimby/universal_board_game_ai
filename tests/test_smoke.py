@@ -22,7 +22,7 @@ class TestSmoke(unittest.TestCase):
     def _get_smoke_config(self) -> AppConfig:
         """Creates a config object with minimal settings for smoke tests."""
         config = AppConfig()
-        config.smoke_test = True # Set the smoke test flag
+        config.smoke_test = True  # Set the smoke test flag
 
         # Evaluation settings
         config.evaluation.num_games = 2
@@ -30,7 +30,9 @@ class TestSmoke(unittest.TestCase):
 
         # MCTS settings
         config.mcts.num_simulations_short = 2
-        config.mcts.num_simulations_long = 3 # Keep slightly different for MCTS_200 if included
+        config.mcts.num_simulations_long = (
+            3  # Keep slightly different for MCTS_200 if included
+        )
 
         # AlphaZero settings
         config.alpha_zero.num_simulations = 2
@@ -38,21 +40,21 @@ class TestSmoke(unittest.TestCase):
         config.alpha_zero.batch_size = 4
 
         # Training settings
-        config.training.num_episodes = 2 # Q-learning episodes
-        config.training.num_iterations = 1 # AlphaZero iterations
-        config.training.num_episodes_per_iteration = 1 # AlphaZero self-play games
+        config.training.num_episodes = 2  # Q-learning episodes
+        config.training.num_iterations = 1  # AlphaZero iterations
+        config.training.num_episodes_per_iteration = 1  # AlphaZero self-play games
 
         return config
 
-    def test_main_evaluation_fourinarow(self):
-        """Smoke test main evaluation logic with FourInARow."""
-        print("\n--- Running Smoke Test: main.py FourInARow ---")
+    def test_main_evaluation_connect4(self):
+        """Smoke test main evaluation logic with connect4."""
+        print("\n--- Running Smoke Test: main.py connect4 ---")
         config = self._get_smoke_config()
-        config.env.name = "FourInARow"
+        config.env.name = "connect4"
         try:
             run_main(config)
         except Exception as e:
-            self.fail(f"run_main(FourInARow) failed with exception: {e}")
+            self.fail(f"run_main(connect4) failed with exception: {e}")
 
     def test_main_evaluation_nim(self):
         """Smoke test main evaluation logic with Nim."""
@@ -64,16 +66,16 @@ class TestSmoke(unittest.TestCase):
         except Exception as e:
             self.fail(f"run_main(Nim) failed with exception: {e}")
 
-    def test_train_alphazero_fourinarow(self):
-        """Smoke test AlphaZero training logic with FourInARow."""
-        print("\n--- Running Smoke Test: train_alphazero.py FourInARow ---")
+    def test_train_alphazero_connect4(self):
+        """Smoke test AlphaZero training logic with connect4."""
+        print("\n--- Running Smoke Test: train_alphazero.py connect4 ---")
         config = self._get_smoke_config()
         # run_training takes env name override separately if needed, but setting config is fine
-        config.env.name = "FourInARow"
+        config.env.name = "connect4"
         try:
             run_training(config)
         except Exception as e:
-            self.fail(f"run_training(FourInARow) failed with exception: {e}")
+            self.fail(f"run_training(connect4) failed with exception: {e}")
 
     def test_train_alphazero_nim(self):
         """Smoke test AlphaZero training logic with Nim."""

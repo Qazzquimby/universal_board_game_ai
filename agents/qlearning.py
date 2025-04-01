@@ -112,19 +112,23 @@ class QLearningAgent(Agent):
 
         # Exploitation: choose best action based on Q-values
         action_values = self.q_table[state_key]
-        valid_actions = self.env.get_legal_actions() # Get current legal actions
+        valid_actions = self.env.get_legal_actions()  # Get current legal actions
 
         # Filter Q-values for legal actions only
         valid_action_values = {}
         for action in valid_actions:
-             # Action key is the action itself (int for FourInARow, tuple for Nim)
-             action_key = action
-             valid_action_values[action] = action_values.get(action_key, 0.0) # Default to 0 if action not seen
+            # Action key is the action itself (int for connect4, tuple for Nim)
+            action_key = action
+            valid_action_values[action] = action_values.get(
+                action_key, 0.0
+            )  # Default to 0 if action not seen
 
         if not valid_action_values:
-             print("Warning: No legal actions found or no Q-values for legal actions in QLearningAgent.act")
-             # Fallback to random if no Q-values are known for legal actions
-             return random.choice(valid_actions) if valid_actions else None
+            print(
+                "Warning: No legal actions found or no Q-values for legal actions in QLearningAgent.act"
+            )
+            # Fallback to random if no Q-values are known for legal actions
+            return random.choice(valid_actions) if valid_actions else None
 
         # If all Q-values for valid actions are the same (e.g., all 0 for an unseen state), choose randomly
         if len(set(valid_action_values.values())) <= 1:
@@ -135,7 +139,11 @@ class QLearningAgent(Agent):
         return best_action
 
     # This method is specific to QLearning's Monte Carlo update strategy
-    def learn_from_episode(self, episode_history: List[Tuple[StateType, ActionType, float, bool]], final_reward_for_agent: float):
+    def learn_from_episode(
+        self,
+        episode_history: List[Tuple[StateType, ActionType, float, bool]],
+        final_reward_for_agent: float,
+    ):
         """
         Update Q-values using Monte Carlo method based on the final episode reward.
 
@@ -176,17 +184,21 @@ class QLearningAgent(Agent):
         last_state, _, _, last_done = episode_history[-1]
         final_reward_for_agent = 0.0
         if last_done:
-            winner = last_state.get("winner") # Get winner from the state *before* the last action
+            winner = last_state.get(
+                "winner"
+            )  # Get winner from the state *before* the last action
             # This logic is likely flawed. The winner is determined *after* the move.
             # --> Using the explicit final_reward_for_agent passed by the training loop.
 
             # Propagate the final reward back through the episode history
             for t in reversed(range(len(episode_history))):
-                state, action, _, _ = episode_history[t] # reward in history tuple is ignored for MC
+                state, action, _, _ = episode_history[
+                    t
+                ]  # reward in history tuple is ignored for MC
                 state_key = self._state_to_key(state)
-                # Action key is now just the action itself if it's simple (like int for FourInARow)
+                # Action key is now just the action itself if it's simple (like int for connect4)
                 # or tuple for complex actions (like Nim)
-                action_key = action # Assumes action is already hashable (int or tuple)
+                action_key = action  # Assumes action is already hashable (int or tuple)
 
                 # Monte Carlo target is the discounted final reward from this state onwards
                 # Monte Carlo target is the discounted final reward from this state onwards
@@ -195,14 +207,15 @@ class QLearningAgent(Agent):
                 )
 
                 # Q(s,a) <- Q(s,a) + alpha * (Target - Q(s,a))
-                old_value = self.q_table[state_key].get(action_key, 0.0) # Use .get for safety
+                old_value = self.q_table[state_key].get(
+                    action_key, 0.0
+                )  # Use .get for safety
                 self.q_table[state_key][
                     action_key
                 ] = old_value + self.config.learning_rate * (target_value - old_value)
         else:
-             # Should not happen if called after a full episode
-             print("Warning: QLearningAgent.learn called on incomplete episode history.")
-
+            # Should not happen if called after a full episode
+            print("Warning: QLearningAgent.learn called on incomplete episode history.")
 
     # Note: decay_exploration is now handled within the training loop itself
 
