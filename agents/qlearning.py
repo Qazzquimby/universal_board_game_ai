@@ -8,7 +8,7 @@ import numpy as np
 
 from environments.base import BaseEnvironment, StateType, ActionType
 from core.agent_interface import Agent
-from core.config import QLearningConfig
+from core.config import QLearningConfig, TrainingConfig
 
 # Define data directory relative to project root
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -249,44 +249,51 @@ class QLearningAgent(Agent):
 
 # --- Training Function ---
 
-def _play_one_qlearning_selfplay_episode(env: BaseEnvironment, agent: QLearningAgent) -> Tuple[List[Tuple], float]:
+
+def _play_one_qlearning_selfplay_episode(
+    env: BaseEnvironment, agent: QLearningAgent
+) -> Tuple[List[Tuple], float]:
     """Plays one episode of self-play, returning history and final reward for player 0."""
     obs = env.reset()
     done = False
     # Store history from player 0's perspective only
     episode_history_p0 = []
-    current_trajectory = [] # Temp store for full (s, a, r, d) sequence
+    current_trajectory = []  # Temp store for full (s, a, r, d) sequence
 
     while not done:
         current_player = env.get_current_player()
-        state = obs # Current observation before action
+        state = obs  # Current observation before action
 
         # Agent acts using its policy (epsilon-greedy)
         action = agent.act(state)
         if action is None:
-            print(f"Warning: Agent returned None action in state: {state}. Ending episode.")
+            print(
+                f"Warning: Agent returned None action in state: {state}. Ending episode."
+            )
             # Penalize the player who couldn't move? Assume draw for now.
             done = True
             reward = 0.0
             # Need to determine winner based on game rules if one player fails to move
-            winner = 1 - current_player # Assume opponent wins if player fails
-            break # Exit loop
+            winner = 1 - current_player  # Assume opponent wins if player fails
+            break  # Exit loop
 
         next_obs, reward, done = env.step(action)
 
         # Store step from the perspective of the player who acted
-        current_trajectory.append({
-            "player": current_player,
-            "state": state,
-            "action": action,
-            "reward": reward, # Reward received *after* this action
-            "done": done
-        })
+        current_trajectory.append(
+            {
+                "player": current_player,
+                "state": state,
+                "action": action,
+                "reward": reward,  # Reward received *after* this action
+                "done": done,
+            }
+        )
 
         # If the acting player was P0, store the state-action pair for learning later
         if current_player == 0:
-             # Store state *before* action, action taken, reward *after* action, done *after* action
-             episode_history_p0.append((state, action, reward, done))
+            # Store state *before* action, action taken, reward *after* action, done *after* action
+            episode_history_p0.append((state, action, reward, done))
 
         obs = next_obs
 
@@ -294,16 +301,16 @@ def _play_one_qlearning_selfplay_episode(env: BaseEnvironment, agent: QLearningA
     winner = env.get_winning_player()
     if winner == 0:
         final_reward_for_agent0 = 1.0
-    elif winner is not None: # Player 1 won
+    elif winner is not None:  # Player 1 won
         final_reward_for_agent0 = -1.0
-    else: # Draw
+    else:  # Draw
         final_reward_for_agent0 = 0.0
 
     # Ensure the last 'done' flag in the history is correct
     # If P1 made the last move ending the game, P0's history might not reflect done=True
     if episode_history_p0 and not episode_history_p0[-1][-1] and done:
-         last_s, last_a, last_r, _ = episode_history_p0.pop()
-         episode_history_p0.append((last_s, last_a, last_r, True))
+        last_s, last_a, last_r, _ = episode_history_p0.pop()
+        episode_history_p0.append((last_s, last_a, last_r, True))
 
     return episode_history_p0, final_reward_for_agent0
 
@@ -313,24 +320,30 @@ def run_qlearning_training(
     agent: QLearningAgent,
     num_episodes: int,
     q_config: QLearningConfig,
-    training_config: 'TrainingConfig' # Pass general training config too
+    training_config: TrainingConfig,  # Pass general training config too
 ):
     """Train QLearning agent using self-play."""
-    win_history_p0 = [] # Track outcomes for player 0
+    win_history_p0 = []  # Track outcomes for player 0
     print(f"Starting Q-Learning self-play training for {num_episodes} episodes...")
 
     for episode in range(num_episodes):
         # Play one episode of self-play
-        episode_history_p0, final_reward_for_agent0 = _play_one_qlearning_selfplay_episode(env, agent)
+        (
+            episode_history_p0,
+            final_reward_for_agent0,
+        ) = _play_one_qlearning_selfplay_episode(env, agent)
 
         # Learn from the episode (only need history from P0's perspective)
         if episode_history_p0:
             agent.learn_from_episode(episode_history_p0, final_reward_for_agent0)
 
         # Record outcome for player 0
-        if final_reward_for_agent0 > 0: outcome = 1
-        elif final_reward_for_agent0 < 0: outcome = -1
-        else: outcome = 0
+        if final_reward_for_agent0 > 0:
+            outcome = 1
+        elif final_reward_for_agent0 < 0:
+            outcome = -1
+        else:
+            outcome = 0
         win_history_p0.append(outcome)
 
         # Decay exploration rate after each episode
@@ -341,7 +354,9 @@ def run_qlearning_training(
 
         # Print progress occasionally
         plot_window = training_config.plot_window
-        print_interval = (num_episodes // 20 if num_episodes >= 20 else 1) # Print ~20 times
+        print_interval = (
+            num_episodes // 20 if num_episodes >= 20 else 1
+        )  # Print ~20 times
         if (episode + 1) % print_interval == 0:
             window_size = plot_window if plot_window <= episode else episode + 1
             if window_size > 0:

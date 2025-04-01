@@ -12,6 +12,7 @@ from agents.mcts_agent import MCTSAgent
 from agents.qlearning import QLearningAgent
 from agents.random_agent import RandomAgent
 from agents.alphazero_agent import AlphaZeroAgent
+
 # Import MuZeroAgent when ready
 # from agents.muzero_agent import MuZeroAgent
 
@@ -44,13 +45,14 @@ def get_agents(env: BaseEnvironment, config: AppConfig) -> Dict[str, Agent]:
     # Training should happen separately via a dedicated script (e.g., train_qlearning.py).
     ql_agent = QLearningAgent(env, config.q_learning)
     if not ql_agent.load():
-        print("WARNING: Could not load pre-trained Q-table. Agent will play randomly/poorly.")
+        print(
+            "WARNING: Could not load pre-trained Q-table. Agent will play randomly/poorly."
+        )
         # Do NOT train here. Evaluation assumes agent is already trained.
     else:
         print("Loaded pre-trained Q-learning agent.")
     # Ensure Q-agent used for evaluation has exploration turned off or minimized
     ql_agent.exploration_rate = config.q_learning.min_exploration
-
 
     # --- AlphaZero Agent Initialization ---
     # Instantiate AlphaZero agent and attempt to load weights.
