@@ -180,6 +180,14 @@ def load_game_logs_into_buffer(agent: AlphaZeroAgent, env_name: str, buffer_limi
                 ):
                     # Convert policy back to numpy array
                     policy_target = np.array(policy_target_list, dtype=np.float32)
+
+                    # --- Standardize state loaded from JSON ---
+                    # Convert board/piles list back to numpy array
+                    if 'board' in state and isinstance(state['board'], list):
+                        state['board'] = np.array(state['board'], dtype=np.int8) # Match Connect4 dtype
+                    elif 'piles' in state and isinstance(state['piles'], list):
+                        state['piles'] = np.array(state['piles'], dtype=np.int32) # Match NimEnv dtype
+
                     agent.replay_buffer.append((state, policy_target, value_target))
                     loaded_steps += 1
                     steps_in_game += 1
@@ -296,6 +304,10 @@ def run_training(config: AppConfig, env_name_override: str = None):
                 f"  Latest Losses: Total={total_losses[-1]:.4f}, Value={value_losses[-1]:.4f}, Policy={policy_losses[-1]:.4f}"
             )
 
+        # 4. Run Sanity Checks Periodically
+        if config.training.sanity_check_frequency > 0 and (iteration + 1) % config.training.sanity_check_frequency == 0:
+            run_sanity_checks(env, agent) # Run checks on the current agent state
+
     print("\nTraining complete. Saving final agent state.")
     agent.save()
 
@@ -304,7 +316,9 @@ def run_training(config: AppConfig, env_name_override: str = None):
         total_losses, value_losses, policy_losses
     )  # Call the new plotting function
 
-    # Run sanity checks on the final trained agent
+    # Run sanity checks one last time on the final trained agent
+    # This ensures checks run even if num_iterations isn't a multiple of frequency
+    print("\n--- Running Final Sanity Checks ---")
     run_sanity_checks(env, agent)
 
     print("\n--- AlphaZero Training Finished ---")

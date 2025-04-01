@@ -69,15 +69,24 @@ class AlphaZeroNet(nn.Module):
             if isinstance(board, np.ndarray):
                 flat_tensors.append(torch.from_numpy(board).float().flatten())
             elif torch.is_tensor(board):
+                print(
+                    "Warning: Board tensor encountered in _flatten_state, expected ndarray."
+                )
                 flat_tensors.append(board.float().flatten())
         elif "piles" in state_dict:
             piles = state_dict["piles"]
-            if isinstance(piles, tuple):
-                flat_tensors.append(torch.tensor(piles, dtype=torch.float32))
-            elif torch.is_tensor(piles):
-                flat_tensors.append(piles.float())
-            elif isinstance(piles, np.ndarray):
+            # Expect NumPy array now
+            if isinstance(piles, np.ndarray):
                 flat_tensors.append(torch.from_numpy(piles).float())
+            # Keep tensor handling just in case
+            elif torch.is_tensor(piles):
+                print(
+                    "Warning: Piles tensor encountered in _flatten_state, expected ndarray."
+                )
+                flat_tensors.append(piles.float())
+            # Remove tuple handling as we standardize to ndarray
+            # elif isinstance(piles, tuple):
+            #     flat_tensors.append(torch.tensor(piles, dtype=torch.float32))
 
         # Add current player as a feature
         flat_tensors.append(
@@ -172,23 +181,27 @@ class AlphaZeroNet(nn.Module):
             return index
         elif env_type == "nimenv":
             if hasattr(self.env, "initial_piles"):
-                max_removable = max(self.env.initial_piles) if self.env.initial_piles else 1
-                if max_removable == 0: return None # Avoid division by zero if max_removable is 0
+                max_removable = (
+                    max(self.env.initial_piles) if self.env.initial_piles else 1
+                )
+                if max_removable == 0:
+                    return None  # Avoid division by zero if max_removable is 0
                 pile_idx = index // max_removable
                 num_removed = (index % max_removable) + 1
                 # Basic check if this action could be valid (doesn't check current pile state)
                 if 0 <= pile_idx < len(self.env.initial_piles) and num_removed >= 1:
-                     return (pile_idx, num_removed)
+                    return (pile_idx, num_removed)
                 else:
-                     # print(f"Warning: Could not reconstruct valid Nim action for index {index}")
-                     return None
+                    # print(f"Warning: Could not reconstruct valid Nim action for index {index}")
+                    return None
             else:
                 # print("Warning: Cannot get initial_piles for Nim action reconstruction.")
                 return None
         else:
-            print(f"Warning: Inverse action mapping not implemented for env type {env_type}")
+            print(
+                f"Warning: Inverse action mapping not implemented for env type {env_type}"
+            )
             return None
-
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -343,17 +356,28 @@ class MuZeroNet(nn.Module):
         if "board" in state_dict:
             board = state_dict["board"]
             if isinstance(board, np.ndarray):
+                # Expect NumPy array now
                 flat_tensors.append(torch.from_numpy(board).float().flatten())
+            # Keep tensor handling just in case, though standardization should prevent it
             elif torch.is_tensor(board):
+                print(
+                    "Warning: Board tensor encountered in MuZeroNet._flatten_state, expected ndarray."
+                )
                 flat_tensors.append(board.float().flatten())
         elif "piles" in state_dict:
             piles = state_dict["piles"]
-            if isinstance(piles, tuple):
-                flat_tensors.append(torch.tensor(piles, dtype=torch.float32))
-            elif torch.is_tensor(piles):
-                flat_tensors.append(piles.float())
-            elif isinstance(piles, np.ndarray):
+            # Expect NumPy array now
+            if isinstance(piles, np.ndarray):
                 flat_tensors.append(torch.from_numpy(piles).float())
+            # Keep tensor handling just in case
+            elif torch.is_tensor(piles):
+                print(
+                    "Warning: Piles tensor encountered in MuZeroNet._flatten_state, expected ndarray."
+                )
+                flat_tensors.append(piles.float())
+            # Remove tuple handling as we standardize to ndarray
+            # elif isinstance(piles, tuple):
+            #     flat_tensors.append(torch.tensor(piles, dtype=torch.float32))
 
         flat_tensors.append(
             torch.tensor([state_dict.get("current_player", -1)], dtype=torch.float32)
@@ -421,16 +445,21 @@ class MuZeroNet(nn.Module):
             return index
         elif env_type == "nimenv":
             if hasattr(self.env, "initial_piles"):
-                max_removable = max(self.env.initial_piles) if self.env.initial_piles else 1
-                if max_removable == 0: return None
+                max_removable = (
+                    max(self.env.initial_piles) if self.env.initial_piles else 1
+                )
+                if max_removable == 0:
+                    return None
                 pile_idx = index // max_removable
                 num_removed = (index % max_removable) + 1
                 if 0 <= pile_idx < len(self.env.initial_piles) and num_removed >= 1:
-                     return (pile_idx, num_removed)
-                else: return None
-            else: return None
-        else: return None
-
+                    return (pile_idx, num_removed)
+                else:
+                    return None
+            else:
+                return None
+        else:
+            return None
 
     def _encode_action(self, action: ActionType) -> torch.Tensor:
         """Encodes an action for input to the dynamics function."""

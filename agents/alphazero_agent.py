@@ -222,11 +222,19 @@ class AlphaZeroAgent(Agent):
                 )
                 value_target = 0.0
 
-            # Add the experience tuple (state, policy_target, value_target) to replay buffer
-            # Note: action_taken is NOT added to the replay buffer, only state, policy, value.
-            self.replay_buffer.append((state_at_step, policy_target, value_target))
+            # --- Standardize state before adding to buffer ---
+            # Ensure board/piles are numpy arrays for consistent network input processing
+            buffer_state = state_at_step.copy() # Avoid modifying original history state
+            if 'board' in buffer_state and not isinstance(buffer_state['board'], np.ndarray):
+                 buffer_state['board'] = np.array(buffer_state['board'], dtype=np.int8) # Or appropriate dtype
+            elif 'piles' in buffer_state and not isinstance(buffer_state['piles'], np.ndarray):
+                 # NimEnv currently returns tuple, convert it
+                 buffer_state['piles'] = np.array(buffer_state['piles'], dtype=np.int32)
 
-            # Store the full step info for the returned history log
+            # Add the experience tuple (standardized_state, policy_target, value_target) to replay buffer
+            self.replay_buffer.append((buffer_state, policy_target, value_target))
+
+            # Store the original step info (without modification) for the returned history log
             processed_history.append(
                 (state_at_step, action_taken, policy_target, value_target)
             )

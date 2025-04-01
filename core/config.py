@@ -75,9 +75,11 @@ class TrainingConfig:
     num_episodes: int = 5000
     plot_window: int = 200
 
-    # Specific to AlphaZero training loop in train_alphazero.py
-    num_iterations: int = 100
-    num_episodes_per_iteration: int = 25
+    # Specific to AlphaZero/MuZero training loops
+    num_iterations: int = 100  # Total training iterations
+    num_episodes_per_iteration: int = 25  # Self-play games per iteration
+    # How often (in iterations) to run sanity checks (0=only at end)
+    sanity_check_frequency: int = 3
 
 
 # --- Evaluation Configuration ---
