@@ -304,7 +304,67 @@ def run_training(config: AppConfig, env_name_override: str = None):
         total_losses, value_losses, policy_losses
     )  # Call the new plotting function
 
+    # Run sanity checks on the final trained agent
+    run_sanity_checks(env, agent)
+
     print("\n--- AlphaZero Training Finished ---")
+
+
+def run_sanity_checks(env: BaseEnvironment, agent: AlphaZeroAgent):
+    """Runs network predictions on predefined sanity check states."""
+    print("\n--- Running Sanity Checks on Final Network ---")
+    sanity_states = env.get_sanity_check_states()
+    agent.network.eval() # Ensure network is in eval mode
+
+    if not sanity_states:
+        print("No sanity check states defined for this environment.")
+        return
+
+    for description, state in sanity_states:
+        print(f"\nChecking State: {description}")
+        # Print board/piles for context
+        if 'board' in state:
+            print("Board:")
+            print(state['board'])
+        elif 'piles' in state:
+            print(f"Piles: {state['piles']}")
+        print(f"Current Player: {state['current_player']}")
+
+        try:
+            # Get network predictions
+            policy_np, value_np = agent.network.predict(state)
+            print(f"  Predicted Value: {value_np:.4f}")
+
+            # Get legal actions for this state to interpret policy
+            temp_env = env.copy()
+            temp_env.set_state(state)
+            legal_actions = temp_env.get_legal_actions()
+
+            action_probs = {}
+            for action in legal_actions:
+                idx = agent.network.get_action_index(action)
+                if idx is not None and 0 <= idx < len(policy_np):
+                    action_probs[action] = policy_np[idx]
+                else:
+                    action_probs[action] = -1 # Indicate mapping error
+
+            # Sort actions by predicted probability
+            sorted_probs = sorted(
+                action_probs.items(), key=lambda item: item[1], reverse=True
+            )
+
+            print(f"  Top Predicted Legal Actions:")
+            top_k = 5
+            for action, prob in sorted_probs[:top_k]:
+                if prob >= 0:
+                    print(f"    - {action}: {prob:.4f}")
+                else:
+                    print(f"    - {action}: (Error mapping action)")
+            if not legal_actions:
+                print("    - (No legal actions)")
+
+        except Exception as e:
+            print(f"  Error during prediction for this state: {e}")
 
 
 if __name__ == "__main__":

@@ -18,7 +18,7 @@ The current unvalidated plan is to
 - [ ] create graph versions of environments and zero models and iterate until performance is okay
 - [ ] instead of using fixed policy output, pass in legal actions as part of the gamestate and have
   variable sized policy output. Iterate until performance is okay.
-- [ ] gradually work with more complex games
+- [ ] gradually work with more complex games. Add components needing embeddings, stochasticity, partial info, etc.
 
 # Ideas
 

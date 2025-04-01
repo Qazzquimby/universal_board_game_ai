@@ -112,6 +112,16 @@ class BaseEnvironment(abc.ABC):
         """
         pass
 
+    @abc.abstractmethod
+    def get_sanity_check_states(self) -> List[Tuple[str, StateType]]:
+        """
+        Get a list of predefined states for sanity checking agent predictions.
+
+        Returns:
+            A list of tuples, where each tuple is (description, state_dict).
+        """
+        pass
+
     def render(self, mode: str = "human") -> None:
         """
         Render the environment state (optional).
