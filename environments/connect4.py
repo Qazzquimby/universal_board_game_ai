@@ -350,13 +350,16 @@ class Connect4(BaseEnvironment):
 
     def get_sanity_check_states(self) -> List[Tuple[str, StateType]]:
         """Returns predefined states for sanity checking Connect4."""
+        # Expected value is from the perspective of the state's current player
         states = []
 
         # --- State 1: Empty Board (Player 0's turn) ---
+        # Outcome unclear, depends on perfect play. Use 0.0
         desc1 = "Empty board, Player 0 turn"
         env1 = Connect4(width=self.width, height=self.height)
         state1 = env1.get_observation()
-        states.append((desc1, state1))
+        expected_value1 = 0.0
+        states.append((desc1, state1, expected_value1))
 
         # --- State 2: Player 0 can win horizontally in column 3 ---
         # Board:
@@ -368,15 +371,16 @@ class Connect4(BaseEnvironment):
         # 1 1 1 0 2 2 0  <- Player 0 to move
         desc2 = "Player 0 can win horizontally (col 3)"
         env2 = Connect4(width=self.width, height=self.height)
-        env2.board[5, 0] = 1 # P0
-        env2.board[5, 1] = 1 # P0
-        env2.board[5, 2] = 1 # P0
-        env2.board[5, 4] = 2 # P1
-        env2.board[5, 5] = 2 # P1
+        env2.board[5, 0] = 1  # P0
+        env2.board[5, 1] = 1  # P0
+        env2.board[5, 2] = 1  # P0
+        env2.board[5, 4] = 2  # P1
+        env2.board[5, 5] = 2  # P1
         env2.current_player = 0
         env2.step_count = 5
         state2 = env2.get_observation()
-        states.append((desc2, state2))
+        expected_value2 = 1.0  # Player 0 has a winning move
+        states.append((desc2, state2, expected_value2))
 
         # --- State 3: Player 1 can win vertically in column 0 ---
         # Board:
@@ -388,38 +392,42 @@ class Connect4(BaseEnvironment):
         # 1 0 1 0 0 0 0 <- Player 1 to move
         desc3 = "Player 1 can win vertically (col 0)"
         env3 = Connect4(width=self.width, height=self.height)
-        env3.board[5, 0] = 1 # P0
-        env3.board[4, 2] = 1 # P0
-        env3.board[5, 2] = 1 # P0
-        env3.board[3, 2] = 1 # P0
-        env3.board[4, 0] = 2 # P1
-        env3.board[3, 0] = 2 # P1
-        env3.board[2, 0] = 2 # P1
+        env3.board[5, 0] = 1  # P0
+        env3.board[4, 2] = 1  # P0
+        env3.board[5, 2] = 1  # P0
+        env3.board[3, 2] = 1  # P0
+        env3.board[4, 0] = 2  # P1
+        env3.board[3, 0] = 2  # P1
+        env3.board[2, 0] = 2  # P1
         env3.current_player = 1
         env3.step_count = 7
         state3 = env3.get_observation()
-        states.append((desc3, state3))
+        expected_value3 = 1.0  # Player 1 has a winning move
+        states.append((desc3, state3, expected_value3))
 
         # --- State 4: Player 0 must block Player 1's win in column 6 ---
         # Board:
         # 0 0 0 0 0 0 0
         # 0 0 0 0 0 0 0
         # 0 0 0 0 0 0 0
-        # 0 0 0 0 0 0 0
+        # 0 0 0 0 0 0 2
         # 1 1 0 0 0 0 2
-        # 1 1 0 0 0 2 2 <- Player 0 to move
+        # 1 1 0 0 0 0 2 <- Player 0 to move
         desc4 = "Player 0 must block P1 win (col 6)"
         env4 = Connect4(width=self.width, height=self.height)
-        env4.board[5, 0] = 1 # P0
-        env4.board[4, 0] = 1 # P0
-        env4.board[5, 1] = 1 # P0
-        env4.board[4, 1] = 1 # P0
-        env4.board[5, 5] = 2 # P1
-        env4.board[4, 6] = 2 # P1
-        env4.board[5, 6] = 2 # P1
+        env4.board[5, 0] = 1  # P0
+        env4.board[4, 0] = 1  # P0
+        env4.board[5, 1] = 1  # P0
+        env4.board[4, 1] = 1  # P0
+        env4.board[3, 6] = 2  # P1
+        env4.board[4, 6] = 2  # P1
+        env4.board[5, 6] = 2  # P1
         env4.current_player = 0
         env4.step_count = 7
         state4 = env4.get_observation()
-        states.append((desc4, state4))
+        # Player 0 *must* block, but doesn't guarantee a win. Outcome unclear. Use 0.0
+        # Alternatively, could argue it's slightly negative as P1 forced the block? Let's use 0.0 for simplicity.
+        expected_value4 = 0.0
+        states.append((desc4, state4, expected_value4))
 
         return states

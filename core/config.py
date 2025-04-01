@@ -38,13 +38,13 @@ class MCTSConfig:
 class AlphaZeroConfig:
     num_simulations: int = 100  # MCTS simulations per move
     cpuct: float = 1.0  # Exploration constant in PUCT formula
-    learning_rate: float = 0.001
+    learning_rate: float = 0.01  # Increased learning rate
     weight_decay: float = 0.0001
     hidden_layer_size: int = 128  # Size for the MLP hidden layers
     num_hidden_layers: int = 2  # Number of hidden layers in the MLP
     replay_buffer_size: int = 10000
     batch_size: int = 64
-    debug_mode: bool = False
+    debug_mode: bool = True
     # MuZero specific - size of the hidden state representation
     hidden_state_size: int = 128  # Example size, might need tuning
 
@@ -65,7 +65,7 @@ class MuZeroConfig:
     reward_loss_weight: float = 1.0  # Weight for reward loss component (often 1.0)
     policy_loss_weight: float = 1.0  # Weight for policy loss component (often 1.0)
     # TODO: Add support size for categorical value/reward if used later
-    debug_mode: bool = False
+    debug_mode: bool = True
 
 
 # --- Training Configuration ---
@@ -79,7 +79,7 @@ class TrainingConfig:
     num_iterations: int = 100  # Total training iterations
     num_episodes_per_iteration: int = 25  # Self-play games per iteration
     # How often (in iterations) to run sanity checks (0=only at end)
-    sanity_check_frequency: int = 3
+    sanity_check_frequency: int = 5
 
 
 # --- Evaluation Configuration ---

@@ -113,12 +113,14 @@ class BaseEnvironment(abc.ABC):
         pass
 
     @abc.abstractmethod
-    def get_sanity_check_states(self) -> List[Tuple[str, StateType]]:
+    def get_sanity_check_states(self) -> List[Tuple[str, StateType, float]]:
         """
         Get a list of predefined states for sanity checking agent predictions.
 
         Returns:
-            A list of tuples, where each tuple is (description, state_dict).
+            A list of tuples, where each tuple is (description, state_dict, expected_value).
+            Expected value is from the perspective of the current player in that state
+            (+1.0 for expected win, -1.0 for expected loss, 0.0 for draw/unclear).
         """
         pass
 

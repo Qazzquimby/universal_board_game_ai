@@ -171,39 +171,47 @@ class NimEnv(BaseEnvironment):
 
     def get_sanity_check_states(self) -> List[Tuple[str, StateType]]:
         """Returns predefined states for sanity checking Nim."""
+        # Expected value is from the perspective of the state's current player
         states = []
 
         # --- State 1: Initial State (e.g., [3, 5, 7]), Player 0 turn ---
+        # Nim sum 3^5^7 = 011 ^ 101 ^ 111 = 001 != 0. Winning state for P0.
         desc1 = f"Initial state {self.initial_piles}, Player 0 turn"
         env1 = NimEnv(list(self.initial_piles))
         state1 = env1.get_observation()
-        states.append((desc1, state1))
+        expected_value1 = 1.0
+        states.append((desc1, state1, expected_value1))
 
         # --- State 2: Simple winning state (Nim sum != 0), Player 0 turn ---
         # Piles [1, 2, 0] -> Nim sum = 1^2 = 3 != 0. Player 0 should win.
         # Optimal move: (1, 1) -> piles [1, 1, 0], Nim sum = 0
+        # Nim sum 1^2^0 = 3 != 0. Winning state for P0.
         desc2 = "Simple winning state [1, 2, 0], P0 turn (Optimal: (1,1))"
         env2 = NimEnv([1, 2, 0])
         env2.current_player = 0
         state2 = env2.get_observation()
-        states.append((desc2, state2))
+        expected_value2 = 1.0
+        states.append((desc2, state2, expected_value2))
 
         # --- State 3: Simple losing state (Nim sum == 0), Player 0 turn ---
-        # Piles [1, 1, 0] -> Nim sum = 1^1 = 0. Player 0 must move to non-zero sum, P1 wins.
+        # Nim sum 1^1^0 = 0. Losing state for P0.
         desc3 = "Simple losing state [1, 1, 0], P0 turn"
         env3 = NimEnv([1, 1, 0])
         env3.current_player = 0
         state3 = env3.get_observation()
-        states.append((desc3, state3))
+        expected_value3 = -1.0
+        states.append((desc3, state3, expected_value3))
 
         # --- State 4: One pile left, Player 1 turn ---
         # Piles [0, 0, 5] -> Player 1 takes all 5 and wins.
+        # Nim sum 0^0^5 = 5 != 0. Winning state for P1.
         desc4 = "One pile left [0, 0, 5], P1 turn (Optimal: (2,5))"
         env4 = NimEnv([0, 0, 5])
         env4.current_player = 1
         env4.step_count = 1 # Assume one move was made to get here
         state4 = env4.get_observation()
-        states.append((desc4, state4))
+        expected_value4 = 1.0
+        states.append((desc4, state4, expected_value4))
 
         return states
 

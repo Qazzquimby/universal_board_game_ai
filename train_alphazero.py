@@ -334,7 +334,7 @@ def run_sanity_checks(env: BaseEnvironment, agent: AlphaZeroAgent):
         print("No sanity check states defined for this environment.")
         return
 
-    for description, state in sanity_states:
+    for description, state, expected_value in sanity_states: # Unpack expected_value
         print(f"\nChecking State: {description}")
         # Print board/piles for context
         if 'board' in state:
@@ -347,7 +347,8 @@ def run_sanity_checks(env: BaseEnvironment, agent: AlphaZeroAgent):
         try:
             # Get network predictions
             policy_np, value_np = agent.network.predict(state)
-            print(f"  Predicted Value: {value_np:.4f}")
+            # Print expected vs predicted value
+            print(f"  Value: Expected={expected_value:.1f}, Predicted={value_np:.4f}")
 
             # Get legal actions for this state to interpret policy
             temp_env = env.copy()
@@ -362,20 +363,22 @@ def run_sanity_checks(env: BaseEnvironment, agent: AlphaZeroAgent):
                 else:
                     action_probs[action] = -1 # Indicate mapping error
 
-            # Sort actions by predicted probability
+            # Sort actions by predicted probability for display
             sorted_probs = sorted(
                 action_probs.items(), key=lambda item: item[1], reverse=True
             )
 
-            print(f"  Top Predicted Legal Actions:")
-            top_k = 5
-            for action, prob in sorted_probs[:top_k]:
-                if prob >= 0:
-                    print(f"    - {action}: {prob:.4f}")
-                else:
-                    print(f"    - {action}: (Error mapping action)")
+            print(f"  Predicted Probabilities for Legal Actions:")
             if not legal_actions:
                 print("    - (No legal actions)")
+            else:
+                for action, prob in sorted_probs:
+                    if prob >= 0:
+                        # Highlight the best predicted action
+                        highlight = " <<< BEST" if action == sorted_probs[0][0] else ""
+                        print(f"    - {action}: {prob:.4f}{highlight}")
+                    else:
+                        print(f"    - {action}: (Error mapping action)")
 
         except Exception as e:
             print(f"  Error during prediction for this state: {e}")

@@ -84,12 +84,9 @@ class AlphaZeroAgent(Agent):
                 print(
                     f"[DEBUG Act] State: {state.get('board', state.get('piles', 'N/A'))}"
                 )
+                print(f"[DEBUG Act] To Play: {state['current_player']}")
                 print(f"[DEBUG Act] Network Value Prediction: {value_np:.4f}")
-                # Print top N policy priors for brevity
-                top_k = 5
-                legal_actions = (
-                    self.env.get_legal_actions()
-                )  # Need env copy? No, predict doesn't change state
+                legal_actions = self.env.get_legal_actions()
                 action_probs = {}
                 for action in legal_actions:
                     idx = self.network.get_action_index(action)
@@ -98,6 +95,7 @@ class AlphaZeroAgent(Agent):
                 sorted_probs = sorted(
                     action_probs.items(), key=lambda item: item[1], reverse=True
                 )
+                top_k = 5
                 print(f"[DEBUG Act] Network Policy Priors (Top {top_k} Legal):")
                 for action, prob in sorted_probs[:top_k]:
                     print(f"  - {action}: {prob:.4f}")
@@ -224,12 +222,20 @@ class AlphaZeroAgent(Agent):
 
             # --- Standardize state before adding to buffer ---
             # Ensure board/piles are numpy arrays for consistent network input processing
-            buffer_state = state_at_step.copy() # Avoid modifying original history state
-            if 'board' in buffer_state and not isinstance(buffer_state['board'], np.ndarray):
-                 buffer_state['board'] = np.array(buffer_state['board'], dtype=np.int8) # Or appropriate dtype
-            elif 'piles' in buffer_state and not isinstance(buffer_state['piles'], np.ndarray):
-                 # NimEnv currently returns tuple, convert it
-                 buffer_state['piles'] = np.array(buffer_state['piles'], dtype=np.int32)
+            buffer_state = (
+                state_at_step.copy()
+            )  # Avoid modifying original history state
+            if "board" in buffer_state and not isinstance(
+                buffer_state["board"], np.ndarray
+            ):
+                buffer_state["board"] = np.array(
+                    buffer_state["board"], dtype=np.int8
+                )  # Or appropriate dtype
+            elif "piles" in buffer_state and not isinstance(
+                buffer_state["piles"], np.ndarray
+            ):
+                # NimEnv currently returns tuple, convert it
+                buffer_state["piles"] = np.array(buffer_state["piles"], dtype=np.int32)
 
             # Add the experience tuple (standardized_state, policy_target, value_target) to replay buffer
             self.replay_buffer.append((buffer_state, policy_target, value_target))
