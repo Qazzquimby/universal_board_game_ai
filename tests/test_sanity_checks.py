@@ -74,13 +74,13 @@ class TestSanityChecks(unittest.TestCase):
         #    Special handling for Nim case 0 where multiple optimal moves exist.
         if (
             # Match the description from NimEnv more robustly
-            "nim" in agent.env.metadata.get("name", "") and
-            check_case.description.startswith("Initial state") and
-            isinstance(check_case.state.get("piles"), tuple) and  # Ensure it's a Nim state dict
-            check_case.state["piles"] == (3, 5, 7) and  # Check specific piles
-            check_case.expected_action is not None  # Check if an expected action was defined
+            "nim" in agent.env.metadata.get("name", "")
+            and check_case.description.startswith("Initial state")
+            and isinstance(check_case.state.get("piles"), tuple)
+            and check_case.state["piles"] == (3, 5, 7)  # Ensure it's a Nim state dict
+            and check_case.expected_action  # Check specific piles
+            is not None  # Check if an expected action was defined
         ):
-            # Allow (0, 1), (1, 1), or (2, 1) as correct for initial [3, 5, 7]
             optimal_moves = [(0, 1), (1, 1), (2, 1)]  # All valid optimal moves
             self.assertIn(
                 chosen_action,
