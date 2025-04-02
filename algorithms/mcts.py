@@ -49,12 +49,12 @@ class MCTS:
         exploration_constant: float = 1.41,  # UCB1 exploration constant
         discount_factor: float = 1.0,  # Discount factor for rollout rewards
         num_simulations: int = 100,
-        debug: bool = False, # Add debug flag
+        debug: bool = False,  # Add debug flag
     ):
         self.exploration_constant = exploration_constant
         self.discount_factor = discount_factor
         self.num_simulations = num_simulations
-        self.debug = debug # Store debug flag
+        self.debug = debug  # Store debug flag
         self.root = MCTSNode()
 
     def reset_root(self):
@@ -131,7 +131,9 @@ class MCTS:
         else:
             value = 1.0 if winner == player_at_rollout_start else -1.0
         if self.debug:
-            print(f"  Rollout: StartPlayer={player_at_rollout_start}, Winner={winner}, Value={value}")
+            print(
+                f"  Rollout: StartPlayer={player_at_rollout_start}, Winner={winner}, Value={value}"
+            )
         return value
 
     def _backpropagate(self, leaf_node: MCTSNode, value_from_leaf_perspective: float):
@@ -145,26 +147,27 @@ class MCTS:
         """
         current_node = leaf_node
         # Value perspective alternates at each level of the tree in zero-sum games.
-        # Start with the value from the leaf's perspective.
-        value_perspective = value_from_leaf_perspective
+        value_for_current_player = value_from_leaf_perspective
 
         while current_node is not None:
             # The value added to total_value must be from the perspective of the player
             # whose turn it is at current_node. This is the negative of the value
             # propagated up from the child (value_perspective).
-            value_for_current_node = -value_perspective
+            value_for_current_node = -value_for_current_player
             current_node.visit_count += 1
-            print(
-                f"  Backprop: Node={current_node}, ValueToAdd={value_for_current_node:.3f}, OldW={current_node.total_value:.3f}, OldN={current_node.visit_count}",
-                end="",
-            )
+            if self.debug:
+                print(
+                    f"  Backprop: Node={current_node}, ValueToAdd={value_for_current_player:.3f}, OldW={current_node.total_value:.3f}, OldN={current_node.visit_count - 1}",
+                    end="",
+                )
             current_node.total_value += value_for_current_node
-            print(
-                f", NewW={current_node.total_value:.3f}, NewN={current_node.visit_count}"
-            )
+            if self.debug:
+                print(
+                    f", NewW={current_node.total_value:.3f}, NewN={current_node.visit_count}"
+                )
 
             # Flip the perspective for the next level up (parent).
-            value_perspective = value_for_current_node
+            value_for_current_player = value_for_current_node
             current_node = current_node.parent
 
     def search(self, env: BaseEnvironment, state: StateType) -> MCTSNode:
@@ -202,7 +205,9 @@ class MCTS:
                 else:
                     value = -1.0  # Player at leaf loses
                 if self.debug:
-                    print(f"  Terminal Found: Winner={winner}, PlayerAtNode={player_at_leaf}, Value={value}")
+                    print(
+                        f"  Terminal Found: Winner={winner}, PlayerAtNode={player_at_leaf}, Value={value}"
+                    )
             # 3. Backpropagation: Update nodes along the path from the leaf to the root.
             self._backpropagate(leaf_node, value)
 
