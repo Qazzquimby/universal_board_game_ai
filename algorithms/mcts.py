@@ -49,10 +49,12 @@ class MCTS:
         exploration_constant: float = 1.41,  # UCB1 exploration constant
         discount_factor: float = 1.0,  # Discount factor for rollout rewards
         num_simulations: int = 100,
+        debug: bool = False, # Add debug flag
     ):
         self.exploration_constant = exploration_constant
         self.discount_factor = discount_factor
         self.num_simulations = num_simulations
+        self.debug = debug # Store debug flag
         self.root = MCTSNode()
 
     def reset_root(self):
@@ -128,9 +130,8 @@ class MCTS:
         # Return +1 if the player who started the rollout won, -1 otherwise
         else:
             value = 1.0 if winner == player_at_rollout_start else -1.0
-        print(
-            f"  Rollout: StartPlayer={player_at_rollout_start}, Winner={winner}, Value={value}"
-        )
+        if self.debug:
+            print(f"  Rollout: StartPlayer={player_at_rollout_start}, Winner={winner}, Value={value}")
         return value
 
     def _backpropagate(self, leaf_node: MCTSNode, value_from_leaf_perspective: float):
@@ -169,11 +170,13 @@ class MCTS:
     def search(self, env: BaseEnvironment, state: StateType) -> MCTSNode:
         """Run MCTS search from the given state using UCB1 and random rollouts."""
         # Set the root to a new node corresponding to the current state
-        self.reset_root()  # Start fresh search for each call
-        print(f"--- MCTS Search Start: State={state} ---")
+        self.reset_root()
+        if self.debug:
+            print(f"--- MCTS Search Start: State={state} ---")
 
         for sim_num in range(self.num_simulations):
-            print(f" Simulation {sim_num+1}/{self.num_simulations}")
+            if self.debug:
+                print(f" Simulation {sim_num+1}/{self.num_simulations}")
             # Start from the root node and a copy of the environment set to the initial state
             sim_env = env.copy()
             sim_env.set_state(state)  # Ensure simulation starts from the correct state
@@ -198,11 +201,10 @@ class MCTS:
                     value = 1.0  # Player at leaf wins
                 else:
                     value = -1.0  # Player at leaf loses
-                print(
-                    f"  Terminal Found: Winner={winner}, PlayerAtNode={player_at_leaf}, Value={value}"
-                )
+                if self.debug:
+                    print(f"  Terminal Found: Winner={winner}, PlayerAtNode={player_at_leaf}, Value={value}")
             # 3. Backpropagation: Update nodes along the path from the leaf to the root.
-            self._backpropagate(leaf_node, value)  # Use renamed _backpropagate
+            self._backpropagate(leaf_node, value)
 
         return self.root
 

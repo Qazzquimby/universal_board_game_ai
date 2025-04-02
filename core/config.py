@@ -32,6 +32,7 @@ class MCTSConfig:
     exploration_constant: float = 1.41
     discount_factor: float = 1.0  # Discount within the search tree
     num_simulations: int = 100  # Default simulations for the benchmark MCTS
+    debug: bool = False # Flag for detailed MCTS logging
 
 
 @dataclass

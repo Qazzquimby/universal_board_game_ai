@@ -13,6 +13,7 @@ class MCTSAgent(Agent):
         env: BaseEnvironment,  # Use EnvInterface
         num_simulations: int = 100,
         exploration_constant: float = 1.41,
+        debug: bool = False, # Add debug flag
     ):
         """
         Args:
@@ -25,7 +26,8 @@ class MCTSAgent(Agent):
         self.mcts = MCTS(
             num_simulations=num_simulations,
             exploration_constant=exploration_constant,
-            discount_factor=1.0,  # Discount factor for rollouts in base MCTS
+            discount_factor=1.0,
+            debug=debug # Pass debug flag to MCTS
         )
 
     def act(self, state: StateType) -> ActionType:
@@ -63,9 +65,11 @@ class MCTSAgent(Agent):
             action: node.visit_count for action, node in root_node.children.items()
         }
         best_action = max(child_visits, key=child_visits.get)
-        print(f"--- MCTS Agent Act: State={state} ---") # Keep this summary print
-        print(f"  Root Child Visits: {child_visits}") # Keep this summary print
-        print(f"  Chosen Action (Max Visits): {best_action}") # Keep this summary print
+        # Only print summary if debug is off (detailed logs are in MCTS class)
+        if not self.mcts.debug:
+            print(f"--- MCTS Agent Act: State={state} ---")
+            print(f"  Root Child Visits: {child_visits}")
+            print(f"  Chosen Action (Max Visits): {best_action}")
         return best_action
 
     def reset(self) -> None:
