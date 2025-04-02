@@ -10,8 +10,10 @@ import numpy as np
 
 from core.agent_interface import Agent
 from environments.base import BaseEnvironment, StateType, ActionType
-from algorithms.mcts import AlphaZeroMCTS  # Use the specialized MCTS subclass
+from algorithms.mcts import AlphaZeroMCTS
 from models.networks import AlphaZeroNet
+from torch.optim.lr_scheduler import StepLR
+
 from core.config import AlphaZeroConfig, DATA_DIR
 
 
@@ -59,7 +61,12 @@ class AlphaZeroAgent(Agent):
             lr=config.learning_rate,
             weight_decay=config.weight_decay,
         )
-        # TODO: Add scheduler if needed, managed here too
+        # Learning Rate Scheduler
+        self.scheduler = StepLR(
+            self.optimizer,
+            step_size=config.lr_scheduler_step_size,
+            gamma=config.lr_scheduler_gamma,
+        )
 
     def act(self, state: StateType, train: bool = False) -> ActionType:
         """
@@ -121,24 +128,45 @@ class AlphaZeroAgent(Agent):
         )
         actions = list(root_node.children.keys())
 
-        # --- TEMPORARY DEBUG: Always use greedy selection, even during training ---
-        # This helps isolate if temperature sampling is the issue or the underlying MCTS counts.
-        # if train:
-        #     # Temperature sampling for exploration during training
-        #     # TODO: Implement temperature logic (e.g., temp=1 for first N moves, then 0)
-        #     temperature = 1.0  # Placeholder
-        #     visit_counts_temp = visit_counts ** (1.0 / temperature)
-        #     action_probs = visit_counts_temp / np.sum(visit_counts_temp)
-        #     # Ensure probabilities sum to 1 due to potential floating point issues
-        #     # action_probs /= action_probs.sum() # Might be needed if np.sum is zero, but argmax handles that
-        #     chosen_action_index = np.random.choice(len(actions), p=action_probs)
-        # else:
-        #     # Greedy selection for evaluation/play
-        #     chosen_action_index = np.argmax(visit_counts)
+        if train:
+            current_step = state.get("step_count", 0)
+            temperature = (
+                1.0 if current_step < self.config.temperature_decay_steps else 0.1
+            )  # Example decay
 
-        # Always use greedy selection for now
-        chosen_action_index = np.argmax(visit_counts)
-        # --- END TEMPORARY DEBUG ---
+            if temperature > 1e-6:  # Avoid division by zero / issues with temp=0
+                visit_counts_temp = visit_counts ** (1.0 / temperature)
+                sum_visits_temp = np.sum(visit_counts_temp)
+                if sum_visits_temp > 0:
+                    action_probs = visit_counts_temp / sum_visits_temp
+                    # Ensure probabilities sum to 1 due to potential floating point issues
+                    action_probs /= action_probs.sum()
+                    try:
+                        chosen_action_index = np.random.choice(
+                            len(actions), p=action_probs
+                        )
+                    except ValueError as e:
+                        print(
+                            f"Warning: Error during np.random.choice (probs might not sum to 1?): {e}"
+                        )
+                        print(
+                            f"Action probs: {action_probs}, Sum: {np.sum(action_probs)}"
+                        )
+                        chosen_action_index = np.argmax(
+                            visit_counts
+                        )  # Fallback to greedy
+                else:
+                    # Fallback if sum is zero (e.g., only one action, one visit?) - choose greedily
+                    print(
+                        "Warning: Sum of visit counts with temperature was zero. Choosing greedily."
+                    )
+                    chosen_action_index = np.argmax(visit_counts)
+            else:
+                # If temperature is effectively zero, choose greedily
+                chosen_action_index = np.argmax(visit_counts)
+        else:
+            # Greedy selection for evaluation/play
+            chosen_action_index = np.argmax(visit_counts)
 
         chosen_action = actions[chosen_action_index]
 
@@ -229,8 +257,10 @@ class AlphaZeroAgent(Agent):
                 value_target = 0.0
 
             # --- Debug Print: Check Value Target Assignment ---
-            if self.config.debug_mode and i < 5: # Print for first few steps
-                print(f"[DEBUG finish_episode] Step {i}: Player={player_at_step}, FinalOutcome(P0)={final_outcome}, AssignedValue={value_target}")
+            if self.config.debug_mode and i < 5:  # Print for first few steps
+                print(
+                    f"[DEBUG finish_episode] Step {i}: Player={player_at_step}, FinalOutcome(P0)={final_outcome}, AssignedValue={value_target}"
+                )
             # --- End Debug Print ---
 
             # --- Standardize state before adding to buffer ---
@@ -276,8 +306,8 @@ class AlphaZeroAgent(Agent):
         # Here, policy_targets are probabilities derived from MCTS visits.
         policy_loss = F.cross_entropy(policy_logits, policy_targets)
 
-        # Combine losses (typically simple summation)
-        total_loss = value_loss + policy_loss
+        # Combine losses using configured weight for value loss
+        total_loss = (self.config.value_loss_weight * value_loss) + policy_loss
         return total_loss, value_loss, policy_loss
 
     # Conforms to Agent interface (no arguments)
@@ -326,12 +356,13 @@ class AlphaZeroAgent(Agent):
 
         # Backward pass and optimizer step
         total_loss.backward()
-        self.optimizer.step()  # Use the agent's internal optimizer
+        self.optimizer.step()
+        self.scheduler.step()
 
-        # Optional: Log losses
         if self.config.debug_mode:
+            current_lr = self.optimizer.param_groups[0]["lr"]  # Get current LR
             print(
-                f"[DEBUG Learn] Step Losses: Total={total_loss.item():.4f}, Value={value_loss.item():.4f}, Policy={policy_loss.item():.4f}"
+                f"[DEBUG Learn] Step Losses: Total={total_loss.item():.4f}, Value={value_loss.item():.4f}, Policy={policy_loss.item():.4f} | LR={current_lr:.6f}"
             )
 
         self.network.eval()  # Switch back to eval mode after training step

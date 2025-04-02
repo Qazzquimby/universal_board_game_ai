@@ -38,15 +38,21 @@ class MCTSConfig:
 class AlphaZeroConfig:
     num_simulations: int = 100  # MCTS simulations per move
     cpuct: float = 1.0  # Exploration constant in PUCT formula
-    learning_rate: float = 0.01  # Increased learning rate
+    learning_rate: float = 0.02  # Increased learning rate
     weight_decay: float = 0.0001
     hidden_layer_size: int = 128  # Size for the MLP hidden layers
     num_hidden_layers: int = 2  # Number of hidden layers in the MLP
     replay_buffer_size: int = 10000
     batch_size: int = 64
+    value_loss_weight: float = (
+        1.0  # Weight for value loss (default 1.0, try increasing)
+    )
+    temperature_decay_steps: int = (
+        10  # Number of game steps before reducing temperature
+    )
+    lr_scheduler_step_size: int = 100  # Decay LR every N training iterations
+    lr_scheduler_gamma: float = 0.9  # Multiplicative factor for LR decay
     debug_mode: bool = False
-    # MuZero specific - size of the hidden state representation
-    hidden_state_size: int = 128  # Example size, might need tuning
 
 
 @dataclass
