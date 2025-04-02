@@ -2,7 +2,11 @@ from typing import Dict, List, Tuple, Any, Optional
 
 import numpy as np
 
-from environments.base import BaseEnvironment, StateType
+from environments.base import (
+    BaseEnvironment,
+    StateType,
+    SanityCheckState,
+)  # Import SanityCheckState
 
 # Action is now just the column index
 ColumnActionType = int
@@ -355,12 +359,14 @@ class Connect4(BaseEnvironment):
 
         # --- State 1: Empty Board (Player 0's turn) ---
         # Outcome unclear, depends on perfect play. Use 0.0
-        desc1 = "Empty board, Player 0 turn"
-        env1 = Connect4(width=self.width, height=self.height)
-        state1 = env1.get_observation()
-        expected_value1 = 0.0
-        expected_action1 = None # No single best move on empty board
-        states.append((desc1, state1, expected_value1, expected_action1))
+        states.append(
+            SanityCheckState(
+                description="Empty board, Player 0 turn",
+                state=Connect4(width=self.width, height=self.height).get_observation(),
+                expected_value=0.0,
+                expected_action=None,
+            )
+        )
 
         # --- State 2: Player 0 can win horizontally in column 3 ---
         # Board:
@@ -381,8 +387,10 @@ class Connect4(BaseEnvironment):
         env2.step_count = 5
         state2 = env2.get_observation()
         expected_value2 = 1.0  # Player 0 has a winning move
-        expected_action2 = 3   # Column 3 wins
-        states.append((desc2, state2, expected_value2, expected_action2))
+        expected_action2 = 3  # Column 3 wins
+        states.append(
+            SanityCheckState(desc2, state2, expected_value2, expected_action2)
+        )
 
         # --- State 3: Player 1 can win vertically in column 0 ---
         # Board:
@@ -405,8 +413,10 @@ class Connect4(BaseEnvironment):
         env3.step_count = 7
         state3 = env3.get_observation()
         expected_value3 = 1.0  # Player 1 has a winning move
-        expected_action3 = 0   # Column 0 wins
-        states.append((desc3, state3, expected_value3, expected_action3))
+        expected_action3 = 0  # Column 0 wins
+        states.append(
+            SanityCheckState(desc3, state3, expected_value3, expected_action3)
+        )
 
         # --- State 4: Player 0 must block Player 1's win in column 6 ---
         # Board:
@@ -431,7 +441,9 @@ class Connect4(BaseEnvironment):
         # Player 0 *must* block, but doesn't guarantee a win. Outcome unclear. Use 0.0
         # Alternatively, could argue it's slightly negative as P1 forced the block? Let's use 0.0 for simplicity.
         expected_value4 = 0.0
-        expected_action4 = 6   # Column 6 is the required block
-        states.append((desc4, state4, expected_value4, expected_action4))
+        expected_action4 = 6  # Column 6 is the required block
+        states.append(
+            SanityCheckState(desc4, state4, expected_value4, expected_action4)
+        )
 
         return states

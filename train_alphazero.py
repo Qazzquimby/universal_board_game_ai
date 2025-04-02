@@ -334,25 +334,25 @@ def run_sanity_checks(env: BaseEnvironment, agent: AlphaZeroAgent):
         print("No sanity check states defined for this environment.")
         return
 
-    for description, state, expected_value in sanity_states: # Unpack expected_value
-        print(f"\nChecking State: {description}")
+    for check_case in sanity_states: # Iterate over SanityCheckState objects
+        print(f"\nChecking State: {check_case.description}")
         # Print board/piles for context
-        if 'board' in state:
+        if 'board' in check_case.state:
             print("Board:")
-            print(state['board'])
-        elif 'piles' in state:
-            print(f"Piles: {state['piles']}")
-        print(f"Current Player: {state['current_player']}")
+            print(check_case.state['board'])
+        elif 'piles' in check_case.state:
+            print(f"Piles: {check_case.state['piles']}")
+        print(f"Current Player: {check_case.state['current_player']}")
 
         try:
             # Get network predictions
-            policy_np, value_np = agent.network.predict(state)
+            policy_np, value_np = agent.network.predict(check_case.state)
             # Print expected vs predicted value
-            print(f"  Value: Expected={expected_value:.1f}, Predicted={value_np:.4f}")
+            print(f"  Value: Expected={check_case.expected_value:.1f}, Predicted={value_np:.4f}")
 
             # Get legal actions for this state to interpret policy
             temp_env = env.copy()
-            temp_env.set_state(state)
+            temp_env.set_state(check_case.state)
             legal_actions = temp_env.get_legal_actions()
 
             action_probs = {}

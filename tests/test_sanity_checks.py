@@ -33,17 +33,17 @@ class TestSanityChecks(unittest.TestCase):
             sanity_states, f"No sanity states found for {type(env).__name__}"
         )
 
-        for description, state, expected_value, expected_action in sanity_states: # Unpack expected_action
-            with self.subTest(description=description):
-                print(f"\n--- Testing MCTS: {description} ---")
+        for check_case in sanity_states: # Iterate over SanityCheckState objects
+            with self.subTest(description=check_case.description):
+                print(f"\n--- Testing MCTS: {check_case.description} ---")
                 # Set environment to the test state
                 current_env = env.copy()
-                current_env.set_state(state)
+                current_env.set_state(check_case.state)
                 agent.reset()  # Reset MCTS tree
 
                 # Get the action chosen by the agent
                 # MCTSAgent.act runs the search internally
-                chosen_action = agent.act(state)
+                chosen_action = agent.act(check_case.state)
 
                 # Get MCTS search results for analysis (optional but useful)
                 root_node = agent.mcts.root  # Get root after search in act()
@@ -73,13 +73,13 @@ class TestSanityChecks(unittest.TestCase):
                 )
 
                 # 2. If an optimal/required action is defined, assert the agent chose it.
-                if expected_action is not None:
+                if check_case.expected_action is not None:
                     self.assertEqual(
                         chosen_action,
-                        expected_action,
-                        f"Expected action {expected_action} but got {chosen_action}"
+                        check_case.expected_action,
+                        f"Expected action {check_case.expected_action} but got {chosen_action}"
                     )
-                # Note: We could add more nuanced checks, e.g., if expected_value is 1.0,
+                # Note: We could add more nuanced checks, e.g., if check_case.expected_value is 1.0,
                 # ensure the chosen action *leads* to a win, even if multiple winning moves exist.
                 # For now, checking against a single defined expected action is simpler.
 

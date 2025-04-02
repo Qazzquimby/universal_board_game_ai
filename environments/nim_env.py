@@ -2,7 +2,7 @@ from typing import List, Tuple, Optional
 
 import numpy as np
 
-from environments.base import BaseEnvironment, StateType
+from environments.base import BaseEnvironment, StateType, SanityCheckState, ActionType # Import SanityCheckState, ActionType
 
 # Define Nim-specific action type for clarity
 NimActionType = Tuple[int, int]  # (pile_index, num_to_remove)
@@ -181,8 +181,8 @@ class NimEnv(BaseEnvironment):
         state1 = env1.get_observation()
         expected_value1 = 1.0
         # Optimal move depends on initial piles, e.g., for [3,5,7] -> (2, 1) makes Nim sum 0
-        optimal_action1 = (2, 1) if self.initial_piles == (3, 5, 7) else None # Define for specific case
-        states.append((desc1, state1, expected_value1, optimal_action1))
+        optimal_action1: Optional[ActionType] = (2, 1) if self.initial_piles == (3, 5, 7) else None # Define for specific case
+        states.append(SanityCheckState(desc1, state1, expected_value1, optimal_action1))
 
         # --- State 2: Simple winning state (Nim sum != 0), Player 0 turn ---
         # Piles [1, 2, 0] -> Nim sum = 1^2 = 3 != 0. Player 0 should win.
@@ -193,8 +193,8 @@ class NimEnv(BaseEnvironment):
         env2.current_player = 0
         state2 = env2.get_observation()
         expected_value2 = 1.0
-        expected_action2 = (1, 1) # Take 1 from pile 1 (index 1)
-        states.append((desc2, state2, expected_value2, expected_action2))
+        expected_action2: ActionType = (1, 1) # Take 1 from pile 1 (index 1)
+        states.append(SanityCheckState(desc2, state2, expected_value2, expected_action2))
 
         # --- State 3: Simple losing state (Nim sum == 0), Player 0 turn ---
         # Nim sum 1^1^0 = 0. Losing state for P0.
@@ -203,8 +203,8 @@ class NimEnv(BaseEnvironment):
         env3.current_player = 0
         state3 = env3.get_observation()
         expected_value3 = -1.0
-        expected_action3 = None # Any move leads to a losing state, no single 'best' move to test
-        states.append((desc3, state3, expected_value3, expected_action3))
+        expected_action3: Optional[ActionType] = None # Any move leads to a losing state, no single 'best' move to test
+        states.append(SanityCheckState(desc3, state3, expected_value3, expected_action3))
 
         # --- State 4: One pile left, Player 1 turn ---
         # Piles [0, 0, 5] -> Player 1 takes all 5 and wins.
@@ -215,8 +215,8 @@ class NimEnv(BaseEnvironment):
         env4.step_count = 1 # Assume one move was made to get here
         state4 = env4.get_observation()
         expected_value4 = 1.0
-        expected_action4 = (2, 5) # Take all 5 from pile 2 (index 2)
-        states.append((desc4, state4, expected_value4, expected_action4))
+        expected_action4: ActionType = (2, 5) # Take all 5 from pile 2 (index 2)
+        states.append(SanityCheckState(desc4, state4, expected_value4, expected_action4))
 
         return states
 

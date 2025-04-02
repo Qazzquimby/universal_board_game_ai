@@ -1,10 +1,21 @@
 import abc
-from typing import Any, Dict, List, Tuple, Optional, TypeVar
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, TypeVar  # Removed Tuple
 
 # Generic type for actions, can be Tuple[int, int], Tuple[int, int], int, etc.
 ActionType = TypeVar("ActionType")
 # Generic type for the state representation used by the agent (often a dict)
 StateType = Dict[str, Any]  # Keep as Dict for now, could be more generic later
+
+
+@dataclass
+class SanityCheckState:
+    """Holds data for a single sanity check case."""
+
+    description: str
+    state: StateType
+    expected_value: float
+    expected_action: Optional[ActionType]
 
 
 class BaseEnvironment(abc.ABC):
@@ -113,15 +124,12 @@ class BaseEnvironment(abc.ABC):
         pass
 
     @abc.abstractmethod
-    def get_sanity_check_states(self) -> List[Tuple[str, StateType, float, Optional[ActionType]]]:
+    def get_sanity_check_states(self) -> List[SanityCheckState]:
         """
         Get a list of predefined states for sanity checking agent predictions.
 
         Returns:
-            A list of tuples, where each tuple is (description, state_dict, expected_value, expected_action).
-            Expected value is from the perspective of the current player in that state
-            (+1.0 for expected win, -1.0 for expected loss, 0.0 for draw/unclear).
-            Expected action is the known optimal/required move for that state, or None if not applicable/defined.
+            A list of SanityCheckState objects.
         """
         pass
 
