@@ -82,11 +82,14 @@ class MCTS:
             # Select the action corresponding to the child with the highest UCB score
             # Need to handle the case where parent_visits is 0 (shouldn't happen if root is visited once?)
             # Let's ensure root is visited at least once implicitly by the loop structure.
-            best_item = max(
-                node.children.items(),
-                key=lambda item: self._ucb_score(item[1], parent_visits),
-            )
-            action, node = best_item
+            child_scores = {
+                act: self._ucb_score(child, parent_visits)
+                for act, child in node.children.items()
+            }
+            best_action = max(child_scores, key=child_scores.get)
+            print(f"  Select: ParentVisits={parent_visits}, Scores={ {a: f'{s:.3f}' for a, s in child_scores.items()} }, Chosen={best_action}")
+            action, node = best_action, node.children[best_action]
+
             # Action here is the key from children dict, should be hashable
             env.step(action)  # Update the environment state as we traverse
         return node, env
@@ -121,32 +124,47 @@ class MCTS:
 
         winner = sim_env.get_winning_player()
         if winner is None:  # Draw
-            return 0.0
+            value = 0.0
         # Return +1 if the player who started the rollout won, -1 otherwise
-        return 1.0 if winner == player_at_rollout_start else -1.0
+        else:
+            value = 1.0 if winner == player_at_rollout_start else -1.0
+        print(f"  Rollout: StartPlayer={player_at_rollout_start}, Winner={winner}, Value={value}")
+        return value
 
-    def _backpropagate(self, node: MCTSNode, value: float):
-        """Backpropagate the rollout value up the tree."""
+    def _backpropagate(self, node: MCTSNode, value_from_leaf_perspective: float):
+        """
+        Backpropagate the evaluated value (from rollout or terminal state) up the tree.
+
+        Args:
+            node: The leaf node from which the rollout/evaluation started.
+            value_from_leaf_perspective: The value (+1 win, -1 loss, 0 draw) from the perspective
+                                         of the player whose turn it was AT THE LEAF node 'node'.
+        """
         current_node = node
-        # Value is from the perspective of the player whose turn it was *at the start of the rollout*.
-        # As we go up, the perspective flips for the parent.
+        # The value needs to be added to the parent's statistics from the parent's perspective.
+        # Since perspectives flip at each level in a zero-sum game, we flip the value
+        # before adding it to the parent's child node (which is current_node).
+        value_for_parent = -value_from_leaf_perspective
+
         while current_node is not None:
+            # Update the stats of the current_node (representing edge: parent -> current_node)
             current_node.visit_count += 1
-            # Update total value (W). The value should be relative to the player whose turn it is *at the parent node*.
-            # The value added to W(parent, action_to_current_node) must be from the parent's perspective.
-            # Since 'value' is from the child's perspective (current_node), we add -value to the parent's statistics.
-            # The W is stored *in the child node* (representing the edge from parent to child).
-            current_node.total_value += -value # Add value from the PARENT's perspective
-            # The value passed up to the next level (grandparent) needs to be flipped again.
-            value = -value
+            # Add the value from the perspective of the player at the PARENT node.
+            print(f"  Backprop: Node={current_node}, ValueForParent={value_for_parent:.3f}, OldW={current_node.total_value:.3f}, OldN={current_node.visit_count}", end="")
+            current_node.total_value += value_for_parent
+            print(f", NewW={current_node.total_value:.3f}, NewN={current_node.visit_count}")
+            # Flip the value perspective again for the next level up (grandparent).
+            value_for_parent = -value_for_parent
             current_node = current_node.parent
 
     def search(self, env: BaseEnvironment, state: StateType) -> MCTSNode:
         """Run MCTS search from the given state using UCB1 and random rollouts."""
         # Set the root to a new node corresponding to the current state
         self.reset_root()  # Start fresh search for each call
+        print(f"--- MCTS Search Start: State={state} ---")
 
-        for _ in range(self.num_simulations):
+        for sim_num in range(self.num_simulations):
+            print(f" Simulation {sim_num+1}/{self.num_simulations}")
             # Start from the root node and a copy of the environment set to the initial state
             node = self.root
             sim_env = env.copy()
@@ -173,20 +191,21 @@ class MCTS:
 
             else:
                 # Game ended during selection phase. Determine the outcome.
+                # The 'value' passed to backpropagate must be from the perspective
+                # of the player whose turn it was AT THE LEAF node ('node').
+                player_at_leaf = sim_env.get_current_player() # Player whose turn it would be
                 winner = sim_env.get_winning_player()
-                # Value should be from the perspective of the player whose turn it would have been
-                # at this terminal node 'node'.
-                player_at_terminal_node = sim_env.get_current_player() # Player whose turn it is now
 
                 if winner is None:  # Draw
                     value = 0.0
-                # If the winner is the player whose turn it *would* have been, that player actually lost
-                # because the opponent made the winning move.
-                elif winner == player_at_terminal_node:
-                    value = -1.0 # Current player lost
+                elif winner == player_at_leaf:
+                    # If the winner is the player whose turn it would be, they actually lost
+                    # because the opponent made the winning move.
+                    value = -1.0
                 else:
-                    value = 1.0 # Current player won (opponent lost)
-
+                    # The opponent won, meaning the player whose turn it would be won.
+                    value = 1.0
+                print(f"  Terminal Found: Winner={winner}, PlayerAtNode={player_at_leaf}, Value={value}")
             # 3. Backpropagation: Update visit counts and values up the tree
             self._backpropagate(node, value)
 
@@ -308,21 +327,25 @@ class MuZeroMCTSNode:
         # Assumes policy_logits covers the entire potential action space defined by the network
         # We need to map indices back to ActionType to use as keys.
         # Requires an inverse mapping function in the network.
-        if not hasattr(network, 'get_action_from_index'):
-             print("ERROR: MuZeroNet needs get_action_from_index method for MCTS expansion.")
-             return # Cannot expand without inverse mapping
+        if not hasattr(network, "get_action_from_index"):
+            print(
+                "ERROR: MuZeroNet needs get_action_from_index method for MCTS expansion."
+            )
+            return  # Cannot expand without inverse mapping
 
         for action_index, prior in enumerate(policy_probs):
-            if prior > 1e-6: # Small threshold
+            if prior > 1e-6:  # Small threshold
                 action = network.get_action_from_index(action_index)
                 if action is not None:
-                     action_key = tuple(action) if isinstance(action, list) else action
-                     if action_key not in self.children:
-                          self.children[action_key] = MuZeroMCTSNode(parent=self, prior=float(prior))
+                    action_key = tuple(action) if isinstance(action, list) else action
+                    if action_key not in self.children:
+                        self.children[action_key] = MuZeroMCTSNode(
+                            parent=self, prior=float(prior)
+                        )
                 else:
-                     # This might happen if policy size > actual max actions
-                     # print(f"Warning: Could not map action index {action_index} back to action.")
-                     pass
+                    # This might happen if policy size > actual max actions
+                    # print(f"Warning: Could not map action index {action_index} back to action.")
+                    pass
 
 
 class MuZeroMCTS:
@@ -445,7 +468,7 @@ class MuZeroMCTS:
 
         # Initial step: Get hidden state and initial prediction from observation
         # TODO: Add device handling
-        value, _, policy_logits, hidden_state = self.network.initial_inference(
+        value, sim_num, policy_logits, hidden_state = self.network.initial_inference(
             observation_dict
         )
         self.root.hidden_state = hidden_state
@@ -461,7 +484,7 @@ class MuZeroMCTS:
         # TODO: Add Dirichlet noise to root priors here if training
 
         # Run simulations
-        for _ in range(self.config.num_simulations):
+        for sim_num in range(self.config.num_simulations):
             node = self.root
             search_path = [node]  # Keep track of nodes visited
 
@@ -513,4 +536,3 @@ class MuZeroMCTS:
 
         # Return the root node containing search statistics
         return self.root
-

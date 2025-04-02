@@ -27,6 +27,7 @@ class MCTSAgent(Agent):
             exploration_constant=exploration_constant,
             discount_factor=1.0,  # Discount factor for rollouts in base MCTS
         )
+
     def act(self, state: StateType) -> ActionType:
         """
         Perform MCTS search and choose the best action.
@@ -58,9 +59,13 @@ class MCTSAgent(Agent):
                 return None
 
         # Choose the action leading to the most visited child node
-        best_action = max(
-            root_node.children.items(), key=lambda item: item[1].visit_count
-        )[0]
+        child_visits = {
+            action: node.visit_count for action, node in root_node.children.items()
+        }
+        best_action = max(child_visits, key=child_visits.get)
+        print(f"--- MCTS Agent Act: State={state} ---") # Keep this summary print
+        print(f"  Root Child Visits: {child_visits}") # Keep this summary print
+        print(f"  Chosen Action (Max Visits): {best_action}") # Keep this summary print
         return best_action
 
     def reset(self) -> None:

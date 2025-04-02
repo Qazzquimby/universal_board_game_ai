@@ -20,8 +20,8 @@ class TestSanityChecks(unittest.TestCase):
         config = AppConfig()
         config.env.name = env_name
         # Use higher simulation counts for MCTS sanity checks to improve reliability
-        config.mcts.num_simulations = 800 # Increased from 50
-        config.alpha_zero.num_simulations = 50 # Keep AlphaZero low for now
+        config.mcts.num_simulations = 20
+        config.alpha_zero.num_simulations = 50  # Keep AlphaZero low for now
         config.alpha_zero.debug_mode = False  # Keep tests quiet
         config.muzero.debug_mode = False
         return config
@@ -35,7 +35,7 @@ class TestSanityChecks(unittest.TestCase):
         print(f"\n--- Testing MCTS: {check_case.description} ---")
         # Set environment to the test state
         current_env = env.copy()
-        current_env.set_state(check_case.state)  # Corrected indentation
+        current_env.set_state(check_case.state)
         agent.reset()  # Reset MCTS tree
 
         # Get the action chosen by the agent
@@ -100,7 +100,8 @@ class TestSanityChecks(unittest.TestCase):
 
 # --- Dynamic Test Generation for MCTS (Executed after class definition) ---
 
-def _generate_mcts_test_method(env_name: str, check_case): # Renamed factory slightly
+
+def _generate_mcts_test_method(env_name: str, check_case):  # Renamed factory slightly
     """Factory to create a test method for a specific MCTS sanity check case."""
 
     def test_func(self: TestSanityChecks):
@@ -124,8 +125,8 @@ for _env_name_to_test in ["connect4", "nim"]:
     # Use default config settings for this temporary instance
     _temp_config = AppConfig()
     _temp_config.env.name = _env_name_to_test
-    _temp_env_instance = None # Initialize to prevent unbound local error
-    _sanity_cases = [] # Initialize
+    _temp_env_instance = None  # Initialize to prevent unbound local error
+    _sanity_cases = []  # Initialize
     try:
         _temp_env_instance = get_environment(_temp_config.env)
         _sanity_cases = _temp_env_instance.get_sanity_check_states()
@@ -168,7 +169,14 @@ for _env_name_to_test in ["connect4", "nim"]:
     # Delete loop variables to avoid potential leakage if this code were in a function
     # (though at module level it's less critical)
     try:
-        del _env_name_to_test, _temp_config, _i, _case, _safe_desc, _method_name, _test_method
+        del (
+            _env_name_to_test,
+            _temp_config,
+            _i,
+            _case,
+            _safe_desc,
+            _method_name,
+            _test_method,
+        )
     except NameError:
-        pass # In case the loop didn't run
-
+        pass  # In case the loop didn't run
