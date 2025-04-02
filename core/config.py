@@ -44,7 +44,7 @@ class AlphaZeroConfig:
     num_hidden_layers: int = 2  # Number of hidden layers in the MLP
     replay_buffer_size: int = 10000
     batch_size: int = 64
-    debug_mode: bool = True
+    debug_mode: bool = False
     # MuZero specific - size of the hidden state representation
     hidden_state_size: int = 128  # Example size, might need tuning
 

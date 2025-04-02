@@ -121,16 +121,24 @@ class AlphaZeroAgent(Agent):
         )
         actions = list(root_node.children.keys())
 
-        if train:
-            # Temperature sampling for exploration during training
-            # TODO: Implement temperature logic (e.g., temp=1 for first N moves, then 0)
-            temperature = 1.0  # Placeholder
-            visit_counts_temp = visit_counts ** (1.0 / temperature)
-            action_probs = visit_counts_temp / np.sum(visit_counts_temp)
-            chosen_action_index = np.random.choice(len(actions), p=action_probs)
-        else:
-            # Greedy selection for evaluation/play
-            chosen_action_index = np.argmax(visit_counts)
+        # --- TEMPORARY DEBUG: Always use greedy selection, even during training ---
+        # This helps isolate if temperature sampling is the issue or the underlying MCTS counts.
+        # if train:
+        #     # Temperature sampling for exploration during training
+        #     # TODO: Implement temperature logic (e.g., temp=1 for first N moves, then 0)
+        #     temperature = 1.0  # Placeholder
+        #     visit_counts_temp = visit_counts ** (1.0 / temperature)
+        #     action_probs = visit_counts_temp / np.sum(visit_counts_temp)
+        #     # Ensure probabilities sum to 1 due to potential floating point issues
+        #     # action_probs /= action_probs.sum() # Might be needed if np.sum is zero, but argmax handles that
+        #     chosen_action_index = np.random.choice(len(actions), p=action_probs)
+        # else:
+        #     # Greedy selection for evaluation/play
+        #     chosen_action_index = np.argmax(visit_counts)
+
+        # Always use greedy selection for now
+        chosen_action_index = np.argmax(visit_counts)
+        # --- END TEMPORARY DEBUG ---
 
         chosen_action = actions[chosen_action_index]
 
@@ -219,6 +227,11 @@ class AlphaZeroAgent(Agent):
                     f"Warning: Unknown player {player_at_step} at step {i}. Assigning value target 0.0."
                 )
                 value_target = 0.0
+
+            # --- Debug Print: Check Value Target Assignment ---
+            if self.config.debug_mode and i < 5: # Print for first few steps
+                print(f"[DEBUG finish_episode] Step {i}: Player={player_at_step}, FinalOutcome(P0)={final_outcome}, AssignedValue={value_target}")
+            # --- End Debug Print ---
 
             # --- Standardize state before adding to buffer ---
             # Ensure board/piles are numpy arrays for consistent network input processing
