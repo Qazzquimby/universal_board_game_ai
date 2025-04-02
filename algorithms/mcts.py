@@ -75,10 +75,10 @@ class MCTS:
         return q_value_for_parent + exploration_term
 
     def _select(
-        self, node: MCTSNode, env: BaseEnvironment
+        self, node: MCTSNode, sim_env: BaseEnvironment
     ) -> Tuple[MCTSNode, BaseEnvironment]:
         """Select child node with highest UCB score until a leaf node is reached."""
-        while node.is_expanded() and not env.is_game_over():
+        while node.is_expanded() and not sim_env.is_game_over():
             parent_visits = node.visit_count
             # Select the action corresponding to the child with the highest UCB score
             # Need to handle the case where parent_visits is 0 (shouldn't happen if root is visited once?)
@@ -88,17 +88,18 @@ class MCTS:
                 for act, child in node.children.items()
             }
             best_action = max(child_scores, key=child_scores.get)
-            print(f"  Select: ParentVisits={parent_visits}, Scores={ {a: f'{s:.3f}' for a, s in child_scores.items()} }, Chosen={best_action}")
+            print(
+                f"  Select: ParentVisits={parent_visits}, Scores={ {a: f'{s:.3f}' for a, s in child_scores.items()} }, Chosen={best_action}"
+            )
             action, node = best_action, node.children[best_action]
 
-            # Action here is the key from children dict, should be hashable
-            env.step(action)  # Update the environment state as we traverse
-        return node, env
+            sim_env.step(action)
+        return node, sim_env
 
     def _expand(self, node: MCTSNode, env: BaseEnvironment):
         """Expand the leaf node by creating children for all legal actions."""
         if node.is_expanded() or env.is_game_over():
-            return  # Already expanded or terminal
+            return
 
         legal_actions = env.get_legal_actions()
         # Use uniform prior for standard MCTS expansion
@@ -111,11 +112,9 @@ class MCTS:
 
     def _rollout(self, env: BaseEnvironment) -> float:
         """Simulate game from current state using random policy."""
-        # Determine the player whose perspective the rollout value should represent.
-        # This is the player whose turn it was *at the start of the rollout*.
         player_at_rollout_start = env.get_current_player()
 
-        sim_env = env.copy()  # Simulate on a copy
+        sim_env = env.copy()
         while not sim_env.is_game_over():
             legal_actions = sim_env.get_legal_actions()
             if not legal_actions:
@@ -129,34 +128,43 @@ class MCTS:
         # Return +1 if the player who started the rollout won, -1 otherwise
         else:
             value = 1.0 if winner == player_at_rollout_start else -1.0
-        print(f"  Rollout: StartPlayer={player_at_rollout_start}, Winner={winner}, Value={value}")
+        print(
+            f"  Rollout: StartPlayer={player_at_rollout_start}, Winner={winner}, Value={value}"
+        )
         return value
 
-    def _backpropagate(self, node: MCTSNode, value_from_leaf_perspective: float):
+    def _backpropagate(self, leaf_node: MCTSNode, value_from_leaf_perspective: float):
         """
-        Backpropagate the evaluated value (from rollout or terminal state) up the tree.
+        Backpropagate the evaluated value up the tree, updating node statistics.
 
         Args:
-            node: The leaf node from which the rollout/evaluation started.
-            value_from_leaf_perspective: The value (+1 win, -1 loss, 0 draw) from the perspective
-                                         of the player whose turn it was AT THE LEAF node 'node'.
+            leaf_node: The node where the simulation/evaluation ended.
+            value_from_leaf_perspective: The outcome (+1, -1, 0) from the perspective
+                                         of the player whose turn it was at the leaf_node.
         """
-        node_being_updated = node
-        # value_from_child is from the perspective of the player AT the child node (or leaf node initially).
-        value_from_child = value_from_leaf_perspective
+        current_node = leaf_node
+        # Value perspective alternates at each level of the tree in zero-sum games.
+        # Start with the value from the leaf's perspective.
+        value_perspective = value_from_leaf_perspective
 
-        while node_being_updated is not None:
-            # Value must be stored from the perspective of the node being updated.
-            # In zero-sum games, this is the negative of the value from the child's perspective.
-            value_for_node = -value_from_child
-            node_being_updated.visit_count += 1
-            print(f"  Backprop: Node={node_being_updated}, ValueToAdd={value_for_node:.3f}, OldW={node_being_updated.total_value:.3f}, OldN={node_being_updated.visit_count}", end="")
-            node_being_updated.total_value += value_for_node
-            print(f", NewW={node_being_updated.total_value:.3f}, NewN={node_being_updated.visit_count}")
+        while current_node is not None:
+            # The value added to total_value must be from the perspective of the player
+            # whose turn it is at current_node. This is the negative of the value
+            # propagated up from the child (value_perspective).
+            value_for_current_node = -value_perspective
+            current_node.visit_count += 1
+            print(
+                f"  Backprop: Node={current_node}, ValueToAdd={value_for_current_node:.3f}, OldW={current_node.total_value:.3f}, OldN={current_node.visit_count}",
+                end="",
+            )
+            current_node.total_value += value_for_current_node
+            print(
+                f", NewW={current_node.total_value:.3f}, NewN={current_node.visit_count}"
+            )
 
-            # The value to be propagated up to the parent is from the perspective of the current node.
-            value_from_child = value_for_node # This value is now from the perspective of node_being_updated
-            node_being_updated = node_being_updated.parent
+            # Flip the perspective for the next level up (parent).
+            value_perspective = value_for_current_node
+            current_node = current_node.parent
 
     def search(self, env: BaseEnvironment, state: StateType) -> MCTSNode:
         """Run MCTS search from the given state using UCB1 and random rollouts."""
@@ -167,41 +175,34 @@ class MCTS:
         for sim_num in range(self.num_simulations):
             print(f" Simulation {sim_num+1}/{self.num_simulations}")
             # Start from the root node and a copy of the environment set to the initial state
-            node = self.root
             sim_env = env.copy()
             sim_env.set_state(state)  # Ensure simulation starts from the correct state
 
-            # 1. Selection: Traverse the tree using UCB1 until a leaf node is reached
-            node, sim_env = self._select(node, sim_env)
+            # 1. Selection: Find a leaf node using UCB1.
+            leaf_node, leaf_env_state = self._select(self.root, sim_env)
 
-            # 2. Expansion: If the game is not over and the node hasn't been expanded, expand it.
-            value = 0.0  # Default value
-            if not sim_env.is_game_over():
-                if not node.is_expanded():
-                    self._expand(node, sim_env)
-                    # After expansion, usually perform a rollout from one of the new children.
-                    # Or, more commonly, rollout from the expanded node itself *before* selecting a child.
-                    # Let's rollout from the state reached *after* selection (sim_env).
-                    value = self._rollout(sim_env)
-                else:
-                    # If node was already expanded but selection ended here (e.g., terminal state reached during selection),
-                    # we still need a value. Rollout is one option, or use terminal state value.
-                    # Since selection stops *before* entering a terminal state in the loop condition,
-                    # this 'else' block might be less common. Let's assume rollout is the default.
-                    value = self._rollout(sim_env)  # Rollout from the state reached
-
+            # 2. Evaluation: Get the value of the leaf node.
+            if not leaf_env_state.is_game_over():
+                if not leaf_node.is_expanded():
+                    self._expand(leaf_node, leaf_env_state)
+                value = self._rollout(leaf_env_state)
             else:
                 # Game ended during selection. Determine the outcome.
                 # The value must be from the perspective of the player whose turn it was AT THE LEAF node.
                 player_at_leaf = sim_env.get_current_player()
                 winner = sim_env.get_winning_player()
 
-                if winner is None: value = 0.0 # Draw
-                elif winner == player_at_leaf: value = 1.0 # Player at leaf wins
-                else: value = -1.0 # Player at leaf loses
-                print(f"  Terminal Found: Winner={winner}, PlayerAtNode={player_at_leaf}, Value={value}")
-            # 3. Backpropagation: Update visit counts and values up the tree
-            self._backpropagate(node, value)
+                if winner is None:
+                    value = 0.0  # Draw
+                elif winner == player_at_leaf:
+                    value = 1.0  # Player at leaf wins
+                else:
+                    value = -1.0  # Player at leaf loses
+                print(
+                    f"  Terminal Found: Winner={winner}, PlayerAtNode={player_at_leaf}, Value={value}"
+                )
+            # 3. Backpropagation: Update nodes along the path from the leaf to the root.
+            self._backpropagate(leaf_node, value)  # Use renamed _backpropagate
 
         return self.root
 
@@ -237,10 +238,10 @@ class AlphaZeroMCTS(MCTS):
 
     # Override selection to use PUCT score
     def _select(
-        self, node: MCTSNode, env: BaseEnvironment
+        self, node: MCTSNode, sim_env: BaseEnvironment
     ) -> Tuple[MCTSNode, BaseEnvironment]:
         """Select child node with highest PUCT score until a leaf node is reached."""
-        while node.is_expanded() and not env.is_game_over():
+        while node.is_expanded() and not sim_env.is_game_over():
             parent_visits = node.visit_count
             # Select the action corresponding to the child with the highest PUCT score
             best_item = max(
@@ -248,8 +249,8 @@ class AlphaZeroMCTS(MCTS):
                 key=lambda item: self._puct_score(item[1], parent_visits),
             )
             action, node = best_item
-            env.step(action)  # Update the environment state as we traverse
-        return node, env
+            sim_env.step(action)  # Update the environment state as we traverse
+        return node, sim_env
 
     # --- Helper methods specific to AlphaZeroMCTS ---
 
