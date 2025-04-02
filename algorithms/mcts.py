@@ -68,11 +68,11 @@ class MCTS:
         exploration_term = self.exploration_constant * math.sqrt(
             math.log(safe_parent_visits) / node.visit_count
         )
-        # node.value is the average stored value from the perspective of the player AT 'node'.
+        # node.value is the average stored value from the perspective of the player AT 'node' (the child).
         # The parent selecting wants to maximize its own expected outcome.
-        # Parent's Q for taking action leading to 'node' = - (node's average value)
-        parent_perspective_q = -node.value
-        return parent_perspective_q + exploration_term
+        # Parent's Q for action leading to 'node' = - (node's value)
+        q_value_for_parent = -node.value
+        return q_value_for_parent + exploration_term
 
     def _select(
         self, node: MCTSNode, env: BaseEnvironment
@@ -141,22 +141,22 @@ class MCTS:
             value_from_leaf_perspective: The value (+1 win, -1 loss, 0 draw) from the perspective
                                          of the player whose turn it was AT THE LEAF node 'node'.
         """
-        current_node = node
-        # Start with the value from the leaf's perspective.
-        value_to_propagate = value_from_leaf_perspective
+        node_being_updated = node
+        # value_from_child is from the perspective of the player AT the child node (or leaf node initially).
+        value_from_child = value_from_leaf_perspective
 
-        while current_node is not None:
-            # The value added to current_node's total_value must be from current_node's perspective.
-            # This is the *negative* of the value propagated from its child.
-            value_for_this_node = -value_to_propagate
-            current_node.visit_count += 1
-            print(f"  Backprop: Node={current_node}, ValueToAdd={value_for_this_node:.3f}, OldW={current_node.total_value:.3f}, OldN={current_node.visit_count}", end="")
-            current_node.total_value += value_for_this_node
-            print(f", NewW={current_node.total_value:.3f}, NewN={current_node.visit_count}")
+        while node_being_updated is not None:
+            # Value must be stored from the perspective of the node being updated.
+            # In zero-sum games, this is the negative of the value from the child's perspective.
+            value_for_node = -value_from_child
+            node_being_updated.visit_count += 1
+            print(f"  Backprop: Node={node_being_updated}, ValueToAdd={value_for_node:.3f}, OldW={node_being_updated.total_value:.3f}, OldN={node_being_updated.visit_count}", end="")
+            node_being_updated.total_value += value_for_node
+            print(f", NewW={node_being_updated.total_value:.3f}, NewN={node_being_updated.visit_count}")
 
-            # The value passed up to the parent must be from the current_node's perspective.
-            value_to_propagate = value_for_this_node
-            current_node = current_node.parent
+            # The value to be propagated up to the parent is from the perspective of the current node.
+            value_from_child = value_for_node # This value is now from the perspective of node_being_updated
+            node_being_updated = node_being_updated.parent
 
     def search(self, env: BaseEnvironment, state: StateType) -> MCTSNode:
         """Run MCTS search from the given state using UCB1 and random rollouts."""
@@ -191,25 +191,15 @@ class MCTS:
                     value = self._rollout(sim_env)  # Rollout from the state reached
 
             else:
-                # Game ended during selection phase. Determine the outcome.
-                # The 'value' passed to backpropagate must be from the perspective
-                # of the player whose turn it was AT THE LEAF node ('node').
-                player_at_leaf = sim_env.get_current_player() # Player whose turn it would be at this node
+                # Game ended during selection. Determine the outcome.
+                # The value must be from the perspective of the player whose turn it was AT THE LEAF node.
+                player_at_leaf = sim_env.get_current_player()
                 winner = sim_env.get_winning_player()
 
-                if winner is None:  # Draw
-                    value_at_leaf = 0.0
-                elif winner == player_at_leaf:
-                    # If the winner is the player whose turn it would be, this player WON.
-                    # (Because the opponent could not force a win on their previous turn).
-                    value_at_leaf = 1.0
-                else:
-                    # The opponent (winner != player_at_leaf) is the winner,
-                    # meaning the player whose turn it would be at this node LOST.
-                    value_at_leaf = -1.0
-                print(f"  Terminal Found: Winner={winner}, PlayerAtNode={player_at_leaf}, Value={value_at_leaf}")
-                # This value_at_leaf is correct from the perspective of player_at_leaf
-                value = value_at_leaf # Use this value to start backpropagation
+                if winner is None: value = 0.0 # Draw
+                elif winner == player_at_leaf: value = 1.0 # Player at leaf wins
+                else: value = -1.0 # Player at leaf loses
+                print(f"  Terminal Found: Winner={winner}, PlayerAtNode={player_at_leaf}, Value={value}")
             # 3. Backpropagation: Update visit counts and values up the tree
             self._backpropagate(node, value)
 

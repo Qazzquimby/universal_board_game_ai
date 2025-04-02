@@ -20,7 +20,7 @@ class TestSanityChecks(unittest.TestCase):
         config = AppConfig()
         config.env.name = env_name
         # Use higher simulation counts for MCTS sanity checks to improve reliability
-        config.mcts.num_simulations = 20
+        config.mcts.num_simulations = 800
         config.alpha_zero.num_simulations = 50  # Keep AlphaZero low for now
         config.alpha_zero.debug_mode = False  # Keep tests quiet
         config.muzero.debug_mode = False
