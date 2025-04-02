@@ -352,7 +352,7 @@ class Connect4(BaseEnvironment):
         self.winner = state["winner"]
         self.done = state["done"]
 
-    def get_sanity_check_states(self) -> List[Tuple[str, StateType]]:
+    def get_sanity_check_states(self) -> List[SanityCheckState]:
         """Returns predefined states for sanity checking Connect4."""
         # Expected value is from the perspective of the state's current player
         states = []
@@ -376,7 +376,6 @@ class Connect4(BaseEnvironment):
         # 0 0 0 0 0 0 0
         # 0 0 0 0 0 0 0
         # 1 1 1 0 2 2 0  <- Player 0 to move
-        desc2 = "Player 0 can win horizontally (col 3)"
         env2 = Connect4(width=self.width, height=self.height)
         env2.board[5, 0] = 1  # P0
         env2.board[5, 1] = 1  # P0
@@ -385,11 +384,13 @@ class Connect4(BaseEnvironment):
         env2.board[5, 5] = 2  # P1
         env2.current_player = 0
         env2.step_count = 5
-        state2 = env2.get_observation()
-        expected_value2 = 1.0  # Player 0 has a winning move
-        expected_action2 = 3  # Column 3 wins
         states.append(
-            SanityCheckState(desc2, state2, expected_value2, expected_action2)
+            SanityCheckState(
+                description="Player 0 can win horizontally (col 3)",
+                state=env2.get_observation(),
+                expected_value=1.0,
+                expected_action=3,
+            )
         )
 
         # --- State 3: Player 1 can win vertically in column 0 ---
@@ -400,7 +401,6 @@ class Connect4(BaseEnvironment):
         # 2 0 1 0 0 0 0
         # 2 0 1 0 0 0 0
         # 1 0 1 0 0 0 0 <- Player 1 to move
-        desc3 = "Player 1 can win vertically (col 0)"
         env3 = Connect4(width=self.width, height=self.height)
         env3.board[5, 0] = 1  # P0
         env3.board[4, 2] = 1  # P0
@@ -411,11 +411,13 @@ class Connect4(BaseEnvironment):
         env3.board[2, 0] = 2  # P1
         env3.current_player = 1
         env3.step_count = 7
-        state3 = env3.get_observation()
-        expected_value3 = 1.0  # Player 1 has a winning move
-        expected_action3 = 0  # Column 0 wins
         states.append(
-            SanityCheckState(desc3, state3, expected_value3, expected_action3)
+            SanityCheckState(
+                description="Player 1 can win vertically (col 0)",
+                state=env3.get_observation(),
+                expected_value=1.0,
+                expected_action=0,
+            )
         )
 
         # --- State 4: Player 0 must block Player 1's win in column 6 ---
@@ -437,13 +439,15 @@ class Connect4(BaseEnvironment):
         env4.board[5, 6] = 2  # P1
         env4.current_player = 0
         env4.step_count = 7
-        state4 = env4.get_observation()
-        # Player 0 *must* block, but doesn't guarantee a win. Outcome unclear. Use 0.0
-        # Alternatively, could argue it's slightly negative as P1 forced the block? Let's use 0.0 for simplicity.
-        expected_value4 = 0.0
-        expected_action4 = 6  # Column 6 is the required block
         states.append(
-            SanityCheckState(desc4, state4, expected_value4, expected_action4)
+            SanityCheckState(
+                description="Player 0 must block P1 win (col 6)",
+                state=env4.get_observation(),
+                # Player 0 *must* block, but doesn't guarantee a win. Outcome unclear. Use 0.0
+                # Alternatively, could argue it's slightly negative as P1 forced the block? Let's use 0.0 for simplicity.
+                expected_value=0.0,
+                expected_action=6,
+            )
         )
 
         return states
