@@ -133,9 +133,12 @@ class MCTS:
         while current_node is not None:
             current_node.visit_count += 1
             # Update total value (W). The value should be relative to the player whose turn it is *at the parent node*.
-            # Since 'value' is from the child's perspective (start of rollout), we negate it at each step up.
-            current_node.total_value += value
-            value = -value  # Flip value for the parent (opponent's perspective)
+            # The value added to W(parent, action_to_current_node) must be from the parent's perspective.
+            # Since 'value' is from the child's perspective (current_node), we add -value to the parent's statistics.
+            # The W is stored *in the child node* (representing the edge from parent to child).
+            current_node.total_value += -value # Add value from the PARENT's perspective
+            # The value passed up to the next level (grandparent) needs to be flipped again.
+            value = -value
             current_node = current_node.parent
 
     def search(self, env: BaseEnvironment, state: StateType) -> MCTSNode:
