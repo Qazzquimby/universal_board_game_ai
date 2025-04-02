@@ -95,11 +95,12 @@ class TestSanityChecks(unittest.TestCase):
 
     # TODO: Add tests for AlphaZeroAgent, potentially checking value sign and policy peak
 
+    # TODO: Add tests for AlphaZeroAgent, potentially checking value sign and policy peak
 
-# --- Dynamic Test Generation for MCTS ---
 
+# --- Dynamic Test Generation for MCTS (Executed after class definition) ---
 
-def _make_mcts_test_runner(env_name: str, check_case): # Renamed factory
+def _generate_mcts_test_method(env_name: str, check_case): # Renamed factory slightly
     """Factory to create a test method for a specific MCTS sanity check case."""
 
     def test_func(self: TestSanityChecks):
@@ -118,46 +119,56 @@ def _make_mcts_test_runner(env_name: str, check_case): # Renamed factory
 
 
 # Generate tests for each environment and case
-for env_name_to_test in ["connect4", "nim"]:
+for _env_name_to_test in ["connect4", "nim"]:
     # Need a temporary env instance just to get the cases
     # Use default config settings for this temporary instance
-    temp_config = AppConfig()
-    temp_config.env.name = env_name_to_test
+    _temp_config = AppConfig()
+    _temp_config.env.name = _env_name_to_test
+    _temp_env_instance = None # Initialize to prevent unbound local error
+    _sanity_cases = [] # Initialize
     try:
-        temp_env_instance = get_environment(temp_config.env)
-        sanity_cases = temp_env_instance.get_sanity_check_states()
+        _temp_env_instance = get_environment(_temp_config.env)
+        _sanity_cases = _temp_env_instance.get_sanity_check_states()
     except Exception as e:
         print(
-            f"Warning: Could not instantiate or get sanity cases for {env_name_to_test}: {e}"
+            f"Warning: Could not instantiate or get sanity cases for {_env_name_to_test}: {e}"
         )
-        sanity_cases = []  # Skip test generation if env fails
+        # _sanity_cases remains []
 
-    if not sanity_cases:
+    if not _sanity_cases:
         print(
-            f"Warning: No sanity cases found for {env_name_to_test}, skipping MCTS test generation."
+            f"Warning: No sanity cases found for {_env_name_to_test}, skipping MCTS test generation."
         )
-        continue
+        # continue # No need to continue if loop variable isn't used after this
 
-    for i, case in enumerate(sanity_cases):
+    for _i, _case in enumerate(_sanity_cases):
         # Sanitize description for method name (simple approach)
-        safe_desc = "".join(
-            c if c.isalnum() or c == "_" else "_" for c in case.description
+        _safe_desc = "".join(
+            c if c.isalnum() or c == "_" else "_" for c in _case.description
         ).lower()
         # Ensure name starts with 'test_' and is unique
-        method_name = f"test_mcts_{env_name_to_test}_case_{i}_{safe_desc}"
+        _method_name = f"test_mcts_{_env_name_to_test}_case_{_i}_{_safe_desc}"
 
         # Create the test method using the factory
-        test_method = _make_mcts_test_runner(env_name_to_test, case) # Use renamed factory
+        _test_method = _generate_mcts_test_method(_env_name_to_test, _case)
 
         # Set descriptive name and docstring for better reporting
-        test_method.__name__ = method_name
-        test_method.__doc__ = (
-            f"MCTS Sanity Check ({env_name_to_test}): {case.description}"
+        _test_method.__name__ = _method_name
+        _test_method.__doc__ = (
+            f"MCTS Sanity Check ({_env_name_to_test}): {_case.description}"
         )
 
-        # Add the method to the test class
-        setattr(TestSanityChecks, method_name, test_method)
+        # Add the method to the test class *after* it has been defined
+        setattr(TestSanityChecks, _method_name, _test_method)
 
-    # Clean up temporary instance if needed (usually not necessary)
-    del temp_env_instance
-    del sanity_cases
+    # Clean up temporary instance and variables (optional, good practice)
+    if _temp_env_instance:
+        del _temp_env_instance
+    del _sanity_cases
+    # Delete loop variables to avoid potential leakage if this code were in a function
+    # (though at module level it's less critical)
+    try:
+        del _env_name_to_test, _temp_config, _i, _case, _safe_desc, _method_name, _test_method
+    except NameError:
+        pass # In case the loop didn't run
+

@@ -174,21 +174,18 @@ class MCTS:
             else:
                 # Game ended during selection phase. Determine the outcome.
                 winner = sim_env.get_winning_player()
-                # Value should be from the perspective of the player whose turn it *would* have been.
-                player_at_terminal_node = sim_env.get_current_player()
+                # Value should be from the perspective of the player whose turn it would have been
+                # at this terminal node 'node'.
+                player_at_terminal_node = sim_env.get_current_player() # Player whose turn it is now
 
                 if winner is None:  # Draw
                     value = 0.0
-                # Perspective adjustment for backpropagation (similar to AlphaZero logic):
-                # Value from the perspective of the player who *just moved* to reach this state.
-                # Use the num_players property from the environment
-                player_who_just_moved = (
-                    sim_env.get_current_player() + sim_env.num_players - 1
-                ) % sim_env.num_players
-                if winner == player_who_just_moved:  # Player who moved won
-                    value = 1.0
-                else:  # Player who moved lost (or draw handled above)
-                    value = -1.0
+                # If the winner is the player whose turn it *would* have been, that player actually lost
+                # because the opponent made the winning move.
+                elif winner == player_at_terminal_node:
+                    value = -1.0 # Current player lost
+                else:
+                    value = 1.0 # Current player won (opponent lost)
 
             # 3. Backpropagation: Update visit counts and values up the tree
             self._backpropagate(node, value)

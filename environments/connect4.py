@@ -175,8 +175,8 @@ class Connect4(BaseEnvironment):
         Only checks lines passing through the last move.
         Returns True if there's a winner, and sets self.winner.
         """
-        player = self.current_player
-        player_piece = player + 1
+        # Check for the piece corresponding to the current player who just moved
+        player_piece = self.current_player + 1
         board = self.board
         height = self._height
         width = self._width
@@ -188,7 +188,7 @@ class Connect4(BaseEnvironment):
             if board[row, c] == player_piece:
                 count += 1
                 if count >= win_condition:
-                    self.winner = player
+                    self.winner = self.current_player # Use self.current_player
                     return True
             else:
                 count = 0
@@ -199,7 +199,7 @@ class Connect4(BaseEnvironment):
             if board[r, col] == player_piece:
                 count += 1
                 if count >= win_condition:
-                    self.winner = player
+                    self.winner = self.current_player # Use self.current_player
                     return True
             else:
                 count = 0
@@ -213,7 +213,7 @@ class Connect4(BaseEnvironment):
                 if board[r, c] == player_piece:
                     count += 1
                     if count >= win_condition:
-                        self.winner = player
+                        self.winner = self.current_player # Use self.current_player
                         return True
                 else:
                     count = 0  # Reset count if sequence breaks
@@ -231,7 +231,7 @@ class Connect4(BaseEnvironment):
                 if board[r, c] == player_piece:
                     count += 1
                     if count >= win_condition:
-                        self.winner = player
+                        self.winner = self.current_player # Use self.current_player
                         return True
                 else:
                     count = 0  # Reset count if sequence breaks
