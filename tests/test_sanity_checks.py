@@ -20,10 +20,10 @@ class TestSanityChecks(unittest.TestCase):
         config = AppConfig()
         config.env.name = env_name
         # Use higher simulation counts for MCTS sanity checks to improve reliability
-        config.mcts.num_simulations = 800
-        config.mcts.debug = True # Enable MCTS debug prints for tests
-        config.alpha_zero.num_simulations = 50 # Keep AlphaZero low for now
-        config.alpha_zero.debug_mode = False # Keep other agents quiet
+        config.mcts.num_simulations = 2400
+        config.mcts.debug = True  # Enable MCTS debug prints for tests
+        config.alpha_zero.num_simulations = 50  # Keep AlphaZero low for now
+        config.alpha_zero.debug_mode = False  # Keep other agents quiet
         config.muzero.debug_mode = False
         return config
 
@@ -72,19 +72,26 @@ class TestSanityChecks(unittest.TestCase):
 
         # 2. If an optimal/required action is defined, assert the agent chose it.
         #    Special handling for Nim case 0 where multiple optimal moves exist.
-        if check_case.description.startswith("Initial state (3, 5, 7)") and check_case.expected_action is not None:
-            # Allow either (2, 1) or (1, 1) as correct for initial [3, 5, 7]
-            optimal_moves = [(2, 1), (1, 1)]
+        if (
+            # Match the description from NimEnv more robustly
+            "nim" in agent.env.metadata.get("name", "") and
+            check_case.description.startswith("Initial state") and
+            isinstance(check_case.state.get("piles"), tuple) and  # Ensure it's a Nim state dict
+            check_case.state["piles"] == (3, 5, 7) and  # Check specific piles
+            check_case.expected_action is not None  # Check if an expected action was defined
+        ):
+            # Allow (0, 1), (1, 1), or (2, 1) as correct for initial [3, 5, 7]
+            optimal_moves = [(0, 1), (1, 1), (2, 1)]  # All valid optimal moves
             self.assertIn(
                 chosen_action,
                 optimal_moves,
-                f"Expected one of {optimal_moves} but got {chosen_action}"
+                f"Expected one of {optimal_moves} for Nim [3, 5, 7] but got {chosen_action}",
             )
         elif check_case.expected_action is not None:
             self.assertEqual(
                 chosen_action,
                 check_case.expected_action,
-                f"Expected action {check_case.expected_action} but got {chosen_action}"
+                f"Expected action {check_case.expected_action} but got {chosen_action}",
             )
         # Note: We could add more nuanced checks, e.g., if check_case.expected_value is 1.0,
         # ensure the chosen action *leads* to a win, even if multiple winning moves exist.
@@ -122,7 +129,7 @@ def _generate_mcts_test_method(env_name: str, check_case):  # Renamed factory sl
             env,
             num_simulations=config.mcts.num_simulations,
             exploration_constant=config.mcts.exploration_constant,
-            debug=config.mcts.debug # Pass debug flag
+            debug=config.mcts.debug,  # Pass debug flag
         )
         # Call the actual check logic for this specific case
         self._run_single_mcts_check(agent, env, check_case)
