@@ -188,7 +188,7 @@ class Connect4(BaseEnvironment):
             if board[row, c] == player_piece:
                 count += 1
                 if count >= win_condition:
-                    self.winner = player # Use local variable
+                    self.winner = player  # Use local variable
                     return True
             else:
                 count = 0
@@ -199,7 +199,7 @@ class Connect4(BaseEnvironment):
             if board[r, col] == player_piece:
                 count += 1
                 if count >= win_condition:
-                    self.winner = player # Use local variable
+                    self.winner = player  # Use local variable
                     return True
             else:
                 count = 0
@@ -213,7 +213,7 @@ class Connect4(BaseEnvironment):
                 if board[r, c] == player_piece:
                     count += 1
                     if count >= win_condition:
-                        self.winner = player # Use local variable
+                        self.winner = player  # Use local variable
                         return True
                 else:
                     count = 0  # Reset count if sequence breaks
@@ -231,7 +231,7 @@ class Connect4(BaseEnvironment):
                 if board[r, c] == player_piece:
                     count += 1
                     if count >= win_condition:
-                        self.winner = player # Use local variable
+                        self.winner = player  # Use local variable
                         return True
                 else:
                     count = 0  # Reset count if sequence breaks
