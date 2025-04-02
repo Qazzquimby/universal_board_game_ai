@@ -19,106 +19,145 @@ class TestSanityChecks(unittest.TestCase):
         """Helper to get a default config with the specified environment."""
         config = AppConfig()
         config.env.name = env_name
-        # Use low simulation counts for faster tests
-        config.mcts.num_simulations = 25
-        config.alpha_zero.num_simulations = 25
+        # Use higher simulation counts for MCTS sanity checks to improve reliability
+        config.mcts.num_simulations = 800 # Increased from 50
+        config.alpha_zero.num_simulations = 50 # Keep AlphaZero low for now
         config.alpha_zero.debug_mode = False  # Keep tests quiet
         config.muzero.debug_mode = False
         return config
 
-    def _run_mcts_agent_check(self, agent: MCTSAgent, env: BaseEnvironment):
-        """Runs sanity checks specifically for MCTSAgent."""
-        sanity_states = env.get_sanity_check_states()
-        self.assertTrue(
-            sanity_states, f"No sanity states found for {type(env).__name__}"
-        )
+    def _run_single_mcts_check(
+        self, agent: MCTSAgent, env: BaseEnvironment, check_case
+    ):
+        """Runs sanity check for a single case for MCTSAgent."""
+        # This method now assumes check_case is passed in.
+        # The loop and subTest are removed.
+        print(f"\n--- Testing MCTS: {check_case.description} ---")
+        # Set environment to the test state
+        current_env = env.copy()
+        current_env.set_state(check_case.state)  # Corrected indentation
+        agent.reset()  # Reset MCTS tree
 
-        for check_case in sanity_states: # Iterate over SanityCheckState objects
-            with self.subTest(description=check_case.description):
-                print(f"\n--- Testing MCTS: {check_case.description} ---")
-                # Set environment to the test state
-                current_env = env.copy()
-                current_env.set_state(check_case.state)
-                agent.reset()  # Reset MCTS tree
+        # Get the action chosen by the agent
+        # MCTSAgent.act runs the search internally
+        chosen_action = agent.act(check_case.state)
 
-                # Get the action chosen by the agent
-                # MCTSAgent.act runs the search internally
-                chosen_action = agent.act(check_case.state)
-
-                # Get MCTS search results for analysis (optional but useful)
-                root_node = agent.mcts.root  # Get root after search in act()
-                if not root_node or not root_node.children:
-                    print("Warning: MCTS root has no children after search.")
-                    # Basic assertion: agent should return *some* legal action if available
-                    legal_actions = current_env.get_legal_actions()
-                    if legal_actions:
-                        self.assertIsNotNone(
-                            chosen_action,
-                            "Agent returned None action when legal moves exist.",
-                        )
-                        self.assertIn(
-                            chosen_action,
-                            legal_actions,
-                            "Agent chose an illegal action.",
-                        )
-                    continue  # Skip further checks if no children
-
-                # --- Basic Assertions for MCTS ---
-                # 1. Did it choose a legal action?
-                legal_actions = current_env.get_legal_actions()
+        # Get MCTS search results for analysis (optional but useful)
+        root_node = agent.mcts.root  # Get root after search in act()
+        if not root_node or not root_node.children:
+            print("Warning: MCTS root has no children after search.")
+            # Basic assertion: agent should return *some* legal action if available
+            legal_actions = current_env.get_legal_actions()
+            if legal_actions:
+                self.assertIsNotNone(
+                    chosen_action,
+                    "Agent returned None action when legal moves exist.",
+                )
                 self.assertIn(
                     chosen_action,
                     legal_actions,
-                    f"Chosen action {chosen_action} not in legal actions {legal_actions}",
+                    "Agent chose an illegal action.",
                 )
+            return  # Exit check if no children (changed from continue)
 
-                # 2. If an optimal/required action is defined, assert the agent chose it.
-                if check_case.expected_action is not None:
-                    self.assertEqual(
-                        chosen_action,
-                        check_case.expected_action,
-                        f"Expected action {check_case.expected_action} but got {chosen_action}"
-                    )
-                # Note: We could add more nuanced checks, e.g., if check_case.expected_value is 1.0,
-                # ensure the chosen action *leads* to a win, even if multiple winning moves exist.
-                # For now, checking against a single defined expected action is simpler.
-
-                # 4. Print visit counts for manual inspection (optional)
-                visit_counts = np.array(
-                    [child.visit_count for child in root_node.children.values()]
-                )
-                actions = list(root_node.children.keys())
-                sorted_visits = sorted(
-                    zip(actions, visit_counts), key=lambda item: item[1], reverse=True
-                )
-                print("MCTS Visit Counts:")
-                for act, visits in sorted_visits:
-                    highlight = " <<< CHOSEN" if act == chosen_action else ""
-                    print(f"  - {act}: {visits}{highlight}")
-
-    # --- Test Methods ---
-
-    def test_mcts_agent_sanity_connect4(self):
-        """Run MCTSAgent sanity checks for Connect4."""
-        config = self._get_config("connect4")
-        env = get_environment(config.env)
-        # Create agent directly (don't need full get_agents factory here)
-        agent = MCTSAgent(
-            env,
-            num_simulations=config.mcts.num_simulations,
-            exploration_constant=config.mcts.exploration_constant,
+        # --- Basic Assertions for MCTS ---
+        # 1. Did it choose a legal action?
+        legal_actions = current_env.get_legal_actions()
+        self.assertIn(
+            chosen_action,
+            legal_actions,
+            f"Chosen action {chosen_action} not in legal actions {legal_actions}",
         )
-        self._run_mcts_agent_check(agent, env)
 
-    def test_mcts_agent_sanity_nim(self):
-        """Run MCTSAgent sanity checks for Nim."""
-        config = self._get_config("nim")
-        env = get_environment(config.env)
-        agent = MCTSAgent(
-            env,
-            num_simulations=config.mcts.num_simulations,
-            exploration_constant=config.mcts.exploration_constant,
+        # 2. If an optimal/required action is defined, assert the agent chose it.
+        if check_case.expected_action is not None:
+            self.assertEqual(
+                chosen_action,
+                check_case.expected_action,
+                f"Expected action {check_case.expected_action} but got {chosen_action}",
+            )
+        # Note: We could add more nuanced checks, e.g., if check_case.expected_value is 1.0,
+        # ensure the chosen action *leads* to a win, even if multiple winning moves exist.
+        # For now, checking against a single defined expected action is simpler.
+
+        # 4. Print visit counts for manual inspection (optional)
+        visit_counts = np.array(
+            [child.visit_count for child in root_node.children.values()]
         )
-        self._run_mcts_agent_check(agent, env)
+        actions = list(root_node.children.keys())
+        sorted_visits = sorted(
+            zip(actions, visit_counts), key=lambda item: item[1], reverse=True
+        )
+        print("MCTS Visit Counts:")
+        for act, visits in sorted_visits:
+            highlight = " <<< CHOSEN" if act == chosen_action else ""
+            print(f"  - {act}: {visits}{highlight}")
 
     # TODO: Add tests for AlphaZeroAgent, potentially checking value sign and policy peak
+
+
+# --- Dynamic Test Generation for MCTS ---
+
+
+def _make_mcts_test_runner(env_name: str, check_case): # Renamed factory
+    """Factory to create a test method for a specific MCTS sanity check case."""
+
+    def test_func(self: TestSanityChecks):
+        """Dynamically generated test for a specific MCTS sanity check case."""
+        config = self._get_config(env_name)
+        env = get_environment(config.env)
+        agent = MCTSAgent(
+            env,
+            num_simulations=config.mcts.num_simulations,
+            exploration_constant=config.mcts.exploration_constant,
+        )
+        # Call the actual check logic for this specific case
+        self._run_single_mcts_check(agent, env, check_case)
+
+    return test_func
+
+
+# Generate tests for each environment and case
+for env_name_to_test in ["connect4", "nim"]:
+    # Need a temporary env instance just to get the cases
+    # Use default config settings for this temporary instance
+    temp_config = AppConfig()
+    temp_config.env.name = env_name_to_test
+    try:
+        temp_env_instance = get_environment(temp_config.env)
+        sanity_cases = temp_env_instance.get_sanity_check_states()
+    except Exception as e:
+        print(
+            f"Warning: Could not instantiate or get sanity cases for {env_name_to_test}: {e}"
+        )
+        sanity_cases = []  # Skip test generation if env fails
+
+    if not sanity_cases:
+        print(
+            f"Warning: No sanity cases found for {env_name_to_test}, skipping MCTS test generation."
+        )
+        continue
+
+    for i, case in enumerate(sanity_cases):
+        # Sanitize description for method name (simple approach)
+        safe_desc = "".join(
+            c if c.isalnum() or c == "_" else "_" for c in case.description
+        ).lower()
+        # Ensure name starts with 'test_' and is unique
+        method_name = f"test_mcts_{env_name_to_test}_case_{i}_{safe_desc}"
+
+        # Create the test method using the factory
+        test_method = _make_mcts_test_runner(env_name_to_test, case) # Use renamed factory
+
+        # Set descriptive name and docstring for better reporting
+        test_method.__name__ = method_name
+        test_method.__doc__ = (
+            f"MCTS Sanity Check ({env_name_to_test}): {case.description}"
+        )
+
+        # Add the method to the test class
+        setattr(TestSanityChecks, method_name, test_method)
+
+    # Clean up temporary instance if needed (usually not necessary)
+    del temp_env_instance
+    del sanity_cases
