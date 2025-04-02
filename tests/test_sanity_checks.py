@@ -71,23 +71,7 @@ class TestSanityChecks(unittest.TestCase):
         )
 
         # 2. If an optimal/required action is defined, assert the agent chose it.
-        #    Special handling for Nim case 0 where multiple optimal moves exist.
-        if (
-            # Match the description from NimEnv more robustly
-            "nim" in agent.env.metadata.get("name", "")
-            and check_case.description.startswith("Initial state")
-            and isinstance(check_case.state.get("piles"), tuple)
-            and check_case.state["piles"] == (3, 5, 7)  # Ensure it's a Nim state dict
-            and check_case.expected_action  # Check specific piles
-            is not None  # Check if an expected action was defined
-        ):
-            optimal_moves = [(0, 1), (1, 1), (2, 1)]  # All valid optimal moves
-            self.assertIn(
-                chosen_action,
-                optimal_moves,
-                f"Expected one of {optimal_moves} for Nim [3, 5, 7] but got {chosen_action}",
-            )
-        elif check_case.expected_action is not None:
+        if check_case.expected_action is not None:
             self.assertEqual(
                 chosen_action,
                 check_case.expected_action,

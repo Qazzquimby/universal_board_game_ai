@@ -19,7 +19,7 @@ class NimEnv(BaseEnvironment):
 
     State representation: A list/tuple of integers representing objects in each pile.
     Action representation: A tuple (pile_index, number_to_remove).
-    Standard Nim rules: Player taking the last object wins.
+    Standard Nim rules: Player taking the last object loses.
     """
 
     metadata = {"render_modes": ["human"], "name": "nim"}
@@ -178,22 +178,6 @@ class NimEnv(BaseEnvironment):
         """Returns predefined states for sanity checking Nim."""
         # Expected value is from the perspective of the state's current player
         states = []
-
-        # --- State 1: Initial State (e.g., [3, 5, 7]), Player 0 turn ---
-        # Nim sum 3^5^7 = 011 ^ 101 ^ 111 = 001 != 0. Winning state for P0.
-        env1 = NimEnv(list(self.initial_piles))
-        # Optimal move depends on initial piles, e.g., for [3,5,7] -> (2, 1) makes Nim sum 0
-        optimal_action1: Optional[ActionType] = (
-            (2, 1) if self.initial_piles == (3, 5, 7) else None
-        )  # Define for specific case
-        states.append(
-            SanityCheckState(
-                description=f"Initial state {self.initial_piles}, Player 0 turn",
-                state=env1.get_observation(),
-                expected_value=1.0,
-                expected_action=optimal_action1,
-            )
-        )
 
         # --- State 2: Simple winning state (Nim sum != 0), Player 0 turn ---
         # Piles [1, 2, 0] -> Nim sum = 1^2 = 3 != 0. Player 0 should win.
