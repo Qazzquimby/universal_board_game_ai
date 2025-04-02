@@ -359,7 +359,8 @@ class Connect4(BaseEnvironment):
         env1 = Connect4(width=self.width, height=self.height)
         state1 = env1.get_observation()
         expected_value1 = 0.0
-        states.append((desc1, state1, expected_value1))
+        expected_action1 = None # No single best move on empty board
+        states.append((desc1, state1, expected_value1, expected_action1))
 
         # --- State 2: Player 0 can win horizontally in column 3 ---
         # Board:
@@ -380,7 +381,8 @@ class Connect4(BaseEnvironment):
         env2.step_count = 5
         state2 = env2.get_observation()
         expected_value2 = 1.0  # Player 0 has a winning move
-        states.append((desc2, state2, expected_value2))
+        expected_action2 = 3   # Column 3 wins
+        states.append((desc2, state2, expected_value2, expected_action2))
 
         # --- State 3: Player 1 can win vertically in column 0 ---
         # Board:
@@ -403,7 +405,8 @@ class Connect4(BaseEnvironment):
         env3.step_count = 7
         state3 = env3.get_observation()
         expected_value3 = 1.0  # Player 1 has a winning move
-        states.append((desc3, state3, expected_value3))
+        expected_action3 = 0   # Column 0 wins
+        states.append((desc3, state3, expected_value3, expected_action3))
 
         # --- State 4: Player 0 must block Player 1's win in column 6 ---
         # Board:
@@ -428,6 +431,7 @@ class Connect4(BaseEnvironment):
         # Player 0 *must* block, but doesn't guarantee a win. Outcome unclear. Use 0.0
         # Alternatively, could argue it's slightly negative as P1 forced the block? Let's use 0.0 for simplicity.
         expected_value4 = 0.0
-        states.append((desc4, state4, expected_value4))
+        expected_action4 = 6   # Column 6 is the required block
+        states.append((desc4, state4, expected_value4, expected_action4))
 
         return states

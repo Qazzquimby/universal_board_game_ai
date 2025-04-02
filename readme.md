@@ -20,6 +20,8 @@ The current unvalidated plan is to
   variable sized policy output. Iterate until performance is okay.
 - [ ] gradually work with more complex games. Add components needing embeddings, stochasticity, partial info, etc.
 
+Log wall clock time taken, separately tracking jobs that could be parallelized and those that can't. 
+
 # Ideas
 
 Normally old self play data is discarded as low quality because it came from a previous version of
