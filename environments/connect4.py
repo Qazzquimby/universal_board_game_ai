@@ -152,9 +152,7 @@ class Connect4(BaseEnvironment):
         # Store the reward for the player who just moved *before* switching player
         reward_for_acting_player = self.rewards.get(self.current_player, 0.0)
 
-        if not self.done:
-            # Switch to next player only if game is not done
-            self.current_player = (self.current_player + 1) % self.num_players
+        self.current_player = (self.current_player + 1) % self.num_players
 
         return self.get_observation(), reward_for_acting_player, self.done
 

@@ -112,8 +112,6 @@ class TestSanityChecks(unittest.TestCase):
 
     # TODO: Add tests for AlphaZeroAgent, potentially checking value sign and policy peak
 
-    # TODO: Add tests for AlphaZeroAgent, potentially checking value sign and policy peak
-
 
 # --- Dynamic Test Generation for MCTS (Executed after class definition) ---
 

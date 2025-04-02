@@ -100,7 +100,7 @@ class NimEnv(BaseEnvironment):
             self.done = False
             self.winner = None
             reward = 0.0
-            self.current_player = (self.current_player + 1) % self._num_players
+        self.current_player = (self.current_player + 1) % self._num_players
 
         return self.get_observation(), reward, self.done
 

@@ -64,6 +64,7 @@ class MCTS:
     def _ucb_score(self, node: MCTSNode, parent_visits: int) -> float:
         """Calculate UCB1 score."""
         if node.visit_count == 0:
+            # Must explore unvisited nodes
             return float("inf")
         # Ensure parent_visits is at least 1 to avoid math.log(0)
         safe_parent_visits = max(1, parent_visits)
@@ -90,9 +91,10 @@ class MCTS:
                 for act, child in node.children.items()
             }
             best_action = max(child_scores, key=child_scores.get)
-            print(
-                f"  Select: ParentVisits={parent_visits}, Scores={ {a: f'{s:.3f}' for a, s in child_scores.items()} }, Chosen={best_action}"
-            )
+            if self.debug:
+                print(
+                    f"  Select: ParentVisits={parent_visits}, Scores={ {a: f'{s:.3f}' for a, s in child_scores.items()} }, Chosen={best_action}"
+                )
             action, node = best_action, node.children[best_action]
 
             sim_env.step(action)
@@ -146,28 +148,24 @@ class MCTS:
                                          of the player whose turn it was at the leaf_node.
         """
         current_node = leaf_node
-        # Value perspective alternates at each level of the tree in zero-sum games.
-        value_for_current_player = value_from_leaf_perspective
+        value_for_current_node = value_from_leaf_perspective
 
         while current_node is not None:
-            # The value added to total_value must be from the perspective of the player
-            # whose turn it is at current_node. This is the negative of the value
-            # propagated up from the child (value_perspective).
-            value_for_current_node = -value_for_current_player
-            current_node.visit_count += 1
             if self.debug:
                 print(
-                    f"  Backprop: Node={current_node}, ValueToAdd={value_for_current_player:.3f}, OldW={current_node.total_value:.3f}, OldN={current_node.visit_count - 1}",
+                    f"  Backprop: Node={current_node}, ValueToAdd={value_for_current_node:.3f}, OldW={current_node.total_value:.3f}, OldN={current_node.visit_count}",
                     end="",
                 )
+
+            current_node.visit_count += 1
             current_node.total_value += value_for_current_node
             if self.debug:
                 print(
                     f", NewW={current_node.total_value:.3f}, NewN={current_node.visit_count}"
                 )
 
-            # Flip the perspective for the next level up (parent).
-            value_for_current_player = value_for_current_node
+            # Flip the value perspective for the parent node.
+            value_for_current_node *= -1
             current_node = current_node.parent
 
     def search(self, env: BaseEnvironment, state: StateType) -> MCTSNode:
