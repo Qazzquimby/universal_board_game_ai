@@ -2,7 +2,6 @@ import math
 import random
 from typing import List, Tuple, Optional, Dict
 
-import numpy as np
 import torch
 
 from core.config import MuZeroConfig
@@ -11,8 +10,6 @@ from models.networks import AlphaZeroNet, MuZeroNet
 
 
 class MCTSNode:
-    """MCTS node adapted for AlphaZero."""
-
     def __init__(self, parent: Optional["MCTSNode"] = None, prior: float = 1.0):
         self.parent = parent
         self.prior = prior  # P(s,a) - Prior probability from the network
@@ -37,7 +34,6 @@ class MCTSNode:
             # Ensure action is hashable if it's not already (e.g., list)
             action_key = tuple(action) if isinstance(action, list) else action
             if action_key not in self.children:
-                # Create child node with the prior probability
                 self.children[action_key] = MCTSNode(parent=self, prior=prior)
 
 
@@ -46,15 +42,15 @@ class MCTS:
 
     def __init__(
         self,
-        exploration_constant: float = 1.41,  # UCB1 exploration constant
+        exploration_constant: float = 1.41,  # Standard UCB1 exploration constant
         discount_factor: float = 1.0,  # Discount factor for rollout rewards
         num_simulations: int = 100,
-        debug: bool = False,  # Add debug flag
+        debug: bool = False,
     ):
         self.exploration_constant = exploration_constant
         self.discount_factor = discount_factor
         self.num_simulations = num_simulations
-        self.debug = debug  # Store debug flag
+        self.debug = debug
         self.root = MCTSNode()
 
     def reset_root(self):
@@ -66,11 +62,12 @@ class MCTS:
         if node.visit_count == 0:
             # Must explore unvisited nodes
             return float("inf")
+
         # Ensure parent_visits is at least 1 to avoid math.log(0)
-        safe_parent_visits = max(1, parent_visits)
         exploration_term = self.exploration_constant * math.sqrt(
-            math.log(safe_parent_visits) / node.visit_count
+            math.log(max(1, parent_visits)) / node.visit_count
         )
+
         # node.value is the average stored value from the perspective of the player AT 'node' (the child).
         # The parent selecting wants to maximize its own expected outcome.
         # Parent's Q for action leading to 'node' = - (node's value)
@@ -83,11 +80,10 @@ class MCTS:
         """Select child node with highest UCB score until a leaf node is reached."""
         while node.is_expanded() and not sim_env.is_game_over():
             parent_visits = node.visit_count
+
             # Select the action corresponding to the child with the highest UCB score
-            # Need to handle the case where parent_visits is 0 (shouldn't happen if root is visited once?)
-            # Let's ensure root is visited at least once implicitly by the loop structure.
             child_scores = {
-                act: self._ucb_score(child, parent_visits)
+                act: self._ucb_score(node=child, parent_visits=parent_visits)
                 for act, child in node.children.items()
             }
             best_action = max(child_scores, key=child_scores.get)
@@ -107,12 +103,11 @@ class MCTS:
 
         legal_actions = env.get_legal_actions()
         # Use uniform prior for standard MCTS expansion
-        # The MCTSNode prior defaults to 1.0, which is fine here.
         action_priors = {
             action: 1.0 / len(legal_actions) if legal_actions else 1.0
             for action in legal_actions
         }
-        node.expand(action_priors)  # Use the expand method with uniform priors
+        node.expand(action_priors)
 
     def _rollout(self, env: BaseEnvironment) -> float:
         """Simulate game from current state using random policy."""
@@ -122,16 +117,18 @@ class MCTS:
         while not sim_env.is_game_over():
             legal_actions = sim_env.get_legal_actions()
             if not legal_actions:
-                break  # Should not happen if is_game_over is checked, but safety first
+                print("WARN: Game not over, but no legal actions")
+                break
             action = random.choice(legal_actions)
             sim_env.step(action)
 
         winner = sim_env.get_winning_player()
-        if winner is None:  # Draw
+        if winner is None:
             value = 0.0
-        # Return +1 if the player who started the rollout won, -1 otherwise
+        elif winner == player_at_rollout_start:
+            value = 1.0
         else:
-            value = 1.0 if winner == player_at_rollout_start else -1.0
+            value = -1.0
         if self.debug:
             print(
                 f"  Rollout: StartPlayer={player_at_rollout_start}, Winner={winner}, Value={value}"
@@ -151,13 +148,12 @@ class MCTS:
         value_for_current_node = value_from_leaf_perspective
 
         while current_node is not None:
+            current_node.visit_count += 1
             if self.debug:
                 print(
-                    f"  Backprop: Node={current_node}, ValueToAdd={value_for_current_node:.3f}, OldW={current_node.total_value:.3f}, OldN={current_node.visit_count}",
+                    f"  Backprop: Node={current_node}, ValueToAdd={value_for_current_node:.3f}, OldW={current_node.total_value:.3f}, OldN={current_node.visit_count - 1}",
                     end="",
                 )
-
-            current_node.visit_count += 1
             current_node.total_value += value_for_current_node
             if self.debug:
                 print(
@@ -197,11 +193,11 @@ class MCTS:
                 winner = sim_env.get_winning_player()
 
                 if winner is None:
-                    value = 0.0  # Draw
+                    value = 0.0
                 elif winner == player_at_leaf:
-                    value = 1.0  # Player at leaf wins
+                    value = 1.0
                 else:
-                    value = -1.0  # Player at leaf loses
+                    value = -1.0
                 if self.debug:
                     print(
                         f"  Terminal Found: Winner={winner}, PlayerAtNode={player_at_leaf}, Value={value}"
