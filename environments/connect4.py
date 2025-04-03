@@ -426,7 +426,6 @@ class Connect4(BaseEnvironment):
         # 0 0 0 0 0 0 2
         # 1 1 0 0 0 0 2
         # 1 1 0 0 0 0 2 <- Player 0 to move
-        desc4 = "Player 0 must block P1 win (col 6)"
         env4 = Connect4(width=self.width, height=self.height)
         env4.board[5, 0] = 1  # P0
         env4.board[4, 0] = 1  # P0
@@ -443,7 +442,33 @@ class Connect4(BaseEnvironment):
                 state=env4.get_observation(),
                 # Player 0 *must* block, but doesn't guarantee a win. Outcome unclear. Use 0.0
                 # Alternatively, could argue it's slightly negative as P1 forced the block? Let's use 0.0 for simplicity.
-                expected_value=0.0,
+                expected_value=0.0,  # Blocking doesn't guarantee win/loss
+                expected_action=6,
+            )
+        )
+
+        # --- State 5: Player 1 can win horizontally in column 6 ---
+        # Board:
+        # 0 0 0 0 0 0 0
+        # 0 0 0 0 0 0 0
+        # 0 0 0 0 0 0 0
+        # 0 0 0 0 0 0 0
+        # 0 0 0 1 1 1 0
+        # 0 0 0 2 2 2 0 <- Player 1 to move
+        env6 = Connect4(width=self.width, height=self.height)
+        env6.board[5, 3] = 2  # P1
+        env6.board[5, 4] = 2  # P1
+        env6.board[5, 5] = 2  # P1
+        env6.board[4, 3] = 1  # P0
+        env6.board[4, 4] = 1  # P0
+        env6.board[4, 5] = 1  # P0
+        env6.current_player = 2
+        env6.step_count = 6
+        states.append(
+            SanityCheckState(
+                description="Player 2 can win horizontally (col 6)",
+                state=env6.get_observation(),
+                expected_value=1.0,
                 expected_action=6,
             )
         )

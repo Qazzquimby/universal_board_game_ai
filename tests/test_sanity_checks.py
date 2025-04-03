@@ -21,10 +21,12 @@ class TestSanityChecks(unittest.TestCase):
         config = AppConfig()
         config.env.name = env_name
         # Use higher simulation counts for MCTS sanity checks to improve reliability
-        config.mcts.num_simulations = 2400
-        config.mcts.debug = True  # Enable MCTS debug prints for tests
-        config.alpha_zero.num_simulations = 50  # Keep AlphaZero low for now
-        config.alpha_zero.debug_mode = False  # Keep other agents quiet
+        config.mcts.num_simulations = 1200
+        config.mcts.debug = False
+        config.alpha_zero.num_simulations = 1200
+        config.alpha_zero.debug_mode = False
+        # Optionally override weight loading for AZ tests here if needed globally
+        # config.alpha_zero.load_weights_for_sanity_checks = False
         config.muzero.debug_mode = False
         return config
 
@@ -103,11 +105,27 @@ class TestSanityChecks(unittest.TestCase):
         # Ensure network is in eval mode
         agent.network.eval()
 
-        # Attempt to load weights - checks are more meaningful with trained weights
-        if not agent.load():
+        # Attempt to load weights only if configured to do so
+        should_load_weights = agent.config.should_load_weights
+        weights_loaded = False
+        if should_load_weights:
+            if agent.load():
+                weights_loaded = True
+            else:
+                print(
+                    "Warning: load_weights_for_sanity_checks=True, but no weights file found. Network predictions might be random."
+                )
+        else:
             print(
-                "Warning: No pre-trained AlphaZero weights found. Network predictions might be random."
+                "Info: Skipping weight loading as per configuration (load_weights_for_sanity_checks=False)."
             )
+
+        # Print status regardless
+        if weights_loaded:
+            print("Info: Using pre-trained weights for check.")
+        elif not should_load_weights:
+            print("Info: Using un-trained (initial) network weights for check.")
+        # else: # No weights found case already printed warning above
 
         # Get network predictions for the state
         try:
@@ -291,6 +309,23 @@ def _generate_mcts_test_method(env_name: str, check_case):  # Renamed factory sl
     return test_func
 
 
+def _generate_alphazero_test_method(env_name: str, check_case):
+    """Factory to create a test method for a specific AlphaZero network sanity check case."""
+
+    def test_func(self: TestSanityChecks):
+        """Dynamically generated test for a specific AlphaZero network sanity check case."""
+        config = self._get_config(env_name)
+        env = get_environment(config.env)
+        # Instantiate AlphaZeroAgent - needs env, az_config, and training_config
+        # Note: training_config isn't strictly needed for network prediction checks,
+        # but the agent constructor requires it. We pass the default one.
+        agent = AlphaZeroAgent(env, config.alpha_zero, config.training)
+        # Call the actual check logic for this specific case
+        self._run_single_alphazero_check(agent, env, check_case)
+
+    return test_func
+
+
 # --- Generate MCTS Tests ---
 print("\nGenerating MCTS Sanity Check Tests...")
 for _env_name_to_test in ["connect4", "nim"]:
@@ -355,62 +390,62 @@ for _env_name_to_test in ["connect4", "nim"]:
         pass  # In case the loop didn't run
 
 
-# # --- Generate AlphaZero Tests ---
-# # This loop correctly generates the AlphaZero tests using the factory defined earlier.
-# print("\nGenerating AlphaZero Sanity Check Tests...")
-# for _env_name_to_test in ["connect4", "nim"]:
-#     # Need a temporary env instance just to get the cases
-#     _temp_config = AppConfig()
-#     _temp_config.env.name = _env_name_to_test
-#     _temp_env_instance = None
-#     _sanity_cases = []
-#     try:
-#         _temp_env_instance = get_environment(_temp_config.env)
-#         _sanity_cases = _temp_env_instance.get_sanity_check_states()
-#     except Exception as e:
-#         print(
-#             f"Warning: Could not instantiate or get sanity cases for {_env_name_to_test} (AlphaZero): {e}"
-#         )
-#
-#     if not _sanity_cases:
-#         print(
-#             f"Warning: No sanity cases found for {_env_name_to_test}, skipping AlphaZero test generation."
-#         )
-#         continue  # Skip this environment if no cases
-#
-#     for _i, _case in enumerate(_sanity_cases):
-#         _safe_desc = "".join(
-#             c if c.isalnum() or c == "_" else "_" for c in _case.description
-#         ).lower()
-#         # Ensure name starts with 'test_' and is unique from MCTS tests
-#         _method_name = f"test_alphazero_{_env_name_to_test}_case_{_i}_{_safe_desc}"
-#
-#         # Create the test method using the new factory
-#         _test_method = _generate_alphazero_test_method(_env_name_to_test, _case)
-#
-#         _test_method.__name__ = _method_name
-#         _test_method.__doc__ = (
-#             f"AlphaZero Network Sanity Check ({_env_name_to_test}): {_case.description}"
-#         )
-#
-#         setattr(TestSanityChecks, _method_name, _test_method)
-#
-#     # Clean up temporary instance and variables
-#     if _temp_env_instance:
-#         del _temp_env_instance
-#     del _sanity_cases
-#     # Delete loop variables
-#     try:
-#         del (
-#             _env_name_to_test,
-#             _temp_config,
-#             _i,
-#             _case,
-#             _safe_desc,
-#             _method_name,
-#             _test_method,
-#         )
-#     except NameError:
-#         pass
-#
-# print("Finished generating tests.")
+# --- Generate AlphaZero Tests ---
+# This loop correctly generates the AlphaZero tests using the factory defined earlier.
+print("\nGenerating AlphaZero Sanity Check Tests...")
+for _env_name_to_test in ["connect4", "nim"]:
+    # Need a temporary env instance just to get the cases
+    _temp_config = AppConfig()
+    _temp_config.env.name = _env_name_to_test
+    _temp_env_instance = None
+    _sanity_cases = []
+    try:
+        _temp_env_instance = get_environment(_temp_config.env)
+        _sanity_cases = _temp_env_instance.get_sanity_check_states()
+    except Exception as e:
+        print(
+            f"Warning: Could not instantiate or get sanity cases for {_env_name_to_test} (AlphaZero): {e}"
+        )
+
+    if not _sanity_cases:
+        print(
+            f"Warning: No sanity cases found for {_env_name_to_test}, skipping AlphaZero test generation."
+        )
+        continue  # Skip this environment if no cases
+
+    for _i, _case in enumerate(_sanity_cases):
+        _safe_desc = "".join(
+            c if c.isalnum() or c == "_" else "_" for c in _case.description
+        ).lower()
+        # Ensure name starts with 'test_' and is unique from MCTS tests
+        _method_name = f"test_alphazero_{_env_name_to_test}_case_{_i}_{_safe_desc}"
+
+        # Create the test method using the new factory
+        _test_method = _generate_alphazero_test_method(_env_name_to_test, _case)
+
+        _test_method.__name__ = _method_name
+        _test_method.__doc__ = (
+            f"AlphaZero Network Sanity Check ({_env_name_to_test}): {_case.description}"
+        )
+
+        setattr(TestSanityChecks, _method_name, _test_method)
+
+    # Clean up temporary instance and variables
+    if _temp_env_instance:
+        del _temp_env_instance
+    del _sanity_cases
+    # Delete loop variables
+    try:
+        del (
+            _env_name_to_test,
+            _temp_config,
+            _i,
+            _case,
+            _safe_desc,
+            _method_name,
+            _test_method,
+        )
+    except NameError:
+        pass
+
+print("Finished generating tests.")

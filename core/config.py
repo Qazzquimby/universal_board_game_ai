@@ -52,6 +52,7 @@ class AlphaZeroConfig:
     lr_scheduler_step_size: int = 100  # Decay LR every N training iterations
     lr_scheduler_gamma: float = 0.9  # Multiplicative factor for LR decay
     debug_mode: bool = False
+    should_load_weights: bool = True
 
 
 @dataclass
@@ -82,11 +83,11 @@ class TrainingConfig:
 
     # Specific to AlphaZero/MuZero training loops
     num_iterations: int = 1000  # Total training iterations
-    num_episodes_per_iteration: int = 25 # Self-play games per iteration
+    num_episodes_per_iteration: int = 25  # Self-play games per iteration
     # Number of epochs (passes over replay buffer) per learning phase
-    num_epochs_per_iteration: int = 4 # Increased epochs
+    num_epochs_per_iteration: int = 4  # Increased epochs
     # How often (in iterations) to run sanity checks (0=only at end, 1=every iteration)
-    sanity_check_frequency: int = 5 # Run every 5 iterations
+    sanity_check_frequency: int = 5  # Run every 5 iterations
 
 
 # --- Evaluation Configuration ---
