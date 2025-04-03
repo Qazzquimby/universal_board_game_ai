@@ -9,6 +9,9 @@ from environments.base import ActionType, StateType, BaseEnvironment
 from models.networks import AlphaZeroNet, MuZeroNet
 
 
+# Todo, please replace the if debug prints below with loguru
+
+
 class MCTSNode:
     def __init__(self, parent: Optional["MCTSNode"] = None, prior: float = 1.0):
         self.parent = parent
@@ -57,7 +60,29 @@ class MCTS:
         """Resets the root node."""
         self.root = MCTSNode()
 
-    def _ucb_score(self, node: MCTSNode, parent_visits: int) -> float:
+    def _select(
+        self, node: MCTSNode, sim_env: BaseEnvironment
+    ) -> Tuple[MCTSNode, BaseEnvironment]:
+        """Select child node with highest UCB score until a leaf node is reached."""
+        while node.is_expanded() and not sim_env.is_game_over():
+            parent_visits = node.visit_count
+
+            # Select the action corresponding to the child with the highest UCB score
+            child_scores = {
+                act: self._score_child(node=child, parent_visits=parent_visits)
+                for act, child in node.children.items()
+            }
+            best_action = max(child_scores, key=child_scores.get)
+            if self.debug:
+                print(
+                    f"  Select: ParentVisits={parent_visits}, Scores={ {a: f'{s:.3f}' for a, s in child_scores.items()} }, Chosen={best_action}"
+                )
+            action, node = best_action, node.children[best_action]
+
+            sim_env.step(action)
+        return node, sim_env
+
+    def _score_child(self, node: MCTSNode, parent_visits: int) -> float:
         """Calculate UCB1 score."""
         if node.visit_count == 0:
             # Must explore unvisited nodes
@@ -73,28 +98,6 @@ class MCTS:
         # Parent's Q for action leading to 'node' = - (node's value)
         q_value_for_parent = -node.value
         return q_value_for_parent + exploration_term
-
-    def _select(
-        self, node: MCTSNode, sim_env: BaseEnvironment
-    ) -> Tuple[MCTSNode, BaseEnvironment]:
-        """Select child node with highest UCB score until a leaf node is reached."""
-        while node.is_expanded() and not sim_env.is_game_over():
-            parent_visits = node.visit_count
-
-            # Select the action corresponding to the child with the highest UCB score
-            child_scores = {
-                act: self._ucb_score(node=child, parent_visits=parent_visits)
-                for act, child in node.children.items()
-            }
-            best_action = max(child_scores, key=child_scores.get)
-            if self.debug:
-                print(
-                    f"  Select: ParentVisits={parent_visits}, Scores={ {a: f'{s:.3f}' for a, s in child_scores.items()} }, Chosen={best_action}"
-                )
-            action, node = best_action, node.children[best_action]
-
-            sim_env.step(action)
-        return node, sim_env
 
     def _expand(self, node: MCTSNode, env: BaseEnvironment):
         """Expand the leaf node by creating children for all legal actions."""
@@ -208,9 +211,6 @@ class MCTS:
         return self.root
 
 
-# --- AlphaZero MCTS Subclass ---
-
-
 class AlphaZeroMCTS(MCTS):
     """MCTS algorithm adapted for AlphaZero (PUCT + Network Evaluation)."""
 
@@ -218,14 +218,10 @@ class AlphaZeroMCTS(MCTS):
         self,
         exploration_constant: float = 1.0,  # c_puct in AlphaZero
         num_simulations: int = 100,
-        network: AlphaZeroNet = None,  # Network is required
+        network: AlphaZeroNet = None,
         discount_factor: float = 1.0,  # Usually 1.0 for AlphaZero MCTS value (consistency)
         # TODO: Add dirichlet_epsilon and dirichlet_alpha for root noise
     ):
-        if network is None:
-            raise ValueError("AlphaZeroMCTS requires a network.")
-
-        # Call parent init, but exploration constant is now c_puct
         super().__init__(
             exploration_constant=exploration_constant,
             discount_factor=discount_factor,  # Keep for consistency, though not used in backprop value calc
@@ -235,53 +231,26 @@ class AlphaZeroMCTS(MCTS):
         # self.dirichlet_epsilon = dirichlet_epsilon
         # self.dirichlet_alpha = dirichlet_alpha
 
-    # --- Overridden methods from base MCTS ---
-
-    # Override selection to use PUCT score
-    def _select(
-        self, node: MCTSNode, sim_env: BaseEnvironment
-    ) -> Tuple[MCTSNode, BaseEnvironment]:
-        """Select child node with highest PUCT score until a leaf node is reached."""
-        while node.is_expanded() and not sim_env.is_game_over():
-            parent_visits = node.visit_count
-            # Select the action corresponding to the child with the highest PUCT score
-            best_item = max(
-                node.children.items(),
-                key=lambda item: self._puct_score(item[1], parent_visits),
-            )
-            action, node = best_item
-            sim_env.step(action)  # Update the environment state as we traverse
-        return node, sim_env
-
-    # --- Helper methods specific to AlphaZeroMCTS ---
-
-    def _puct_score(self, node: MCTSNode, parent_visits: int) -> float:
+    def _score_child(self, node: MCTSNode, parent_visits: int) -> float:
         """Calculate the PUCT score for a node."""
         # Use self.exploration_constant as c_puct
         if node.visit_count == 0:
             # If node hasn't been visited, U is based only on prior and parent visits
             # Ensure parent_visits > 0 for sqrt
-            safe_parent_visits = max(1, parent_visits)
-            u_score = (
-                self.exploration_constant * node.prior * math.sqrt(safe_parent_visits)
-            )
-            return u_score  # Q score is 0 initially
+            q_value_for_parent = 0
         else:
-            # Q(s,a) + U(s,a)
+            # Q(s,a)[value] + U(s,a)[exploration]
             # Q(s,a) must be from the perspective of the player selecting at the PARENT node.
             # node.value (q_score) is from the perspective of the player AT the node (the opponent).
             # So, we use -node.value for the parent's perspective.
-            q_score_parent_perspective = -node.value
-            u_score = (
-                self.exploration_constant
-                * node.prior
-                * math.sqrt(parent_visits)
-                / (1 + node.visit_count)
-            )
-            return q_score_parent_perspective + u_score
-
-    # Removed _get_policy_for_legal_actions and _create_action_index_map
-    # Action mapping is now handled by the network's get_action_index method
+            q_value_for_parent = -node.value
+        u_score = (
+            self.exploration_constant
+            * node.prior
+            * math.sqrt(parent_visits)
+            / (1 + node.visit_count)
+        )
+        return q_value_for_parent + u_score
 
 
 # --- MuZero MCTS ---
