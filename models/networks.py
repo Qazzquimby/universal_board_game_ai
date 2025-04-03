@@ -67,37 +67,37 @@ class AlphaZeroNet(nn.Module):
         if "board" in state_dict:
             board = state_dict["board"]
             if isinstance(board, np.ndarray):
-                flat_tensors.append(torch.from_numpy(board).float().flatten())
-            elif torch.is_tensor(board):
-                print(
-                    "Warning: Board tensor encountered in _flatten_state, expected ndarray."
-                )
-                flat_tensors.append(board.float().flatten())
+                # Normalize board: 0->0, 1->0.5, 2->1.0 (approx)
+                normalized_board = torch.from_numpy(board).float() / 2.0
+                flat_tensors.append(normalized_board.flatten())
+            elif torch.is_tensor(board): # Keep tensor handling just in case
+                print("Warning: Board tensor encountered in _flatten_state, expected ndarray.")
+                normalized_board = board.float() / 2.0
+                flat_tensors.append(normalized_board.flatten())
         elif "piles" in state_dict:
             piles = state_dict["piles"]
-            # Expect NumPy array now
-            if isinstance(piles, np.ndarray):
-                flat_tensors.append(torch.from_numpy(piles).float())
-            # Keep tensor handling just in case
-            elif torch.is_tensor(piles):
-                print(
-                    "Warning: Piles tensor encountered in _flatten_state, expected ndarray."
-                )
-                flat_tensors.append(piles.float())
-            # Remove tuple handling as we standardize to ndarray
-            # elif isinstance(piles, tuple):
-            #     flat_tensors.append(torch.tensor(piles, dtype=torch.float32))
+            # Normalize piles relative to max initial pile size (if available)
+            max_pile_size = 1.0 # Default if not available
+            if hasattr(self.env, 'initial_piles') and self.env.initial_piles:
+                 max_pile_size = float(max(self.env.initial_piles))
+            if max_pile_size == 0: max_pile_size = 1.0 # Avoid division by zero
 
-        # Add current player as a feature
+            if isinstance(piles, np.ndarray):
+                normalized_piles = torch.from_numpy(piles).float() / max_pile_size
+                flat_tensors.append(normalized_piles)
+            elif torch.is_tensor(piles): # Keep tensor handling just in case
+                print("Warning: Piles tensor encountered in _flatten_state, expected ndarray.")
+                normalized_piles = piles.float() / max_pile_size
+                flat_tensors.append(normalized_piles)
+
+        # Add current player as a feature (already 0 or 1, scale is okay)
         flat_tensors.append(
             torch.tensor([state_dict.get("current_player", -1)], dtype=torch.float32)
         )
 
         # Concatenate all parts
         if not flat_tensors:
-            raise ValueError(
-                "Could not extract numerical data from state for network input."
-            )
+            raise ValueError("Could not extract numerical data from state for network input.")
 
         return torch.cat(flat_tensors)
 
@@ -356,36 +356,35 @@ class MuZeroNet(nn.Module):
         if "board" in state_dict:
             board = state_dict["board"]
             if isinstance(board, np.ndarray):
-                # Expect NumPy array now
-                flat_tensors.append(torch.from_numpy(board).float().flatten())
-            # Keep tensor handling just in case, though standardization should prevent it
+                # Normalize board: 0->0, 1->0.5, 2->1.0 (approx)
+                normalized_board = torch.from_numpy(board).float() / 2.0
+                flat_tensors.append(normalized_board.flatten())
             elif torch.is_tensor(board):
-                print(
-                    "Warning: Board tensor encountered in MuZeroNet._flatten_state, expected ndarray."
-                )
-                flat_tensors.append(board.float().flatten())
+                print("Warning: Board tensor encountered in MuZeroNet._flatten_state, expected ndarray.")
+                normalized_board = board.float() / 2.0
+                flat_tensors.append(normalized_board.flatten())
         elif "piles" in state_dict:
             piles = state_dict["piles"]
-            # Expect NumPy array now
-            if isinstance(piles, np.ndarray):
-                flat_tensors.append(torch.from_numpy(piles).float())
-            # Keep tensor handling just in case
-            elif torch.is_tensor(piles):
-                print(
-                    "Warning: Piles tensor encountered in MuZeroNet._flatten_state, expected ndarray."
-                )
-                flat_tensors.append(piles.float())
-            # Remove tuple handling as we standardize to ndarray
-            # elif isinstance(piles, tuple):
-            #     flat_tensors.append(torch.tensor(piles, dtype=torch.float32))
+            # Normalize piles relative to max initial pile size (if available)
+            max_pile_size = 1.0 # Default if not available
+            if hasattr(self.env, 'initial_piles') and self.env.initial_piles:
+                 max_pile_size = float(max(self.env.initial_piles))
+            if max_pile_size == 0: max_pile_size = 1.0 # Avoid division by zero
 
+            if isinstance(piles, np.ndarray):
+                normalized_piles = torch.from_numpy(piles).float() / max_pile_size
+                flat_tensors.append(normalized_piles)
+            elif torch.is_tensor(piles):
+                print("Warning: Piles tensor encountered in MuZeroNet._flatten_state, expected ndarray.")
+                normalized_piles = piles.float() / max_pile_size
+                flat_tensors.append(normalized_piles)
+
+        # Add current player as a feature (already 0 or 1, scale is okay)
         flat_tensors.append(
             torch.tensor([state_dict.get("current_player", -1)], dtype=torch.float32)
         )
         if not flat_tensors:
-            raise ValueError(
-                "Could not extract numerical data from state for network input."
-            )
+            raise ValueError("Could not extract numerical data from state for network input.")
         return torch.cat(flat_tensors)
 
     def _calculate_input_size(self, env: BaseEnvironment) -> int:

@@ -32,25 +32,23 @@ class MCTSConfig:
     exploration_constant: float = 1.41
     discount_factor: float = 1.0  # Discount within the search tree
     num_simulations: int = 100  # Default simulations for the benchmark MCTS
-    debug: bool = False # Flag for detailed MCTS logging
+    debug: bool = False  # Flag for detailed MCTS logging
 
 
 @dataclass
 class AlphaZeroConfig:
-    num_simulations: int = 100  # MCTS simulations per move
+    num_simulations: int = 400  # MCTS simulations per move
     cpuct: float = 1.0  # Exploration constant in PUCT formula
-    learning_rate: float = 0.02  # Increased learning rate
+    learning_rate: float = 0.0001  # Keep reduced LR
     weight_decay: float = 0.0001
     hidden_layer_size: int = 128  # Size for the MLP hidden layers
     num_hidden_layers: int = 2  # Number of hidden layers in the MLP
     replay_buffer_size: int = 10000
     batch_size: int = 64
-    value_loss_weight: float = (
-        1.0  # Weight for value loss (default 1.0, try increasing)
-    )
-    temperature_decay_steps: int = (
-        10  # Number of game steps before reducing temperature
-    )
+    # Weight for value loss (default 1.0, try increasing)
+    value_loss_weight: float = 2.0
+    # Number of game steps before reducing temperature
+    temperature_decay_steps: int = 30
     lr_scheduler_step_size: int = 100  # Decay LR every N training iterations
     lr_scheduler_gamma: float = 0.9  # Multiplicative factor for LR decay
     debug_mode: bool = False
@@ -83,10 +81,12 @@ class TrainingConfig:
     plot_window: int = 200
 
     # Specific to AlphaZero/MuZero training loops
-    num_iterations: int = 100  # Total training iterations
-    num_episodes_per_iteration: int = 25  # Self-play games per iteration
-    # How often (in iterations) to run sanity checks (0=only at end)
-    sanity_check_frequency: int = 5
+    num_iterations: int = 1000  # Total training iterations
+    num_episodes_per_iteration: int = 25 # Self-play games per iteration
+    # Number of epochs (passes over replay buffer) per learning phase
+    num_epochs_per_iteration: int = 4 # Increased epochs
+    # How often (in iterations) to run sanity checks (0=only at end, 1=every iteration)
+    sanity_check_frequency: int = 5 # Run every 5 iterations
 
 
 # --- Evaluation Configuration ---

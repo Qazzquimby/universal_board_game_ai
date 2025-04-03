@@ -1,10 +1,12 @@
 import random
 from pathlib import Path
 from collections import deque
-from typing import List
+from typing import List, Tuple, Optional
 
 import torch
 import torch.optim as optim  # Import optimizer
+from torch.utils.data import DataLoader, TensorDataset, Dataset
+from tqdm import tqdm
 import torch.nn.functional as F
 import numpy as np
 
@@ -14,22 +16,53 @@ from algorithms.mcts import AlphaZeroMCTS
 from models.networks import AlphaZeroNet
 from torch.optim.lr_scheduler import StepLR
 
-from core.config import AlphaZeroConfig, DATA_DIR
+from core.config import AlphaZeroConfig, DATA_DIR, TrainingConfig
+
+
+# --- Define a simple Dataset wrapper for the replay buffer ---
+class ReplayBufferDataset(Dataset):
+    def __init__(self, buffer: deque, network: AlphaZeroNet):
+        # Convert deque to list for easier indexing by DataLoader
+        self.buffer_list = list(buffer)
+        self.network = network  # Need network for flattening
+
+    def __len__(self):
+        return len(self.buffer_list)
+
+    def __getitem__(self, idx):
+        state_dict, policy_target, value_target = self.buffer_list[idx]
+        # Flatten state here before returning
+        flat_state = self.network._flatten_state(state_dict)
+        # Return flattened state, policy target, value target as tensors
+        return (
+            flat_state,
+            torch.tensor(policy_target, dtype=torch.float32),
+            torch.tensor(
+                [value_target], dtype=torch.float32
+            ),  # Ensure value is shape [1]
+        )
 
 
 class AlphaZeroAgent(Agent):
     """Agent implementing the AlphaZero algorithm."""
 
-    def __init__(self, env: BaseEnvironment, config: AlphaZeroConfig):
+    def __init__(
+        self,
+        env: BaseEnvironment,
+        config: AlphaZeroConfig,
+        training_config: TrainingConfig,
+    ):
         """
         Initialize the AlphaZero agent.
 
         Args:
             env: The environment instance.
             config: Configuration object with AlphaZero parameters.
+            training_config: Configuration object with general training parameters.
         """
         self.env = env
         self.config = config
+        self.training_config = training_config  # Store training config
 
         # Initialize the neural network
         self.network = AlphaZeroNet(
@@ -311,64 +344,109 @@ class AlphaZeroAgent(Agent):
         return total_loss, value_loss, policy_loss
 
     # Conforms to Agent interface (no arguments)
-    def learn(self):
+    def learn(self) -> Optional[Tuple]:
         """
-        Update the neural network by sampling from the internal replay buffer.
+        Update the neural network by training for multiple epochs over the replay buffer.
+        Returns average losses for the learning step.
         """
         if len(self.replay_buffer) < self.config.batch_size:
-            # print(f"Skipping learn step: Buffer size {len(self.replay_buffer)} < Batch size {self.config.batch_size}")
-            return None  # Return None if no learning happened
-
-        # 1. Sample a batch from self.replay_buffer.
-        batch = random.sample(self.replay_buffer, self.config.batch_size)
-
-        # 2. Format data into batches (states, target policies, target values).
-        #    Need to handle device placement (e.g., self.device) if using GPU.
-        #    The network's _flatten_state expects a single state dict.
-        #    We need to process each state individually first, then stack.
-        states_list = [s for s, _, _ in batch]
-        policy_targets_list = [
-            torch.tensor(p, dtype=torch.float32) for _, p, _ in batch
-        ]
-        value_targets_list = [
-            torch.tensor([v], dtype=torch.float32) for _, _, v in batch
-        ]  # Ensure value target is shape [1]
-
-        # Flatten states and stack into a batch tensor
-        # TODO: Add device handling (e.g., .to(self.device))
-        states_batch = torch.stack(
-            [self.network._flatten_state(s) for s in states_list]
-        )
-        policy_targets_batch = torch.stack(policy_targets_list)
-        value_targets_batch = torch.stack(value_targets_list)
-
-        # 3. Perform gradient descent step on the network.
-        self.network.train()  # Ensure network is in training mode
-        self.optimizer.zero_grad()  # Use the agent's internal optimizer
-
-        # Forward pass - network needs to handle batch input
-        policy_logits, value_preds = self.network(states_batch)  # Pass the batch tensor
-
-        # Calculate loss
-        total_loss, value_loss, policy_loss = self._calculate_loss(
-            policy_logits, value_preds, policy_targets_batch, value_targets_batch
-        )
-
-        # Backward pass and optimizer step
-        total_loss.backward()
-        self.optimizer.step()
-        self.scheduler.step()
-
-        if self.config.debug_mode:
-            current_lr = self.optimizer.param_groups[0]["lr"]  # Get current LR
             print(
-                f"[DEBUG Learn] Step Losses: Total={total_loss.item():.4f}, Value={value_loss.item():.4f}, Policy={policy_loss.item():.4f} | LR={current_lr:.6f}"
+                f"Skipping learn step: Buffer size {len(self.replay_buffer)} < Batch size {self.config.batch_size}"
+            )
+            return None  # Indicate no learning happened
+
+        # --- Create DataLoader for efficient batching and shuffling ---
+        dataset = ReplayBufferDataset(self.replay_buffer, self.network)
+        data_loader = DataLoader(
+            dataset,
+            batch_size=self.config.batch_size,
+            shuffle=True,
+            num_workers=0,
+            drop_last=True,
+        )
+
+        # --- Training Loop over Epochs ---
+        self.network.train()
+
+        total_loss_epoch_avg = 0.0
+        value_loss_epoch_avg = 0.0
+        policy_loss_epoch_avg = 0.0
+        epochs_done = 0
+
+        num_epochs = self.training_config.num_epochs_per_iteration
+
+        for epoch in range(num_epochs):
+            total_loss_batches = 0.0
+            value_loss_batches = 0.0
+            policy_loss_batches = 0.0
+            batches_in_epoch = 0
+
+            batch_iterator = (
+                tqdm(data_loader, desc=f"Epoch {epoch+1}/{num_epochs}", leave=False)
+                if not self.config.debug_mode
+                else data_loader
             )
 
-        self.network.eval()  # Switch back to eval mode after training step
+            for batch_data in batch_iterator:
+                states_batch, policy_targets_batch, value_targets_batch = batch_data
 
-        # Return losses for monitoring
-        return total_loss.item(), value_loss.item(), policy_loss.item()
+                self.optimizer.zero_grad()
+                policy_logits, value_preds = self.network(states_batch)
+                total_loss, value_loss, policy_loss = self._calculate_loss(
+                    policy_logits,
+                    value_preds,
+                    policy_targets_batch,
+                    value_targets_batch,
+                )
+                total_loss.backward()
+                self.optimizer.step()
+
+                total_loss_batches += total_loss.item()
+                value_loss_batches += value_loss.item()
+                policy_loss_batches += policy_loss.item()
+                batches_in_epoch += 1
+
+                if not self.config.debug_mode and isinstance(batch_iterator, tqdm):
+                    batch_iterator.set_postfix(
+                        {
+                            "Loss": f"{total_loss.item():.3f}",
+                            "V_Loss": f"{value_loss.item():.3f}",
+                            "P_Loss": f"{policy_loss.item():.3f}",
+                        }
+                    )
+
+            if batches_in_epoch > 0:
+                total_loss_epoch_avg += total_loss_batches / batches_in_epoch
+                value_loss_epoch_avg += value_loss_batches / batches_in_epoch
+                policy_loss_epoch_avg += policy_loss_batches / batches_in_epoch
+                epochs_done += 1
+
+            if self.config.debug_mode:
+                current_lr = self.optimizer.param_groups[0]["lr"]
+                print(
+                    f"[DEBUG Learn] Epoch {epoch+1}/{num_epochs} Avg Losses: "
+                    f"Total={total_loss_batches / batches_in_epoch:.4f}, "
+                    f"Value={value_loss_batches / batches_in_epoch:.4f}, "
+                    f"Policy={policy_loss_batches / batches_in_epoch:.4f} | LR={current_lr:.6f}"
+                )
+
+        self.network.eval()
+        self.scheduler.step()
+
+        if epochs_done > 0:
+            final_total_loss = total_loss_epoch_avg / epochs_done
+            final_value_loss = value_loss_epoch_avg / epochs_done
+            final_policy_loss = policy_loss_epoch_avg / epochs_done
+
+            print(
+                f"Learn Step Summary ({epochs_done} epochs): Avg Losses: "
+                f"Total={final_total_loss:.4f}, Value={final_value_loss:.4f}, Policy={final_policy_loss:.4f}"
+            )
+
+            return final_total_loss, final_value_loss, final_policy_loss
+        else:
+            print("Warning: No epochs completed in learn step.")
+            return None  # Indicate no learning happened
 
     def _get_save_path(self) -> Path:
         """Constructs the save file path for the network weights."""

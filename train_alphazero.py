@@ -181,10 +181,14 @@ def load_game_logs_into_buffer(agent: AlphaZeroAgent, env_name: str, buffer_limi
 
                     # --- Standardize state loaded from JSON ---
                     # Convert board/piles list back to numpy array
-                    if 'board' in state and isinstance(state['board'], list):
-                        state['board'] = np.array(state['board'], dtype=np.int8) # Match Connect4 dtype
-                    elif 'piles' in state and isinstance(state['piles'], list):
-                        state['piles'] = np.array(state['piles'], dtype=np.int32) # Match NimEnv dtype
+                    if "board" in state and isinstance(state["board"], list):
+                        state["board"] = np.array(
+                            state["board"], dtype=np.int8
+                        )  # Match Connect4 dtype
+                    elif "piles" in state and isinstance(state["piles"], list):
+                        state["piles"] = np.array(
+                            state["piles"], dtype=np.int32
+                        )  # Match NimEnv dtype
 
                     agent.replay_buffer.append((state, policy_target, value_target))
                     loaded_steps += 1
@@ -217,7 +221,8 @@ def run_training(config: AppConfig, env_name_override: str = None):
 
     # --- Instantiation ---
     env = get_environment(config.env)
-    agent = AlphaZeroAgent(env, config.alpha_zero)
+    # Pass env, agent config, and training config to the agent
+    agent = AlphaZeroAgent(env, config.alpha_zero, config.training)
 
     # --- Training Setup ---
     # Try loading existing weights
@@ -277,11 +282,12 @@ def run_training(config: AppConfig, env_name_override: str = None):
 
         # 2. Learning Phase
         print("Running learning step...")
-        # agent.network.train() # Network mode is handled within agent.learn()
-        # TODO: Add epochs per learning step if desired (call learn multiple times)
-        losses = agent.learn()
-        if losses:
-            total_loss, value_loss, policy_loss = losses
+        # agent.learn() now handles multiple epochs internally and returns losses
+        loss_results = agent.learn()
+
+        # Store losses if learning happened
+        if loss_results:
+            total_loss, value_loss, policy_loss = loss_results
             total_losses.append(total_loss)
             value_losses.append(value_loss)
             policy_losses.append(policy_loss)
@@ -301,9 +307,15 @@ def run_training(config: AppConfig, env_name_override: str = None):
             print(
                 f"  Latest Losses: Total={total_losses[-1]:.4f}, Value={value_losses[-1]:.4f}, Policy={policy_losses[-1]:.4f}"
             )
+        else:
+             print("  Latest Losses: (No learning step occurred)")
 
-        # 4. Run Sanity Checks Periodically
-        if config.training.sanity_check_frequency > 0 and (iteration + 1) % config.training.sanity_check_frequency == 0:
+
+        # 4. Run Sanity Checks Periodically (and not on first iteration if frequency > 1)
+        if (
+            config.training.sanity_check_frequency > 0
+            and (iteration + 1) % config.training.sanity_check_frequency == 0
+        ):
             run_sanity_checks(env, agent) # Run checks on the current agent state
 
     print("\nTraining complete. Saving final agent state.")
@@ -322,23 +334,24 @@ def run_training(config: AppConfig, env_name_override: str = None):
     print("\n--- AlphaZero Training Finished ---")
 
 
+# --- Sanity Check Function ---
 def run_sanity_checks(env: BaseEnvironment, agent: AlphaZeroAgent):
     """Runs network predictions on predefined sanity check states."""
-    print("\n--- Running Sanity Checks on Final Network ---")
+    print("\n--- Running Periodic Sanity Checks ---")
     sanity_states = env.get_sanity_check_states()
-    agent.network.eval() # Ensure network is in eval mode
+    agent.network.eval()  # Ensure network is in eval mode
 
     if not sanity_states:
         print("No sanity check states defined for this environment.")
         return
 
-    for check_case in sanity_states: # Iterate over SanityCheckState objects
+    for check_case in sanity_states:  # Iterate over SanityCheckState objects
         print(f"\nChecking State: {check_case.description}")
         # Print board/piles for context
-        if 'board' in check_case.state:
+        if "board" in check_case.state:
             print("Board:")
-            print(check_case.state['board'])
-        elif 'piles' in check_case.state:
+            print(check_case.state["board"])
+        elif "piles" in check_case.state:
             print(f"Piles: {check_case.state['piles']}")
         print(f"Current Player: {check_case.state['current_player']}")
 
@@ -346,7 +359,9 @@ def run_sanity_checks(env: BaseEnvironment, agent: AlphaZeroAgent):
             # Get network predictions
             policy_np, value_np = agent.network.predict(check_case.state)
             # Print expected vs predicted value
-            print(f"  Value: Expected={check_case.expected_value:.1f}, Predicted={value_np:.4f}")
+            print(
+                f"  Value: Expected={check_case.expected_value:.1f}, Predicted={value_np:.4f}"
+            )
 
             # Get legal actions for this state to interpret policy
             temp_env = env.copy()
@@ -359,7 +374,7 @@ def run_sanity_checks(env: BaseEnvironment, agent: AlphaZeroAgent):
                 if idx is not None and 0 <= idx < len(policy_np):
                     action_probs[action] = policy_np[idx]
                 else:
-                    action_probs[action] = -1 # Indicate mapping error
+                    action_probs[action] = -1  # Indicate mapping error
 
             # Sort actions by predicted probability for display
             sorted_probs = sorted(

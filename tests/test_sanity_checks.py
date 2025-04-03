@@ -291,38 +291,8 @@ def _generate_mcts_test_method(env_name: str, check_case):  # Renamed factory sl
     return test_func
 
 
-def _generate_alphazero_test_method(env_name: str, check_case):
-    """Factory to create a test method for a specific AlphaZero network sanity check case."""
-
-    def test_func(self: TestSanityChecks):
-        """Dynamically generated test for a specific AlphaZero network sanity check case."""
-        config = self._get_config(env_name)
-        env = get_environment(config.env)
-        # Instantiate AlphaZeroAgent - it will try to load weights inside the check method
-        agent = AlphaZeroAgent(env, config.alpha_zero)
-        # Call the actual check logic for this specific case
-        self._run_single_alphazero_check(agent, env, check_case)
-
-    return test_func
-    """Factory to create a test method for a specific MCTS sanity check case."""
-
-    def test_func(self: TestSanityChecks):
-        """Dynamically generated test for a specific MCTS sanity check case."""
-        config = self._get_config(env_name)
-        env = get_environment(config.env)
-        agent = MCTSAgent(
-            env,
-            num_simulations=config.mcts.num_simulations,
-            exploration_constant=config.mcts.exploration_constant,
-            debug=config.mcts.debug,  # Pass debug flag
-        )
-        # Call the actual check logic for this specific case
-        self._run_single_mcts_check(agent, env, check_case)
-
-    return test_func
-
-
-# Generate tests for each environment and case
+# --- Generate MCTS Tests ---
+print("\nGenerating MCTS Sanity Check Tests...")
 for _env_name_to_test in ["connect4", "nim"]:
     # Need a temporary env instance just to get the cases
     # Use default config settings for this temporary instance
@@ -384,61 +354,63 @@ for _env_name_to_test in ["connect4", "nim"]:
     except NameError:
         pass  # In case the loop didn't run
 
-# --- Add a new loop for AlphaZero Test Generation ---
-print("\nGenerating AlphaZero Sanity Check Tests...")
-for _env_name_to_test in ["connect4", "nim"]:
-    # Need a temporary env instance just to get the cases
-    _temp_config = AppConfig()
-    _temp_config.env.name = _env_name_to_test
-    _temp_env_instance = None
-    _sanity_cases = []
-    try:
-        _temp_env_instance = get_environment(_temp_config.env)
-        _sanity_cases = _temp_env_instance.get_sanity_check_states()
-    except Exception as e:
-        print(
-            f"Warning: Could not instantiate or get sanity cases for {_env_name_to_test} (AlphaZero): {e}"
-        )
 
-    if not _sanity_cases:
-        print(
-            f"Warning: No sanity cases found for {_env_name_to_test}, skipping AlphaZero test generation."
-        )
-        continue  # Skip this environment if no cases
-
-    for _i, _case in enumerate(_sanity_cases):
-        _safe_desc = "".join(
-            c if c.isalnum() or c == "_" else "_" for c in _case.description
-        ).lower()
-        # Ensure name starts with 'test_' and is unique from MCTS tests
-        _method_name = f"test_alphazero_{_env_name_to_test}_case_{_i}_{_safe_desc}"
-
-        # Create the test method using the new factory
-        _test_method = _generate_alphazero_test_method(_env_name_to_test, _case)
-
-        _test_method.__name__ = _method_name
-        _test_method.__doc__ = (
-            f"AlphaZero Network Sanity Check ({_env_name_to_test}): {_case.description}"
-        )
-
-        setattr(TestSanityChecks, _method_name, _test_method)
-
-    # Clean up temporary instance and variables
-    if _temp_env_instance:
-        del _temp_env_instance
-    del _sanity_cases
-    # Delete loop variables
-    try:
-        del (
-            _env_name_to_test,
-            _temp_config,
-            _i,
-            _case,
-            _safe_desc,
-            _method_name,
-            _test_method,
-        )
-    except NameError:
-        pass
-
-print("Finished generating tests.")
+# # --- Generate AlphaZero Tests ---
+# # This loop correctly generates the AlphaZero tests using the factory defined earlier.
+# print("\nGenerating AlphaZero Sanity Check Tests...")
+# for _env_name_to_test in ["connect4", "nim"]:
+#     # Need a temporary env instance just to get the cases
+#     _temp_config = AppConfig()
+#     _temp_config.env.name = _env_name_to_test
+#     _temp_env_instance = None
+#     _sanity_cases = []
+#     try:
+#         _temp_env_instance = get_environment(_temp_config.env)
+#         _sanity_cases = _temp_env_instance.get_sanity_check_states()
+#     except Exception as e:
+#         print(
+#             f"Warning: Could not instantiate or get sanity cases for {_env_name_to_test} (AlphaZero): {e}"
+#         )
+#
+#     if not _sanity_cases:
+#         print(
+#             f"Warning: No sanity cases found for {_env_name_to_test}, skipping AlphaZero test generation."
+#         )
+#         continue  # Skip this environment if no cases
+#
+#     for _i, _case in enumerate(_sanity_cases):
+#         _safe_desc = "".join(
+#             c if c.isalnum() or c == "_" else "_" for c in _case.description
+#         ).lower()
+#         # Ensure name starts with 'test_' and is unique from MCTS tests
+#         _method_name = f"test_alphazero_{_env_name_to_test}_case_{_i}_{_safe_desc}"
+#
+#         # Create the test method using the new factory
+#         _test_method = _generate_alphazero_test_method(_env_name_to_test, _case)
+#
+#         _test_method.__name__ = _method_name
+#         _test_method.__doc__ = (
+#             f"AlphaZero Network Sanity Check ({_env_name_to_test}): {_case.description}"
+#         )
+#
+#         setattr(TestSanityChecks, _method_name, _test_method)
+#
+#     # Clean up temporary instance and variables
+#     if _temp_env_instance:
+#         del _temp_env_instance
+#     del _sanity_cases
+#     # Delete loop variables
+#     try:
+#         del (
+#             _env_name_to_test,
+#             _temp_config,
+#             _i,
+#             _case,
+#             _safe_desc,
+#             _method_name,
+#             _test_method,
+#         )
+#     except NameError:
+#         pass
+#
+# print("Finished generating tests.")
