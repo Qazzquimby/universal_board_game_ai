@@ -105,15 +105,21 @@ class TestSanityChecks(unittest.TestCase):
 
         # Attempt to load weights - checks are more meaningful with trained weights
         if not agent.load():
-            print("Warning: No pre-trained AlphaZero weights found. Network predictions might be random.")
+            print(
+                "Warning: No pre-trained AlphaZero weights found. Network predictions might be random."
+            )
 
         # Get network predictions for the state
         try:
             policy_np, value_np = agent.network.predict(check_case.state)
         except Exception as e:
-            self.fail(f"Network prediction failed for state {check_case.state} with error: {e}")
+            self.fail(
+                f"Network prediction failed for state {check_case.state} with error: {e}"
+            )
 
-        print(f"  State: {check_case.state.get('board', check_case.state.get('piles', 'N/A'))}")
+        print(
+            f"  State: {check_case.state.get('board', check_case.state.get('piles', 'N/A'))}"
+        )
         print(f"  Player: {check_case.state['current_player']}")
 
         # --- 1. Value Prediction Check ---
@@ -121,12 +127,25 @@ class TestSanityChecks(unittest.TestCase):
         if check_case.expected_value is not None:
             print(f"  Expected Value: {check_case.expected_value:.1f}")
             # Check if signs match (more robust than exact value)
-            if check_case.expected_value > 0.1: # Expecting win
-                 self.assertGreater(value_np, 0.0, "Predicted value should be positive for expected win state.")
-            elif check_case.expected_value < -0.1: # Expecting loss
-                 self.assertLess(value_np, 0.0, "Predicted value should be negative for expected loss state.")
-            else: # Expecting draw (or near zero)
-                 self.assertAlmostEqual(value_np, 0.0, delta=0.2, msg="Predicted value should be close to zero for expected draw state.")
+            if check_case.expected_value > 0.1:  # Expecting win
+                self.assertGreater(
+                    value_np,
+                    0.0,
+                    "Predicted value should be positive for expected win state.",
+                )
+            elif check_case.expected_value < -0.1:  # Expecting loss
+                self.assertLess(
+                    value_np,
+                    0.0,
+                    "Predicted value should be negative for expected loss state.",
+                )
+            else:  # Expecting draw (or near zero)
+                self.assertAlmostEqual(
+                    value_np,
+                    0.0,
+                    delta=0.2,
+                    msg="Predicted value should be close to zero for expected draw state.",
+                )
         else:
             print("  (No expected value defined for comparison)")
 
@@ -139,8 +158,11 @@ class TestSanityChecks(unittest.TestCase):
         if not legal_actions:
             print("  Policy Prediction: (No legal actions in this state)")
             # If no legal actions, but an expected action was defined, that's a test setup error
-            self.assertIsNone(check_case.expected_action, "Test case has expected_action but no legal actions exist.")
-            return # Nothing more to check for policy
+            self.assertIsNone(
+                check_case.expected_action,
+                "Test case has expected_action but no legal actions exist.",
+            )
+            return  # Nothing more to check for policy
 
         action_probs = {}
         for action in legal_actions:
@@ -148,7 +170,7 @@ class TestSanityChecks(unittest.TestCase):
             if idx is not None and 0 <= idx < len(policy_np):
                 action_probs[action] = policy_np[idx]
             else:
-                action_probs[action] = -1 # Indicate mapping error
+                action_probs[action] = -1  # Indicate mapping error
 
         # Sort actions by predicted probability
         sorted_probs = sorted(
@@ -157,25 +179,28 @@ class TestSanityChecks(unittest.TestCase):
 
         print(f"  Predicted Probabilities (Top 5 Legal):")
         for i, (action, prob) in enumerate(sorted_probs[:5]):
-             highlight = ""
-             if prob < 0:
-                 print(f"    - {action}: (Error mapping action)")
-                 continue
-             if i == 0:
-                 best_predicted_action = action
-                 highlight = " <<< BEST PREDICTED"
-             print(f"    - {action}: {prob:.4f}{highlight}")
+            highlight = ""
+            if prob < 0:
+                print(f"    - {action}: (Error mapping action)")
+                continue
+            if i == 0:
+                best_predicted_action = action
+                highlight = " <<< BEST PREDICTED"
+            print(f"    - {action}: {prob:.4f}{highlight}")
 
         # Check if the best predicted action matches the expected action
         if check_case.expected_action is not None:
             print(f"  Expected Action: {check_case.expected_action}")
             # Ensure best_predicted_action was assigned (i.e., there were legal actions)
-            self.assertTrue(best_predicted_action is not None, "Could not determine best predicted action.")
+            self.assertTrue(
+                best_predicted_action is not None,
+                "Could not determine best predicted action.",
+            )
             self.assertEqual(
                 best_predicted_action,
                 check_case.expected_action,
                 f"Action with highest predicted probability ({best_predicted_action} with p={action_probs.get(best_predicted_action, -1):.4f}) "
-                f"does not match expected action ({check_case.expected_action})."
+                f"does not match expected action ({check_case.expected_action}).",
             )
         else:
             print("  (No specific expected action defined for comparison)")
@@ -242,7 +267,6 @@ class TestSanityChecks(unittest.TestCase):
         for act, visits in sorted_visits:
             highlight = " <<< CHOSEN" if act == chosen_action else ""
             print(f"  - {act}: {visits}{highlight}")
-
 
 
 # --- Dynamic Test Generation for MCTS (Executed after class definition) ---
@@ -380,7 +404,7 @@ for _env_name_to_test in ["connect4", "nim"]:
         print(
             f"Warning: No sanity cases found for {_env_name_to_test}, skipping AlphaZero test generation."
         )
-        continue # Skip this environment if no cases
+        continue  # Skip this environment if no cases
 
     for _i, _case in enumerate(_sanity_cases):
         _safe_desc = "".join(

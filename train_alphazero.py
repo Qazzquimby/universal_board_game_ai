@@ -103,9 +103,7 @@ def save_game_log(
     try:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        filename = (
-            f"{env_name}_iter{iteration:04d}_game{game_index:04d}_{timestamp}.json"
-        )
+        filename = f"{env_name}_game{game_index:04d}_{timestamp}.json"
         filepath = LOG_DIR / filename
 
         # Prepare data for JSON (convert numpy arrays)
@@ -140,8 +138,8 @@ def load_game_logs_into_buffer(agent: AlphaZeroAgent, env_name: str, buffer_limi
 
     print(f"Scanning {LOG_DIR} for existing '{env_name}' game logs...")
     log_files = sorted(
-        LOG_DIR.glob(f"{env_name}_iter*.json")
-    )  # Sort for potential consistency
+        LOG_DIR.glob(f"{env_name}_game*.json"), reverse=True
+    )  # Sort newest first (now correctly based on timestamp in filename)
 
     if not log_files:
         print("No existing game logs found for this environment.")
