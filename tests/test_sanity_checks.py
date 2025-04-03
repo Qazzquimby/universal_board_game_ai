@@ -34,8 +34,6 @@ class TestSanityChecks(unittest.TestCase):
         self, agent: MCTSAgent, env: BaseEnvironment, check_case
     ):
         """Runs sanity check for a single case for MCTSAgent."""
-        # This method now assumes check_case is passed in.
-        # The loop and subTest are removed.
         print(f"\n--- Testing MCTS: {check_case.description} ---")
         # Set environment to the test state
         current_env = env.copy()
@@ -62,7 +60,7 @@ class TestSanityChecks(unittest.TestCase):
                     legal_actions,
                     "Agent chose an illegal action.",
                 )
-            return  # Exit check if no children (changed from continue)
+            return  # Exit check if no children
 
         # --- Basic Assertions for MCTS ---
         # 1. Did it choose a legal action?
@@ -80,9 +78,6 @@ class TestSanityChecks(unittest.TestCase):
                 check_case.expected_action,
                 f"Expected action {check_case.expected_action} but got {chosen_action}",
             )
-        # Note: We could add more nuanced checks, e.g., if check_case.expected_value is 1.0,
-        # ensure the chosen action *leads* to a win, even if multiple winning moves exist.
-        # For now, checking against a single defined expected action is simpler.
 
         # 4. Print visit counts for manual inspection (optional)
         visit_counts = np.array(
@@ -97,11 +92,91 @@ class TestSanityChecks(unittest.TestCase):
             highlight = " <<< CHOSEN" if act == chosen_action else ""
             print(f"  - {act}: {visits}{highlight}")
 
-    def _run_single_alphazero_check(
+    def _run_single_alphazero_mcts_check(
         self, agent: AlphaZeroAgent, env: BaseEnvironment, check_case
     ):
-        """Runs sanity check for a single case for AlphaZeroAgent's network."""
-        print(f"\n--- Testing AlphaZero Network: {check_case.description} ---")
+        """Runs sanity check for a single case for AlphaZeroAgent's MCTS action selection."""
+        # Determine if weights were intended to be loaded based on agent's config
+        load_attempted = agent.config.should_use_network
+        load_status = "(Load Attempted)" if load_attempted else "(No Load Attempted - Initial Weights)"
+        print(f"\n--- Testing AlphaZero Agent Action {load_status}: {check_case.description} ---")
+
+        # Set environment to the test state
+        current_env = env.copy()
+        current_env.set_state(check_case.state)
+        agent.reset()  # Reset MCTS tree within the agent
+
+        # --- Attempt to load weights ONLY if configured ---
+        # This ensures the agent's network state (initial or loaded) is set before acting
+        weights_loaded_successfully = False
+        if load_attempted:
+            if agent.load():
+                weights_loaded_successfully = True
+                print("Info: Using pre-trained weights for check.")
+            else:
+                print(
+                    "Warning: Configured to load weights, but no weights file found or load failed. Using initial network weights."
+                )
+        # --- End Weight Loading ---
+
+        # Get the action chosen by the agent using MCTS search guided by its network
+        # Use train=False for greedy action selection based on visit counts
+        chosen_action = agent.act(check_case.state, train=False)
+
+        # Get MCTS search results for analysis (optional but useful)
+        # Access MCTS via the agent
+        root_node = agent.mcts.root
+        if not root_node or not root_node.children:
+            print("Warning: AlphaZero MCTS root has no children after search.")
+            # Basic assertion: agent should return *some* legal action if available
+            legal_actions = current_env.get_legal_actions()
+            if legal_actions:
+                self.assertIsNotNone(
+                    chosen_action,
+                    "Agent returned None action when legal moves exist.",
+                )
+                self.assertIn(
+                    chosen_action,
+                    legal_actions,
+                    "Agent chose an illegal action.",
+                )
+            return # Exit check if no children
+
+        # --- Basic Assertions for MCTS-based Action ---
+        # 1. Did it choose a legal action?
+        legal_actions = current_env.get_legal_actions()
+        self.assertIn(
+            chosen_action,
+            legal_actions,
+            f"Chosen action {chosen_action} not in legal actions {legal_actions}",
+        )
+
+        # 2. If an optimal/required action is defined, assert the agent chose it.
+        if check_case.expected_action is not None:
+            self.assertEqual(
+                chosen_action,
+                check_case.expected_action,
+                f"Expected action {check_case.expected_action} but got {chosen_action}",
+            )
+
+        # 3. Print visit counts for manual inspection (optional)
+        visit_counts = np.array(
+            [child.visit_count for child in root_node.children.values()]
+        )
+        actions = list(root_node.children.keys())
+        sorted_visits = sorted(
+            zip(actions, visit_counts), key=lambda item: item[1], reverse=True
+        )
+        print("AlphaZero MCTS Visit Counts:")
+        for act, visits in sorted_visits:
+            highlight = " <<< CHOSEN" if act == chosen_action else ""
+            print(f"  - {act}: {visits}{highlight}")
+
+    def _run_single_alphazero_network_check(
+        self, agent: AlphaZeroAgent, env: BaseEnvironment, check_case
+    ):
+        """Runs sanity check for a single case for AlphaZeroAgent's network's DIRECT OUTPUT."""
+        print(f"\n--- Testing AlphaZero Network Direct Output: {check_case.description} ---")
         # Ensure network is in eval mode
         agent.network.eval()
 
@@ -310,21 +385,19 @@ def _generate_mcts_test_method(env_name: str, check_case):  # Renamed factory sl
 
 
 def _generate_alphazero_test_method(env_name: str, check_case, load_weights: bool):
-    """Factory to create a test method for a specific AlphaZero network sanity check case."""
+    """Factory to create a test method for a specific AlphaZero AGENT ACTION sanity check case."""
 
     def test_func(self: TestSanityChecks):
-        """Dynamically generated test for a specific AlphaZero network sanity check case."""
+        """Dynamically generated test for a specific AlphaZero AGENT ACTION sanity check case."""
         config = self._get_config(env_name)
-        # --- Override weight loading based on the factory parameter ---
+        # --- Configure whether agent should *attempt* to load weights ---
         config.alpha_zero.should_use_network = load_weights
-        # --- End Override ---
+        # --- End Config ---
         env = get_environment(config.env)
         # Instantiate AlphaZeroAgent - needs env, az_config, and training_config
-        # Note: training_config isn't strictly needed for network prediction checks,
-        # but the agent constructor requires it. We pass the default one.
         agent = AlphaZeroAgent(env, config.alpha_zero, config.training)
-        # Call the actual check logic for this specific case
-        self._run_single_alphazero_check(agent, env, check_case)
+        # Call the check logic that tests the agent's action selection via MCTS
+        self._run_single_alphazero_mcts_check(agent, env, check_case)
 
     return test_func
 
@@ -429,7 +502,7 @@ for _env_name_to_test in ["connect4", "nim"]:
             _env_name_to_test, _case, load_weights=True
         )
         _test_method_load.__name__ = _method_name_load
-        _test_method_load.__doc__ = f"AlphaZero Network Sanity Check ({_env_name_to_test}, Load Weights): {_case.description}"
+        _test_method_load.__doc__ = f"AlphaZero Agent Action Check ({_env_name_to_test}, Load Weights): {_case.description}"
         setattr(TestSanityChecks, _method_name_load, _test_method_load)
 
         # --- Generate Test for NO WEIGHTS scenario ---
@@ -440,7 +513,7 @@ for _env_name_to_test in ["connect4", "nim"]:
             _env_name_to_test, _case, load_weights=False
         )
         _test_method_no_load.__name__ = _method_name_no_load
-        _test_method_no_load.__doc__ = f"AlphaZero Network Sanity Check ({_env_name_to_test}, No Weights): {_case.description}"
+        _test_method_no_load.__doc__ = f"AlphaZero Agent Action Check ({_env_name_to_test}, No Weights): {_case.description}"
         setattr(TestSanityChecks, _method_name_no_load, _test_method_no_load)
 
     # Clean up temporary instance and variables

@@ -81,17 +81,22 @@ class AlphaZeroAgent(Agent):
             # TODO: Add dirichlet noise parameters from config if/when implemented
         )
 
+        # Learning:
+
         # Experience buffer for training (stores (state, policy_target, value))
         # TODO: Make buffer size configurable
         self.replay_buffer = deque(maxlen=config.replay_buffer_size)
         self._current_episode_history = []
 
         # Optimizer (managed internally by the agent)
-        self.optimizer = optim.AdamW(
-            self.network.parameters(),
-            lr=config.learning_rate,
-            weight_decay=config.weight_decay,
-        )
+        if self.config.should_use_network:
+            self.optimizer = optim.AdamW(
+                self.network.parameters(),
+                lr=config.learning_rate,
+                weight_decay=config.weight_decay,
+            )
+        else:
+            self.optimizer = None
         # # Learning Rate Scheduler
         # self.scheduler = StepLR(
         #     self.optimizer,
@@ -113,10 +118,11 @@ class AlphaZeroAgent(Agent):
             The chosen action.
         """
         # Ensure network is in evaluation mode for inference
-        self.network.eval()
+        if self.network:
+            self.network.eval()
 
         # --- Optional Debug Print: Network Prediction ---
-        if self.config.debug_mode:
+        if self.config.debug_mode and self.network:
             try:
                 policy_np, value_np = self.network.predict(state)
                 print(
@@ -140,8 +146,6 @@ class AlphaZeroAgent(Agent):
             except Exception as e:
                 print(f"[DEBUG Act] Error during network predict debug: {e}")
 
-        # Run MCTS search from the current state
-        # The modified MCTS search will use the network
         root_node = self.mcts.search(self.env, state)
 
         if not root_node.children:
@@ -228,7 +232,10 @@ class AlphaZeroAgent(Agent):
 
     def _calculate_policy_target(self, root_node, actions, visit_counts) -> np.ndarray:
         """Calculates the policy target vector based on MCTS visit counts."""
-        policy_size = self.network._calculate_policy_size(self.env)
+        if self.network:
+            policy_size = self.network._calculate_policy_size(self.env)
+        else:
+            policy_size = len(self.env.get_legal_actions())
         policy_target = np.zeros(policy_size, dtype=np.float32)
         total_visits = np.sum(visit_counts)
 
