@@ -4,8 +4,8 @@ from collections import deque
 from typing import List, Tuple, Optional
 
 import torch
-import torch.optim as optim  # Import optimizer
-from torch.utils.data import DataLoader, TensorDataset, Dataset
+from torch import optim
+from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 import torch.nn.functional as F
 import numpy as np
@@ -14,8 +14,6 @@ from core.agent_interface import Agent
 from environments.base import BaseEnvironment, StateType, ActionType
 from algorithms.mcts import AlphaZeroMCTS
 from models.networks import AlphaZeroNet
-from torch.optim.lr_scheduler import StepLR
-
 from core.config import AlphaZeroConfig, DATA_DIR, TrainingConfig
 
 
@@ -64,28 +62,28 @@ class AlphaZeroAgent(Agent):
         self.config = config
         self.training_config = training_config  # Store training config
 
-        # Initialize the neural network
-        self.network = AlphaZeroNet(
-            env,
-            hidden_layer_size=config.hidden_layer_size,
-            num_hidden_layers=config.num_hidden_layers,
-        )
-        # TODO: Add device handling (CPU/GPU)
-        # self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        # self.network.to(self.device)
+        if self.config.should_use_network:
+            self.network = AlphaZeroNet(
+                env,
+                hidden_layer_size=config.hidden_layer_size,
+                num_hidden_layers=config.num_hidden_layers,
+            )
+            # TODO: Add device handling (CPU/GPU)
+            # self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            # self.network.to(self.device)
+        else:
+            self.network = None
 
-        # Initialize AlphaZeroMCTS
         self.mcts = AlphaZeroMCTS(
-            exploration_constant=config.cpuct,  # Use cpuct for PUCT formula
+            exploration_constant=config.cpuct,
             num_simulations=config.num_simulations,
-            network=self.network,  # Pass the network to MCTS
+            network=self.network,
             # TODO: Add dirichlet noise parameters from config if/when implemented
         )
 
         # Experience buffer for training (stores (state, policy_target, value))
         # TODO: Make buffer size configurable
         self.replay_buffer = deque(maxlen=config.replay_buffer_size)
-        # Temporary storage for the current game's history before assigning final outcome
         self._current_episode_history = []
 
         # Optimizer (managed internally by the agent)
@@ -94,12 +92,12 @@ class AlphaZeroAgent(Agent):
             lr=config.learning_rate,
             weight_decay=config.weight_decay,
         )
-        # Learning Rate Scheduler
-        self.scheduler = StepLR(
-            self.optimizer,
-            step_size=config.lr_scheduler_step_size,
-            gamma=config.lr_scheduler_gamma,
-        )
+        # # Learning Rate Scheduler
+        # self.scheduler = StepLR(
+        #     self.optimizer,
+        #     step_size=config.lr_scheduler_step_size,
+        #     gamma=config.lr_scheduler_gamma,
+        # )
 
     def act(self, state: StateType, train: bool = False) -> ActionType:
         """
@@ -431,7 +429,7 @@ class AlphaZeroAgent(Agent):
                 )
 
         self.network.eval()
-        self.scheduler.step()
+        # self.scheduler.step()
 
         if epochs_done > 0:
             final_total_loss = total_loss_epoch_avg / epochs_done

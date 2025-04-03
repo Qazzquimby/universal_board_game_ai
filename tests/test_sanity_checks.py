@@ -106,7 +106,7 @@ class TestSanityChecks(unittest.TestCase):
         agent.network.eval()
 
         # Attempt to load weights only if configured to do so
-        should_load_weights = agent.config.should_load_weights
+        should_load_weights = agent.config.should_use_network
         weights_loaded = False
         if should_load_weights:
             if agent.load():
@@ -316,7 +316,7 @@ def _generate_alphazero_test_method(env_name: str, check_case, load_weights: boo
         """Dynamically generated test for a specific AlphaZero network sanity check case."""
         config = self._get_config(env_name)
         # --- Override weight loading based on the factory parameter ---
-        config.alpha_zero.should_load_weights = load_weights
+        config.alpha_zero.should_use_network = load_weights
         # --- End Override ---
         env = get_environment(config.env)
         # Instantiate AlphaZeroAgent - needs env, az_config, and training_config
@@ -422,25 +422,25 @@ for _env_name_to_test in ["connect4", "nim"]:
         ).lower()
 
         # --- Generate Test for LOAD WEIGHTS scenario ---
-        _method_name_load = f"test_alphazero_{_env_name_to_test}_case_{_i}_{_safe_desc}_load_weights"
+        _method_name_load = (
+            f"test_alphazero_{_env_name_to_test}_case_{_i}_{_safe_desc}_load_weights"
+        )
         _test_method_load = _generate_alphazero_test_method(
             _env_name_to_test, _case, load_weights=True
         )
         _test_method_load.__name__ = _method_name_load
-        _test_method_load.__doc__ = (
-            f"AlphaZero Network Sanity Check ({_env_name_to_test}, Load Weights): {_case.description}"
-        )
+        _test_method_load.__doc__ = f"AlphaZero Network Sanity Check ({_env_name_to_test}, Load Weights): {_case.description}"
         setattr(TestSanityChecks, _method_name_load, _test_method_load)
 
         # --- Generate Test for NO WEIGHTS scenario ---
-        _method_name_no_load = f"test_alphazero_{_env_name_to_test}_case_{_i}_{_safe_desc}_no_weights"
+        _method_name_no_load = (
+            f"test_alphazero_{_env_name_to_test}_case_{_i}_{_safe_desc}_no_weights"
+        )
         _test_method_no_load = _generate_alphazero_test_method(
             _env_name_to_test, _case, load_weights=False
         )
         _test_method_no_load.__name__ = _method_name_no_load
-        _test_method_no_load.__doc__ = (
-            f"AlphaZero Network Sanity Check ({_env_name_to_test}, No Weights): {_case.description}"
-        )
+        _test_method_no_load.__doc__ = f"AlphaZero Network Sanity Check ({_env_name_to_test}, No Weights): {_case.description}"
         setattr(TestSanityChecks, _method_name_no_load, _test_method_no_load)
 
     # Clean up temporary instance and variables

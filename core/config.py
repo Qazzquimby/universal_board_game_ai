@@ -52,7 +52,7 @@ class AlphaZeroConfig:
     lr_scheduler_step_size: int = 100  # Decay LR every N training iterations
     lr_scheduler_gamma: float = 0.9  # Multiplicative factor for LR decay
     debug_mode: bool = False
-    should_load_weights: bool = True
+    should_use_network: bool = True
 
 
 @dataclass

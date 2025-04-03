@@ -231,6 +231,8 @@ class AlphaZeroMCTS(MCTS):
         # self.dirichlet_epsilon = dirichlet_epsilon
         # self.dirichlet_alpha = dirichlet_alpha
 
+    # todo missing expand? Network is never actually used..?
+
     def _score_child(self, node: MCTSNode, parent_visits: int) -> float:
         """Calculate the PUCT score for a node."""
         # Use self.exploration_constant as c_puct
