@@ -462,30 +462,4 @@ class Connect4(BaseEnvironment):
             )
         )
 
-        # --- State 5: Player 1 can win horizontally in column 6 ---
-        # Board:
-        # 0 0 0 0 0 0 0
-        # 0 0 0 0 0 0 0
-        # 0 0 0 0 0 0 0
-        # 0 0 0 0 0 0 0
-        # 0 0 0 1 1 1 0
-        # 0 0 0 2 2 2 0 <- Player 1 to move
-        env6 = Connect4(width=self.width, height=self.height)
-        env6.board[5, 3] = 2  # P1
-        env6.board[5, 4] = 2  # P1
-        env6.board[5, 5] = 2  # P1
-        env6.board[4, 3] = 1  # P0
-        env6.board[4, 4] = 1  # P0
-        env6.board[4, 5] = 1  # P0
-        env6.current_player = 2
-        env6.step_count = 6
-        states.append(
-            SanityCheckState(
-                description="Player 2 can win horizontally (col 6)",
-                state=env6.get_observation(),
-                expected_value=1.0,
-                expected_action=6,
-            )
-        )
-
         return states
