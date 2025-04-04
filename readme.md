@@ -14,13 +14,76 @@ The current unvalidated plan is to
 
 - [x] create evaluation environment and reusable base classes.
 - [ ] implement alphazero to fair performance
+  - [ ] Create tictactoe environment with decreased mcts iterations for faster evaluation
+  - [ ] Move ml to gpu 
+  - [ ] Batch leaves for ml processing
+  - [ ] Run games in parallel via multithreading
+- 
+- 
 - [ ] implement muzero
 - [ ] create graph versions of environments and zero models and iterate until performance is okay
 - [ ] instead of using fixed policy output, pass in legal actions as part of the gamestate and have
   variable sized policy output. Iterate until performance is okay.
 - [ ] gradually work with more complex games. Add components needing embeddings, stochasticity, partial info, etc.
 
-Log wall clock time taken, separately tracking jobs that could be parallelized and those that can't. 
+Log 
+
+
+# parallelization plan
+
+```
+Setup:
+
+You have your main process.
+
+You spawn multiple Worker processes using Python's multiprocessing module (e.g., N workers, where N is maybe the number of CPU cores minus one). Each worker gets a copy of the game environment and the current network weights.
+
+You often have a dedicated GPU Actor process (or thread, if managed carefully) responsible only for running network inferences.
+
+You use multiprocessing.Queues for communication: one queue for workers to send evaluation requests to the GPU actor, and potentially separate queues for the GPU actor to send results back to the specific workers.
+
+Worker Process Loop (Simplified):
+
+Start a new game.
+
+While the game isn't over:
+
+Begin MCTS for the current player/state.
+
+Run simulations. When a simulation reaches a leaf node needing evaluation:
+
+Package the game state (or MuZero hidden state) representation.
+
+Put a request (worker_id, state_data) onto the inference_request_queue.
+
+Pause this simulation path temporarily (or store its state).
+
+Ideally, the MCTS continues exploring other paths while waiting, or the worker manages multiple simulations concurrently within its MCTS runs. Crucially, the worker tries to collect several pending evaluation requests before pausing entirely.
+
+Periodically check its result_queue for completed evaluations sent back by the GPU actor.
+
+When a result (policy, value) arrives for a specific pending node, update that node in the MCTS tree and continue the simulation(s) downwards from there.
+
+After enough simulations, choose a move based on MCTS statistics, update the game state, store the (state, policy_target, value_target) data point.
+
+When the game ends, send the collected trajectory data back to the main process (e.g., via another queue) for storage in the replay buffer.
+
+GPU Actor Loop (Simplified):
+
+Continuously monitor the inference_request_queue.
+
+Collect requests until either a timeout occurs or a desired batch_size is reached (e.g., 64, 128, 256 requests).
+
+Stack all the state_data from the collected requests into a single batch tensor.
+
+Perform one forward pass of the network on the entire batch.
+
+Un-batch the results (policies and values).
+
+For each result, send it back to the originating worker using their worker_id (e.g., put (worker_id, policy, value) onto worker_results_queue[worker_id]).
+```
+
+
 
 # Ideas
 

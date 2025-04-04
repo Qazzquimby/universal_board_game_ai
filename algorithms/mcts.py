@@ -231,7 +231,68 @@ class AlphaZeroMCTS(MCTS):
         # self.dirichlet_epsilon = dirichlet_epsilon
         # self.dirichlet_alpha = dirichlet_alpha
 
-    # todo missing expand? Network is never actually used..?
+    def _expand(self, node: MCTSNode, env: BaseEnvironment):
+        """
+        Expand the leaf node using policy predictions from the network
+        for legal actions.
+        """
+        if node.is_expanded() or env.is_game_over():
+            return
+
+        if not self.network:
+            # Fallback to uniform priors if no network is provided (though not typical for AZ)
+            super()._expand(node, env)
+            return
+
+        # Get network prediction for the current state
+        state_obs = env.get_observation()
+        policy_np, _ = self.network.predict(state_obs) # Value prediction not needed here
+
+        legal_actions = env.get_legal_actions()
+        if not legal_actions:
+            return # Cannot expand if no legal actions
+
+        action_priors = {}
+        for action in legal_actions:
+            action_key = tuple(action) if isinstance(action, list) else action
+            action_index = self.network.get_action_index(action_key)
+
+            if action_index is not None and 0 <= action_index < len(policy_np):
+                prior = policy_np[action_index]
+                action_priors[action_key] = prior
+            else:
+                # This might happen if the network's policy size doesn't perfectly
+                # match all possible actions or if mapping fails. Assign zero prior.
+                # print(f"Warning: Could not map legal action {action_key} to policy index during expansion.")
+                action_priors[action_key] = 0.0
+
+        if self.debug:
+            sorted_priors = sorted(action_priors.items(), key=lambda item: item[1], reverse=True)
+            print(f"  Expand: State={state_obs.get('board', state_obs.get('piles', 'N/A'))}, Player={state_obs['current_player']}")
+            print(f"  Expand: Legal Actions={legal_actions}")
+            print(f"  Expand: Network Priors (Top 5): { {a: f'{p:.3f}' for a, p in sorted_priors[:5]} }")
+
+        node.expand(action_priors)
+
+    def _rollout(self, env: BaseEnvironment) -> float:
+        """
+        Evaluate the leaf node state using the network's value prediction.
+        Overrides the random rollout simulation of the base MCTS.
+        """
+        if not self.network:
+            # Fallback to random rollout if no network (shouldn't happen in typical AZ)
+            return super()._rollout(env)
+
+        # Get the value prediction from the network for the current state
+        state_obs = env.get_observation()
+        _, value = self.network.predict(state_obs)
+
+        # The network's value prediction is from the perspective of the current player
+        # at the leaf node, which is what backpropagation expects.
+        if self.debug:
+            print(f"  Evaluate (NN): State={state_obs.get('board', state_obs.get('piles', 'N/A'))}, Player={state_obs['current_player']}, Value={value:.3f}")
+
+        return value
 
     def _score_child(self, node: MCTSNode, parent_visits: int) -> float:
         """Calculate the PUCT score for a node."""

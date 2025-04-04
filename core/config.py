@@ -39,7 +39,7 @@ class MCTSConfig:
 class AlphaZeroConfig:
     num_simulations: int = 400  # MCTS simulations per move
     cpuct: float = 1.0  # Exploration constant in PUCT formula
-    learning_rate: float = 0.0001  # Keep reduced LR
+    learning_rate: float = 0.001
     weight_decay: float = 0.0001
     hidden_layer_size: int = 128  # Size for the MLP hidden layers
     num_hidden_layers: int = 2  # Number of hidden layers in the MLP
