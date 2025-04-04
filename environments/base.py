@@ -21,6 +21,28 @@ class SanityCheckState:
 class BaseEnvironment(abc.ABC):
     """Abstract base class for game environments."""
 
+    @property
+    @abc.abstractmethod
+    def observation_tensor_shape(self) -> Tuple[int, ...]:
+        """Returns the shape of the flattened observation tensor for network input."""
+        pass
+        
+    @property
+    @abc.abstractmethod
+    def policy_vector_size(self) -> int:
+        """Returns the fixed size of the policy vector that networks should output."""
+        pass
+        
+    @abc.abstractmethod
+    def map_action_to_policy_index(self, action: ActionType) -> Optional[int]:
+        """Maps an environment action to its corresponding policy vector index."""
+        pass
+        
+    @abc.abstractmethod  
+    def map_policy_index_to_action(self, index: int) -> Optional[ActionType]:
+        """Maps a policy vector index back to a valid environment action."""
+        pass
+
     @abc.abstractmethod
     def reset(self) -> StateType:
         """

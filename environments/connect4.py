@@ -6,6 +6,7 @@ from environments.base import (
     BaseEnvironment,
     StateType,
     SanityCheckState,
+    ActionType,
 )  # Import SanityCheckState
 
 # Action is now just the column index
@@ -61,6 +62,20 @@ class Connect4(BaseEnvironment):
     @property
     def height(self) -> int:
         return self._height
+
+    @property
+    def observation_tensor_shape(self) -> Tuple[int, ...]:
+        return self.height, self.width
+
+    @property
+    def policy_vector_size(self) -> int:
+        return self.width
+
+    def map_action_to_policy_index(self, action: ActionType) -> Optional[int]:
+        return action
+
+    def map_policy_index_to_action(self, index: int) -> Optional[ActionType]:
+        return index
 
     # Ensure method signatures match EnvInterface
     def reset(self) -> StateType:

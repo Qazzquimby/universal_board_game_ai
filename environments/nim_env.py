@@ -53,6 +53,74 @@ class NimEnv(BaseEnvironment):
     def num_players(self) -> int:
         return self._num_players
 
+    @property
+    def observation_tensor_shape(self) -> Tuple[int, ...]:
+        """Returns the shape of the flattened observation tensor (piles + current_player)."""
+        # Shape is 1D: (number_of_piles + 1 for current_player)
+        return (len(self.initial_piles) + 1,)
+
+    @property
+    def policy_vector_size(self) -> int:
+        """
+        Calculates the fixed size of the policy vector.
+        Maps all possible (pile_index, num_removed) actions to a flat vector.
+        Size = num_piles * max_items_removable_from_any_pile.
+        """
+        if not self.initial_piles:
+            return 0
+        max_removable = max(self.initial_piles)
+        num_piles = len(self.initial_piles)
+        # Ensure max_removable is at least 1 if piles exist but are empty initially (edge case)
+        if num_piles > 0 and max_removable == 0:
+             max_removable = 1 # Allow removing 0? No, action must remove >= 1. Size should be 0 if max=0.
+             # If max initial pile size is 0, no moves are possible. Policy size is 0.
+             return 0
+        return num_piles * max_removable
+
+    def map_action_to_policy_index(self, action: ActionType) -> Optional[int]:
+        """Maps a Nim action (pile_idx, num_removed) to a policy vector index."""
+        if not isinstance(action, tuple) or len(action) != 2:
+            return None # Action must be a tuple (pile_idx, num_removed)
+
+        pile_idx, num_removed = action
+        num_piles = len(self.initial_piles)
+
+        if not self.initial_piles: # No piles, no actions
+             return None
+
+        max_removable = max(self.initial_piles)
+        if max_removable == 0: # No items initially, no valid actions
+            return None
+
+        # Validate the action components against the *potential* maximums
+        if not (0 <= pile_idx < num_piles and 1 <= num_removed <= max_removable):
+            # print(f"Warning: Action {action} is outside the bounds defined by initial_piles for index mapping.")
+            return None # Action is fundamentally invalid based on initial setup
+
+        # Map (pile_idx, num_removed) to a flat index
+        # index = pile_idx * max_removable + (num_removed - 1)
+        return pile_idx * max_removable + (num_removed - 1)
+
+    def map_policy_index_to_action(self, index: int) -> Optional[ActionType]:
+        """Maps a policy vector index back to a Nim action (pile_idx, num_removed)."""
+        policy_size = self.policy_vector_size
+        if not (0 <= index < policy_size):
+            # Index is out of the calculated bounds
+            return None
+
+        if not self.initial_piles: # No piles, no actions
+             return None
+        max_removable = max(self.initial_piles)
+        if max_removable == 0: # No items initially, no valid actions
+            return None
+
+        pile_idx = index // max_removable
+        num_removed = (index % max_removable) + 1
+
+        # We don't need to check against current pile state here, just reconstruct the action
+        # The caller (e.g., MCTS) should check if the reconstructed action is legal for the *current* state.
+        return (pile_idx, num_removed)
+
     def reset(self) -> StateType:
         """Reset the game to the initial pile configuration."""
         self.piles = np.array(self.initial_piles, dtype=np.int32)
