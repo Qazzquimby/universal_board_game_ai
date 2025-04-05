@@ -92,7 +92,8 @@ class AlphaZeroAgent(Agent):
             exploration_constant=config.cpuct,
             num_simulations=config.num_simulations,
             network=self.network,
-            profiler=self.profiler  # Pass it here
+            profiler=self.profiler,
+            inference_batch_size=config.inference_batch_size  # Pass batch size
             # TODO: Add dirichlet noise parameters from config if/when implemented
         )
 
@@ -246,7 +247,6 @@ class AlphaZeroAgent(Agent):
         else:
             return chosen_action
 
-
     def _calculate_policy_target(self, root_node, actions, visit_counts) -> np.ndarray:
         """Calculates the policy target vector based on MCTS visit counts."""
         if self.network:
@@ -307,7 +307,7 @@ class AlphaZeroAgent(Agent):
             )
         # Ensure policy target sums to 1 (handle potential float issues)
         if policy_target.sum() > 0:
-             policy_target /= policy_target.sum()
+            policy_target /= policy_target.sum()
 
         return policy_target
 
@@ -333,8 +333,8 @@ class AlphaZeroAgent(Agent):
         num_steps = len(game_history)
 
         if num_steps == 0:
-             logger.warning("process_finished_episode called with empty history.")
-             return EpisodeResult(buffer_experiences=[], logged_history=[])
+            logger.warning("process_finished_episode called with empty history.")
+            return EpisodeResult(buffer_experiences=[], logged_history=[])
 
         for i, (state_at_step, action_taken, policy_target) in enumerate(game_history):
             # Determine the value target from the perspective of the player at that state

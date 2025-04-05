@@ -316,108 +316,323 @@ class AlphaZeroMCTS(MCTS):
         self,
         exploration_constant: float = 1.0,  # c_puct in AlphaZero
         num_simulations: int = 100,
-        network: AlphaZeroNet = None,
-        discount_factor: float = 1.0,  # Usually 1.0 for AlphaZero MCTS value (consistency)
+        network: Optional[AlphaZeroNet] = None, # Type hint Optional
+        discount_factor: float = 1.0,
         profiler: Optional[MCTSProfiler] = None,
+        inference_batch_size: int = 32, # Add batch size parameter
         # TODO: Add dirichlet_epsilon and dirichlet_alpha for root noise
     ):
         super().__init__(
             exploration_constant=exploration_constant,
-            discount_factor=discount_factor,  # Keep for consistency, though not used in backprop value calc
+            discount_factor=discount_factor,
             num_simulations=num_simulations,
-            # No enable_profiling flag passed to base
         )
         self.network = network
         self.profiler = profiler
+        self.inference_batch_size = inference_batch_size # Store batch size
         # self.dirichlet_epsilon = dirichlet_epsilon
         # self.dirichlet_alpha = dirichlet_alpha
 
-    def _expand(self, node: MCTSNode, env: BaseEnvironment) -> None:
+    def _expand(
+        self,
+        node: MCTSNode,
+        env_state: BaseEnvironment, # Pass env state for legal actions
+        policy_priors_np: Optional[np.ndarray] = None, # Optional policy from network
+    ) -> None:
         """
-        Expand the leaf node using policy predictions from the network
-        for legal actions.
+        Expand the leaf node. Uses network policy priors if provided, otherwise uniform.
+
+        Args:
+            node: The node to expand.
+            env_state: The environment state at the node (used for legal actions).
+            policy_priors_np: Optional numpy array of policy probabilities from the network.
         """
-        if node.is_expanded() or env.is_game_over():
+        if node.is_expanded() or env_state.is_game_over():
             return
 
-        if not self.network:
-            # Fallback to uniform priors if no network is provided (though not typical for AZ)
-            super()._expand(node, env)
-            return
-
-        # Get network prediction for the current state
-        state_obs = env.get_observation()
-        policy_np = None  # Initialize
-        if self.profiler:
-            with Timer() as net_timer:
-                policy_np, _ = self.network.predict(
-                    state_obs
-                )  # Value prediction not needed here
-            self.profiler.record_network_time(net_timer.elapsed_ms)
-        else:
-            policy_np, _ = self.network.predict(state_obs)
-
-        if policy_np is None:  # Should not happen if network exists
-            logger.error(
-                "AlphaZeroMCTS _expand: policy_np is None after network prediction."
-            )
-            return
-
-        legal_actions = env.get_legal_actions()
+        legal_actions = env_state.get_legal_actions()
         if not legal_actions:
-            return  # Cannot expand if no legal actions
+            return # Cannot expand if no legal actions
 
-        action_priors = {}
-        for action in legal_actions:
-            action_key = tuple(action) if isinstance(action, list) else action
-            action_index = self.network.get_action_index(action_key)
+        action_priors_dict = {}
+        if self.network and policy_priors_np is not None:
+            # --- Use network priors ---
+            for action in legal_actions:
+                action_key = tuple(action) if isinstance(action, list) else action
+                # Use network's mapping function
+                action_index = self.network.get_action_index(action_key)
 
-            if action_index is not None and 0 <= action_index < len(policy_np):
-                prior = policy_np[action_index]
-                action_priors[action_key] = prior
-            else:
-                action_priors[action_key] = 0.0
+                if action_index is not None and 0 <= action_index < len(policy_priors_np):
+                    prior = policy_priors_np[action_index]
+                    action_priors_dict[action_key] = prior
+                else:
+                    # Assign 0 prior if action is illegal according to network mapping or out of bounds
+                    action_priors_dict[action_key] = 0.0
+                    logger.warning(f"Action {action_key} (index {action_index}) not found in policy vector during expand.")
 
-        sorted_priors = sorted(
-            action_priors.items(), key=lambda item: item[1], reverse=True
-        )
-        logger.debug(
-            f"  Expand: State={state_obs.get('board', state_obs.get('piles', 'N/A'))}, Player={state_obs['current_player']}"
-        )
-        logger.debug(f"  Expand: Legal Actions={legal_actions}")
-        logger.debug(
-            f"  Expand: Network Priors (Top 5): { {a: f'{p:.3f}' for a, p in sorted_priors[:5]} }"
-        )
-
-        node.expand(action_priors)
-
-    def _rollout(self, env: BaseEnvironment) -> float:
-        """
-        Evaluate the leaf node state using the network's value prediction.
-        Overrides the random rollout simulation of the base MCTS.
-        """
-        if not self.network:
-            # Fallback to random rollout if no network (shouldn't happen in typical AZ)
-            return super()._rollout(env)
-
-        # Get the value prediction from the network for the current state
-        state_obs = env.get_observation()
-        value = 0.0  # Initialize
-        if self.profiler:
-            with Timer() as net_timer:
-                _, value = self.network.predict(state_obs)
-            self.profiler.record_network_time(net_timer.elapsed_ms)
+            # Log sorted priors for debugging
+            sorted_priors = sorted(action_priors_dict.items(), key=lambda item: item[1], reverse=True)
+            state_obs = env_state.get_observation() # Get obs for logging
+            logger.debug(
+                f"  Expand (Network): State={state_obs.get('board', state_obs.get('piles', 'N/A'))}, Player={state_obs['current_player']}"
+            )
+            logger.debug(f"  Expand (Network): Legal Actions={legal_actions}")
+            logger.debug(
+                f"  Expand (Network): Applied Priors (Top 5): { {a: f'{p:.3f}' for a, p in sorted_priors[:5]} }"
+            )
         else:
-            _, value = self.network.predict(state_obs)
+            # --- Fallback to uniform priors (networkless or policy not provided) ---
+            num_legal = len(legal_actions)
+            uniform_prior = 1.0 / num_legal if num_legal > 0 else 1.0
+            action_priors_dict = {
+                 (tuple(action) if isinstance(action, list) else action): uniform_prior
+                 for action in legal_actions
+            }
+            logger.debug(f"  Expand (Uniform): Legal Actions={legal_actions}, Prior={uniform_prior:.3f}")
 
-        logger.debug(
-            f"  Evaluate (NN): State={state_obs.get('board', state_obs.get('piles', 'N/A'))}, Player={state_obs['current_player']}, Value={value:.3f}"
-        )
+        # Call the base node expansion method
+        node.expand(action_priors_dict)
 
-        return value
+    # Note: _rollout is effectively replaced by the batched network value prediction
+    # in the modified search loop when a network is present.
+    # We keep the base class _rollout for the networkless case.
+    # The AlphaZero-specific _rollout using network.predict is removed below.
+
+    def _backpropagate(self, leaf_node: MCTSNode, value_from_leaf_perspective: float):
+        """
+        Backpropagate the evaluated value up the tree, updating node statistics.
+        (Inherited from base MCTS, logic is suitable for AlphaZero value backprop).
+
+        Args:
+            leaf_node: The node where the simulation/evaluation ended.
+            value_from_leaf_perspective: The outcome (+1, -1, 0 or network prediction)
+                                         from the perspective of the player whose turn
+                                         it was at the leaf_node.
+        """
+        super()._backpropagate(leaf_node, value_from_leaf_perspective)
+
 
     def _score_child(self, node: MCTSNode, parent_visits: int) -> float:
         """Calculate the PUCT score for a node."""
+        # Use self.exploration_constant as c_puct
+        if node.visit_count == 0:
+            q_value_for_parent = 0
+            # Assign high score to encourage exploration of unvisited nodes
+            # The U term dominates here. Use max(1, parent_visits) for sqrt robustness.
+            u_score = (
+                self.exploration_constant
+                * node.prior
+                * math.sqrt(max(1, parent_visits))
+                # No division by (1 + N) for unvisited nodes in standard PUCT
+            )
+        else:
+            # Q value is from the perspective of the player *at the parent node*.
+            # Parent wants to maximize its value. If it's parent's turn at child, Q = V(child).
+            # If it's opponent's turn at child, Q = -V(child).
+            # node.value is always from the perspective of the player *at that node*.
+            # So, parent Q = -node.value (assuming zero-sum).
+            q_value_for_parent = -node.value
+
+            # PUCT formula U term
+            u_score = (
+                self.exploration_constant
+                * node.prior
+                * math.sqrt(parent_visits) # parent_visits > 0 guaranteed here
+                / (1 + node.visit_count)
+            )
+        return q_value_for_parent + u_score
+
+    def search(self, env: BaseEnvironment, state: StateType) -> MCTSNode:
+        """
+        Run MCTS search using PUCT and batched network evaluation (if network exists),
+        or random rollouts (if no network).
+
+        Args:
+            env: The *real* environment instance (used for copying and initial state).
+            state: The current state dictionary from the real environment.
+
+        Returns:
+            The root node of the MCTS tree after search.
+        """
+        self.reset_root()
+        initial_state_obs = state # Keep the original state dict
+
+        # --- Prepare for Batching (only if network exists) ---
+        # Stores tuples of (unique_state_key, node_needing_evaluation, env_at_node)
+        pending_evaluations: List[Tuple[str, MCTSNode, BaseEnvironment]] = []
+        # Cache for network results to avoid re-computation within a single search
+        # Maps unique_state_key to (policy_np, value)
+        evaluation_cache: Dict[str, Tuple[np.ndarray, float]] = {}
+
+        # Helper to create a unique key for a state
+        def get_state_key(s: StateType) -> str:
+            try:
+                items = []
+                # Sort items for consistency
+                for k, v in sorted(s.items()):
+                    if isinstance(v, np.ndarray): items.append((k, v.tobytes()))
+                    elif isinstance(v, list): items.append((k, tuple(v))) # Convert lists to tuples
+                    else: items.append((k, v))
+                return str(tuple(items))
+            except TypeError as e:
+                logger.warning(f"State not easily hashable: {s}. Error: {e}. Using simple str().")
+                return str(s)
+
+
+        search_timer = Timer() if self.profiler else contextlib.nullcontext()
+        with search_timer:
+            log_prefix = f"AZ MCTS Search (Batched={self.network is not None})"
+            logger.debug(f"--- {log_prefix} Start: State={initial_state_obs} ---")
+
+            # TODO: Add Dirichlet noise to root priors if training and network exists
+
+            for sim_num in range(self.num_simulations):
+                logger.debug(f" Simulation {sim_num+1}/{self.num_simulations}")
+
+                # --- Run one simulation path ---
+                node = self.root
+                sim_env = env.copy()
+                sim_env.set_state(initial_state_obs) # Start from the root state
+                search_path = [node]
+
+                # 1. Selection: Find a leaf node using PUCT (_score_child).
+                while node.is_expanded() and not sim_env.is_game_over():
+                    parent_visits = node.visit_count
+                    valid_children = node.children # Assume children are valid for deterministic games
+
+                    if not valid_children:
+                        logger.warning("MCTS Select: Node expanded but no children found.")
+                        break # Cannot select further
+
+                    child_scores = {
+                        act: self._score_child(child, parent_visits)
+                        for act, child in valid_children.items()
+                    }
+
+                    best_action = max(child_scores, key=child_scores.get)
+                    logger.debug(f"  Select: ParentVisits={parent_visits}, Scores={ {a: f'{s:.3f}' for a, s in child_scores.items()} }, Chosen={best_action}")
+
+                    try:
+                        sim_env.step(best_action)
+                        node = valid_children[best_action] # Move to the chosen child node
+                        search_path.append(node)
+                    except (ValueError, KeyError) as e:
+                         logger.error(f"MCTS Select: Error stepping env or finding child for action {best_action}. Error: {e}")
+                         node = None # Signal error
+                         break
+
+                if node is None: continue # Skip to next simulation if error occurred
+
+                # --- Reached a leaf node (or terminal state) ---
+                leaf_node = node
+                leaf_env_state = sim_env # Environment state at the leaf
+
+                value = 0.0 # Default value
+                policy_np = None # Default policy
+
+                # 2. Evaluation: Determine value and potentially expand.
+                if leaf_env_state.is_game_over():
+                    # Game ended during selection. Determine the outcome.
+                    player_at_leaf = leaf_env_state.get_current_player() # Whose turn it *would* be
+                    winner = leaf_env_state.get_winning_player()
+                    if winner is None: value = 0.0
+                    elif winner == player_at_leaf: value = 1.0 # Player at leaf wins
+                    else: value = -1.0 # Player at leaf loses
+                    logger.debug(f"  Terminal Found during Select: Winner={winner}, PlayerAtNode={player_at_leaf}, Value={value}")
+                    # Backpropagate terminal value immediately
+                    self._backpropagate(leaf_node, value)
+                    continue # Move to next simulation
+
+                # --- Non-Terminal Leaf Node ---
+                if self.network:
+                    # --- Network-Based Evaluation ---
+                    leaf_state_obs = leaf_env_state.get_observation()
+                    state_key = get_state_key(leaf_state_obs)
+
+                    if state_key in evaluation_cache:
+                        # Cache Hit
+                        policy_np, value = evaluation_cache[state_key]
+                        logger.debug(f"  Cache Hit: StateKey={state_key}, Value={value:.3f}")
+                        # Expand node immediately using cached policy if not already expanded
+                        if not leaf_node.is_expanded():
+                             self._expand(leaf_node, leaf_env_state, policy_np)
+                        # Backpropagate cached value
+                        self._backpropagate(leaf_node, value)
+                        continue # Move to next simulation
+                    else:
+                        # Cache Miss: Add to pending list
+                        logger.debug(f"  Eval Request: StateKey={state_key}")
+                        # Store state key, node, and a *copy* of the env state at the node
+                        pending_evaluations.append((state_key, leaf_node, leaf_env_state.copy()))
+                        # Don't backpropagate yet, wait for batch result
+
+                else:
+                    # --- Networkless Evaluation (Expand + Rollout) ---
+                    logger.debug("  Networkless: Expanding and Rolling out.")
+                    # Expand using uniform priors
+                    if not leaf_node.is_expanded():
+                        self._expand(leaf_node, leaf_env_state, policy_priors_np=None) # Pass None policy
+
+                    # Perform random rollout using base class method
+                    value = super()._rollout(leaf_env_state) # Call MCTS._rollout
+                    # Backpropagate rollout result immediately
+                    self._backpropagate(leaf_node, value)
+                    continue # Move to next simulation
+
+
+                # --- Process Batch (if network exists and batch is ready) ---
+                if self.network and (
+                    len(pending_evaluations) >= self.inference_batch_size or
+                    (sim_num == self.num_simulations - 1 and pending_evaluations)
+                   ):
+
+                    logger.debug(f"Processing Batch: Size={len(pending_evaluations)}")
+                    # Extract states and nodes, keeping track of the original env state for expansion
+                    states_to_predict = [env.get_observation() for _, _, env in pending_evaluations]
+                    # Store key, node, and env together for processing results
+                    nodes_to_process = [(key, node, env) for key, node, env in pending_evaluations]
+
+                    # Call batched prediction
+                    policy_list, value_list = [], []
+                    if self.profiler:
+                        with Timer() as net_timer:
+                            policy_list, value_list = self.network.predict_batch(states_to_predict)
+                        self.profiler.record_network_time(net_timer.elapsed_ms)
+                    else:
+                        policy_list, value_list = self.network.predict_batch(states_to_predict)
+
+                    # Distribute results, expand, and backpropagate
+                    if len(policy_list) != len(nodes_to_process) or len(value_list) != len(nodes_to_process):
+                         logger.error(f"Batch prediction result size mismatch! Expected {len(nodes_to_process)}, Got P={len(policy_list)}, V={len(value_list)}")
+                         # Skip processing this batch to avoid index errors
+                    else:
+                        for i, (state_key, node_to_process, original_env_state) in enumerate(nodes_to_process):
+                            policy_np_result, value_result = policy_list[i], value_list[i]
+                            logger.debug(f"  Batch Result: StateKey={state_key}, Value={value_result:.3f}")
+
+                            # Cache the result
+                            evaluation_cache[state_key] = (policy_np_result, value_result)
+
+                            # Expand the node using the received policy if not already expanded
+                            if not node_to_process.is_expanded():
+                                self._expand(node_to_process, original_env_state, policy_np_result)
+
+                            # Backpropagate the received value
+                            self._backpropagate(node_to_process, value_result)
+
+                    # Clear the processed batch
+                    pending_evaluations.clear()
+
+
+            # --- End of Simulation Loop ---
+
+        if self.profiler and isinstance(search_timer, Timer):
+            self.profiler.record_search_time(search_timer.elapsed_ms)
+            if self.network: # Only log cache stats if network was used
+                 logger.debug(f"MCTS Search End: Cache size={len(evaluation_cache)}")
+
+
+        return self.root
         # Use self.exploration_constant as c_puct
         if node.visit_count == 0:
             q_value_for_parent = 0
@@ -432,55 +647,194 @@ class AlphaZeroMCTS(MCTS):
         return q_value_for_parent + u_score
 
     def search(self, env: BaseEnvironment, state: StateType) -> MCTSNode:
-        """Run MCTS search using PUCT and network evaluation."""
+        """
+        Run MCTS search using PUCT and batched network evaluation (if network exists),
+        or random rollouts (if no network).
+
+        Args:
+            env: The *real* environment instance (used for copying and initial state).
+            state: The current state dictionary from the real environment.
+
+        Returns:
+            The root node of the MCTS tree after search.
+        """
         self.reset_root()
+        initial_state_obs = state # Keep the original state dict
+
+        # --- Prepare for Batching (only if network exists) ---
+        # Stores tuples of (unique_state_key, node_needing_evaluation, env_at_node)
+        pending_evaluations: List[Tuple[str, MCTSNode, BaseEnvironment]] = []
+        # Cache for network results to avoid re-computation within a single search
+        # Maps unique_state_key to (policy_np, value)
+        evaluation_cache: Dict[str, Tuple[np.ndarray, float]] = {}
+
+        # Helper to create a unique key for a state
+        def get_state_key(s: StateType) -> str:
+            try:
+                items = []
+                # Sort items for consistency
+                for k, v in sorted(s.items()):
+                    if isinstance(v, np.ndarray): items.append((k, v.tobytes()))
+                    elif isinstance(v, list): items.append((k, tuple(v))) # Convert lists to tuples
+                    else: items.append((k, v))
+                return str(tuple(items))
+            except TypeError as e:
+                logger.warning(f"State not easily hashable: {s}. Error: {e}. Using simple str().")
+                return str(s)
+
 
         search_timer = Timer() if self.profiler else contextlib.nullcontext()
-
         with search_timer:
-            logger.debug(f"--- AlphaZero MCTS Search Start: State={state} ---")
+            log_prefix = f"AZ MCTS Search (Batched={self.network is not None})"
+            logger.debug(f"--- {log_prefix} Start: State={initial_state_obs} ---")
 
-            # TODO: Add Dirichlet noise to root priors if training
+            # TODO: Add Dirichlet noise to root priors if training and network exists
 
-            # Simulation loop
             for sim_num in range(self.num_simulations):
                 logger.debug(f" Simulation {sim_num+1}/{self.num_simulations}")
+
+                # --- Run one simulation path ---
+                node = self.root
                 sim_env = env.copy()
-                sim_env.set_state(state)
+                sim_env.set_state(initial_state_obs) # Start from the root state
+                search_path = [node]
 
                 # 1. Selection: Find a leaf node using PUCT (_score_child).
-                leaf_node, leaf_env_state = self._select(self.root, sim_env)
+                while node.is_expanded() and not sim_env.is_game_over():
+                    parent_visits = node.visit_count
+                    valid_children = node.children # Assume children are valid for deterministic games
 
-                # 2. Evaluation: Get the value of the leaf node.
-                value = 0.0
-                if not leaf_env_state.is_game_over():
-                    # Expand if not already expanded
-                    if not leaf_node.is_expanded():
-                        self._expand(leaf_node, leaf_env_state)
+                    if not valid_children:
+                        logger.warning("MCTS Select: Node expanded but no children found.")
+                        break # Cannot select further
 
-                    # Evaluate the leaf using network rollout (_rollout)
-                    value = self._rollout(leaf_env_state)
-                else:
+                    child_scores = {
+                        act: self._score_child(child, parent_visits)
+                        for act, child in valid_children.items()
+                    }
+
+                    best_action = max(child_scores, key=child_scores.get)
+                    logger.debug(f"  Select: ParentVisits={parent_visits}, Scores={ {a: f'{s:.3f}' for a, s in child_scores.items()} }, Chosen={best_action}")
+
+                    try:
+                        sim_env.step(best_action)
+                        node = valid_children[best_action] # Move to the chosen child node
+                        search_path.append(node)
+                    except (ValueError, KeyError) as e:
+                         logger.error(f"MCTS Select: Error stepping env or finding child for action {best_action}. Error: {e}")
+                         node = None # Signal error
+                         break
+
+                if node is None: continue # Skip to next simulation if error occurred
+
+                # --- Reached a leaf node (or terminal state) ---
+                leaf_node = node
+                leaf_env_state = sim_env # Environment state at the leaf
+
+                value = 0.0 # Default value
+                policy_np = None # Default policy
+
+                # 2. Evaluation: Determine value and potentially expand.
+                if leaf_env_state.is_game_over():
                     # Game ended during selection. Determine the outcome.
-                    player_at_leaf = (
-                        leaf_env_state.get_current_player()
-                    )  # Whose turn it *would* be
+                    player_at_leaf = leaf_env_state.get_current_player() # Whose turn it *would* be
                     winner = leaf_env_state.get_winning_player()
-                    if winner is None:
-                        value = 0.0
-                    elif winner == player_at_leaf:
-                        value = 1.0  # Player at leaf wins
-                    else:
-                        value = -1.0  # Player at leaf loses
-                    logger.debug(
-                        f"  Terminal Found during Select: Winner={winner}, PlayerAtNode={player_at_leaf}, Value={value}"
-                    )
+                    if winner is None: value = 0.0
+                    elif winner == player_at_leaf: value = 1.0 # Player at leaf wins
+                    else: value = -1.0 # Player at leaf loses
+                    logger.debug(f"  Terminal Found during Select: Winner={winner}, PlayerAtNode={player_at_leaf}, Value={value}")
+                    # Backpropagate terminal value immediately
+                    self._backpropagate(leaf_node, value)
+                    continue # Move to next simulation
 
-                # 3. Backpropagation
-                self._backpropagate(leaf_node, value)
+                # --- Non-Terminal Leaf Node ---
+                if self.network:
+                    # --- Network-Based Evaluation ---
+                    leaf_state_obs = leaf_env_state.get_observation()
+                    state_key = get_state_key(leaf_state_obs)
+
+                    if state_key in evaluation_cache:
+                        # Cache Hit
+                        policy_np, value = evaluation_cache[state_key]
+                        logger.debug(f"  Cache Hit: StateKey={state_key}, Value={value:.3f}")
+                        # Expand node immediately using cached policy if not already expanded
+                        if not leaf_node.is_expanded():
+                             self._expand(leaf_node, leaf_env_state, policy_np)
+                        # Backpropagate cached value
+                        self._backpropagate(leaf_node, value)
+                        continue # Move to next simulation
+                    else:
+                        # Cache Miss: Add to pending list
+                        logger.debug(f"  Eval Request: StateKey={state_key}")
+                        # Store state key, node, and a *copy* of the env state at the node
+                        pending_evaluations.append((state_key, leaf_node, leaf_env_state.copy()))
+                        # Don't backpropagate yet, wait for batch result
+
+                else:
+                    # --- Networkless Evaluation (Expand + Rollout) ---
+                    logger.debug("  Networkless: Expanding and Rolling out.")
+                    # Expand using uniform priors
+                    if not leaf_node.is_expanded():
+                        self._expand(leaf_node, leaf_env_state, policy_priors_np=None) # Pass None policy
+
+                    # Perform random rollout using base class method
+                    value = super()._rollout(leaf_env_state) # Call MCTS._rollout
+                    # Backpropagate rollout result immediately
+                    self._backpropagate(leaf_node, value)
+                    continue # Move to next simulation
+
+
+                # --- Process Batch (if network exists and batch is ready) ---
+                if self.network and (
+                    len(pending_evaluations) >= self.inference_batch_size or
+                    (sim_num == self.num_simulations - 1 and pending_evaluations)
+                   ):
+
+                    logger.debug(f"Processing Batch: Size={len(pending_evaluations)}")
+                    # Extract states and nodes, keeping track of the original env state for expansion
+                    states_to_predict = [env.get_observation() for _, _, env in pending_evaluations]
+                    # Store key, node, and env together for processing results
+                    nodes_to_process = [(key, node, env) for key, node, env in pending_evaluations]
+
+                    # Call batched prediction
+                    policy_list, value_list = [], []
+                    if self.profiler:
+                        with Timer() as net_timer:
+                            policy_list, value_list = self.network.predict_batch(states_to_predict)
+                        self.profiler.record_network_time(net_timer.elapsed_ms)
+                    else:
+                        policy_list, value_list = self.network.predict_batch(states_to_predict)
+
+                    # Distribute results, expand, and backpropagate
+                    if len(policy_list) != len(nodes_to_process) or len(value_list) != len(nodes_to_process):
+                         logger.error(f"Batch prediction result size mismatch! Expected {len(nodes_to_process)}, Got P={len(policy_list)}, V={len(value_list)}")
+                         # Skip processing this batch to avoid index errors
+                    else:
+                        for i, (state_key, node_to_process, original_env_state) in enumerate(nodes_to_process):
+                            policy_np_result, value_result = policy_list[i], value_list[i]
+                            logger.debug(f"  Batch Result: StateKey={state_key}, Value={value_result:.3f}")
+
+                            # Cache the result
+                            evaluation_cache[state_key] = (policy_np_result, value_result)
+
+                            # Expand the node using the received policy if not already expanded
+                            if not node_to_process.is_expanded():
+                                self._expand(node_to_process, original_env_state, policy_np_result)
+
+                            # Backpropagate the received value
+                            self._backpropagate(node_to_process, value_result)
+
+                    # Clear the processed batch
+                    pending_evaluations.clear()
+
+
+            # --- End of Simulation Loop ---
 
         if self.profiler and isinstance(search_timer, Timer):
             self.profiler.record_search_time(search_timer.elapsed_ms)
+            if self.network: # Only log cache stats if network was used
+                 logger.debug(f"MCTS Search End: Cache size={len(evaluation_cache)}")
+
 
         return self.root
 
