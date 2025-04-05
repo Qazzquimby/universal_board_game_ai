@@ -2,15 +2,14 @@ import math
 import random
 import time
 import contextlib
-from typing import List, Tuple, Optional, Dict
+from typing import List, Tuple, Optional, Dict, Set
 
 import torch
+from loguru import logger
 
 from core.config import MuZeroConfig
 from environments.base import ActionType, StateType, BaseEnvironment
 from models.networks import AlphaZeroNet, MuZeroNet
-
-SHOULD_PROFILE = True
 
 
 class Timer:
@@ -26,9 +25,6 @@ class Timer:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.elapsed_ms = (time.perf_counter() - self._start_time) * 1000
-
-
-# Todo, please replace the if debug prints below with loguru
 
 
 class MCTSNode:
@@ -67,12 +63,14 @@ class MCTS:
         exploration_constant: float = 1.41,  # Standard UCB1 exploration constant
         discount_factor: float = 1.0,  # Discount factor for rollout rewards
         num_simulations: int = 100,
-        debug: bool = False,
+        enable_profiling: bool = False,  # Keep flag for potential future base class profiling
     ):
         self.exploration_constant = exploration_constant
-        self.discount_factor = discount_factor
+        self.discount_factor = (
+            discount_factor  # Note: Not used in standard UCB1 backprop here
+        )
         self.num_simulations = num_simulations
-        self.debug = debug
+        self.enable_profiling = enable_profiling
         self.root = MCTSNode()
 
     def reset_root(self):
@@ -91,11 +89,14 @@ class MCTS:
                 act: self._score_child(node=child, parent_visits=parent_visits)
                 for act, child in node.children.items()
             }
+            if not child_scores:  # Should not happen if node.is_expanded() is true
+                logger.warning("MCTS _select: Node expanded but no children found.")
+                break  # Cannot select further
+
             best_action = max(child_scores, key=child_scores.get)
-            if self.debug:
-                print(
-                    f"  Select: ParentVisits={parent_visits}, Scores={ {a: f'{s:.3f}' for a, s in child_scores.items()} }, Chosen={best_action}"
-                )
+            logger.debug(
+                f"  Select: ParentVisits={parent_visits}, Scores={ {a: f'{s:.3f}' for a, s in child_scores.items()} }, Chosen={best_action}"
+            )
             action, node = best_action, node.children[best_action]
 
             sim_env.step(action)
@@ -136,13 +137,27 @@ class MCTS:
         player_at_rollout_start = env.get_current_player()
 
         sim_env = env.copy()
-        while not sim_env.is_game_over():
+        steps = 0
+        max_steps = (
+            env.width * env.height
+            if hasattr(env, "width") and hasattr(env, "height")
+            else 100
+        )  # Safety break
+
+        while not sim_env.is_game_over() and steps < max_steps:
             legal_actions = sim_env.get_legal_actions()
             if not legal_actions:
-                print("WARN: Game not over, but no legal actions")
+                logger.warning("MCTS _rollout: Game not over, but no legal actions.")
                 break
             action = random.choice(legal_actions)
             sim_env.step(action)
+            steps += 1
+
+        if steps >= max_steps:
+            logger.warning(
+                f"MCTS _rollout: Reached max steps ({max_steps}). Treating as draw."
+            )
+            return 0.0
 
         winner = sim_env.get_winning_player()
         if winner is None:
@@ -151,10 +166,9 @@ class MCTS:
             value = 1.0
         else:
             value = -1.0
-        if self.debug:
-            print(
-                f"  Rollout: StartPlayer={player_at_rollout_start}, Winner={winner}, Value={value}"
-            )
+        logger.debug(
+            f"  Rollout: StartPlayer={player_at_rollout_start}, Winner={winner}, Value={value}"
+        )
         return value
 
     def _backpropagate(self, leaf_node: MCTSNode, value_from_leaf_perspective: float):
@@ -171,16 +185,10 @@ class MCTS:
 
         while current_node is not None:
             current_node.visit_count += 1
-            if self.debug:
-                print(
-                    f"  Backprop: Node={current_node}, ValueToAdd={value_for_current_node:.3f}, OldW={current_node.total_value:.3f}, OldN={current_node.visit_count - 1}",
-                    end="",
-                )
+            logger.debug(
+                f"  Backprop: Node={current_node}, ValueToAdd={value_for_current_node:.3f}, OldW={current_node.total_value:.3f}, OldN={current_node.visit_count - 1}, NewW={current_node.total_value + value_for_current_node:.3f}, NewN={current_node.visit_count}"
+            )
             current_node.total_value += value_for_current_node
-            if self.debug:
-                print(
-                    f", NewW={current_node.total_value:.3f}, NewN={current_node.visit_count}"
-                )
 
             # Flip the value perspective for the parent node.
             value_for_current_node *= -1
@@ -190,82 +198,50 @@ class MCTS:
         """Run MCTS search from the given state using UCB1 and random rollouts."""
         self.reset_root()
 
-        total_network_time_ms = 0.0
+        logger.debug(f"--- MCTS Search Start: State={state} ---")
 
-        if SHOULD_PROFILE:
-            search_timer = Timer()
-        else:
-            search_timer = contextlib.nullcontext()
+        for sim_num in range(self.num_simulations):
+            logger.debug(f" Simulation {sim_num+1}/{self.num_simulations}")
+            # Start from the root node and a copy of the environment set to the initial state
+            sim_env = env.copy()
+            sim_env.set_state(state)  # Ensure simulation starts from the correct state
 
-        with search_timer:
-            if self.debug:
-                print(f"--- MCTS Search Start: State={state} ---")
+            # 1. Selection: Find a leaf node using UCB1.
+            leaf_node, leaf_env_state = self._select(self.root, sim_env)
 
-            for sim_num in range(self.num_simulations):
-                if self.debug:
-                    print(f" Simulation {sim_num+1}/{self.num_simulations}")
-                # Start from the root node and a copy of the environment set to the initial state
-                sim_env = env.copy()
-                sim_env.set_state(
-                    state
-                )  # Ensure simulation starts from the correct state
-
-                # 1. Selection: Find a leaf node using UCB1.
-                leaf_node, leaf_env_state = self._select(self.root, sim_env)
-
-                # 2. Evaluation: Get the value of the leaf node.
-                if not leaf_env_state.is_game_over():
-                    if not leaf_node.is_expanded():
-                        # Expand with network timing if profiling
-                        if SHOULD_PROFILE:
-                            with Timer() as net_timer:
-                                self._expand(leaf_node, leaf_env_state)
-                            total_network_time_ms += net_timer.elapsed_ms
-                        else:
-                            self._expand(leaf_node, leaf_env_state)
-
-                        # Rollout with network timing if profiling
-                        if SHOULD_PROFILE:
-                            with Timer() as net_timer:
-                                value = self._rollout(leaf_env_state)
-                            total_network_time_ms += net_timer.elapsed_ms
-                        else:
-                            value = self._rollout(leaf_env_state)
+            # 2. Evaluation: Get the value of the leaf node.
+            value = 0.0  # Initialize value
+            if not leaf_env_state.is_game_over():
+                # Expand the node if it hasn't been expanded yet
+                if not leaf_node.is_expanded():
+                    self._expand(leaf_node, leaf_env_state)
+                    # After expansion, perform a rollout from this new leaf node
+                    value = self._rollout(leaf_env_state)
                 else:
-                    # Game ended during selection. Determine the outcome.
-                    # The value must be from the perspective of the player whose turn it was AT THE LEAF node.
-                    player_at_leaf = sim_env.get_current_player()
-                    winner = sim_env.get_winning_player()
-
-                    if winner is None:
-                        value = 0.0
-                    elif winner == player_at_leaf:
-                        value = 1.0
-                    else:
-                        value = -1.0
-                    if self.debug:
-                        print(
-                            f"  Terminal Found: Winner={winner}, PlayerAtNode={player_at_leaf}, Value={value}"
-                        )
-                # 3. Backpropagation: Update nodes along the path from the leaf to the root.
-                self._backpropagate(leaf_node, value)
-
-        if SHOULD_PROFILE and isinstance(search_timer, Timer):
-            search_time_ms = search_timer.elapsed_ms
-            if search_time_ms > 1e-6:
-                non_network_time_ms = search_time_ms - total_network_time_ms
-                network_perc = (total_network_time_ms / search_time_ms) * 100
-                print(
-                    f"[Profile AZ MCTS Search]: Total={search_time_ms:.2f}ms, "
-                    f"Network={total_network_time_ms:.2f}ms ({network_perc:.1f}%), "
-                    f"Other={non_network_time_ms:.2f}ms "
-                    f"({self.num_simulations} sims)"
-                )
+                    # If already expanded (e.g., visited before), rollout from here
+                    value = self._rollout(leaf_env_state)
             else:
-                print(
-                    f"[Profile AZ MCTS Search]: Total={search_time_ms:.2f}ms (negligible)"
-                )
+                # Game ended during selection. Determine the outcome.
+                # Value must be from the perspective of the player whose turn it was AT THE LEAF node.
+                player_at_leaf = (
+                    leaf_env_state.get_current_player()
+                )  # Whose turn it *would* be
+                winner = leaf_env_state.get_winning_player()
 
+                if winner is None:
+                    value = 0.0
+                elif winner == player_at_leaf:
+                    value = 1.0
+                else:
+                    value = -1.0
+
+                logger.debug(
+                    f"  Terminal Found during Select: Winner={winner}, PlayerAtNode={player_at_leaf}, Value={value}"
+                )
+            # 3. Backpropagation: Update nodes along the path from the leaf to the root.
+            self._backpropagate(leaf_node, value)
+
+        # Base MCTS search does not return timing information
         return self.root
 
 
@@ -278,36 +254,55 @@ class AlphaZeroMCTS(MCTS):
         num_simulations: int = 100,
         network: AlphaZeroNet = None,
         discount_factor: float = 1.0,  # Usually 1.0 for AlphaZero MCTS value (consistency)
+        enable_profiling: bool = False,
         # TODO: Add dirichlet_epsilon and dirichlet_alpha for root noise
     ):
         super().__init__(
             exploration_constant=exploration_constant,
             discount_factor=discount_factor,  # Keep for consistency, though not used in backprop value calc
             num_simulations=num_simulations,
+            enable_profiling=enable_profiling,
         )
-        self.profile = profile
         self.network = network
+        self._current_search_net_time_ms = (
+            0.0  # Accumulator for network time within one search call
+        )
         # self.dirichlet_epsilon = dirichlet_epsilon
         # self.dirichlet_alpha = dirichlet_alpha
 
-    def _expand(self, node: MCTSNode, env: BaseEnvironment):
+    def _expand(
+        self, node: MCTSNode, env: BaseEnvironment
+    ) -> None:  # Return type is None
         """
         Expand the leaf node using policy predictions from the network
         for legal actions.
         """
         if node.is_expanded() or env.is_game_over():
-            return
+            return  # No network call, no time added
 
         if not self.network:
             # Fallback to uniform priors if no network is provided (though not typical for AZ)
             super()._expand(node, env)
-            return
+            return  # No network call, no time added
 
         # Get network prediction for the current state
         state_obs = env.get_observation()
-        policy_np, _ = self.network.predict(
-            state_obs
-        )  # Value prediction not needed here
+        policy_np = None  # Initialize
+        if self.enable_profiling:
+            with Timer() as net_timer:
+                policy_np, _ = self.network.predict(
+                    state_obs
+                )  # Value prediction not needed here
+            # Add elapsed time to the instance accumulator
+            self._current_search_net_time_ms += net_timer.elapsed_ms
+        else:
+            policy_np, _ = self.network.predict(state_obs)  # No timing
+
+        if policy_np is None:  # Should not happen if network exists
+            logger.error(
+                "AlphaZeroMCTS _expand: policy_np is None after network prediction."
+            )
+            return
 
         legal_actions = env.get_legal_actions()
         if not legal_actions:
@@ -324,20 +319,19 @@ class AlphaZeroMCTS(MCTS):
             else:
                 # This might happen if the network's policy size doesn't perfectly
                 # match all possible actions or if mapping fails. Assign zero prior.
-                # print(f"Warning: Could not map legal action {action_key} to policy index during expansion.")
+                # logger.warning(f"Could not map legal action {action_key} to policy index during expansion.")
                 action_priors[action_key] = 0.0
 
-        if self.debug:
-            sorted_priors = sorted(
-                action_priors.items(), key=lambda item: item[1], reverse=True
-            )
-            print(
-                f"  Expand: State={state_obs.get('board', state_obs.get('piles', 'N/A'))}, Player={state_obs['current_player']}"
-            )
-            print(f"  Expand: Legal Actions={legal_actions}")
-            print(
-                f"  Expand: Network Priors (Top 5): { {a: f'{p:.3f}' for a, p in sorted_priors[:5]} }"
-            )
+        sorted_priors = sorted(
+            action_priors.items(), key=lambda item: item[1], reverse=True
+        )
+        logger.debug(
+            f"  Expand: State={state_obs.get('board', state_obs.get('piles', 'N/A'))}, Player={state_obs['current_player']}"
+        )
+        logger.debug(f"  Expand: Legal Actions={legal_actions}")
+        logger.debug(
+            f"  Expand: Network Priors (Top 5): { {a: f'{p:.3f}' for a, p in sorted_priors[:5]} }"
+        )
 
         node.expand(action_priors)
 
@@ -352,16 +346,22 @@ class AlphaZeroMCTS(MCTS):
 
         # Get the value prediction from the network for the current state
         state_obs = env.get_observation()
-        _, value = self.network.predict(state_obs)
+        value = 0.0  # Initialize
+        if self.enable_profiling:
+            with Timer() as net_timer:
+                _, value = self.network.predict(state_obs)
+            # Add elapsed time to the instance accumulator
+            self._current_search_net_time_ms += net_timer.elapsed_ms
+        else:
+            _, value = self.network.predict(state_obs)  # No timing
 
         # The network's value prediction is from the perspective of the current player
         # at the leaf node, which is what backpropagation expects.
-        if self.debug:
-            print(
-                f"  Evaluate (NN): State={state_obs.get('board', state_obs.get('piles', 'N/A'))}, Player={state_obs['current_player']}, Value={value:.3f}"
-            )
+        logger.debug(
+            f"  Evaluate (NN): State={state_obs.get('board', state_obs.get('piles', 'N/A'))}, Player={state_obs['current_player']}, Value={value:.3f}"
+        )
 
-        return value
+        return value  # Return only the predicted value
 
     def _score_child(self, node: MCTSNode, parent_visits: int) -> float:
         """Calculate the PUCT score for a node."""
@@ -384,10 +384,72 @@ class AlphaZeroMCTS(MCTS):
         )
         return q_value_for_parent + u_score
 
+    def search(self, env: BaseEnvironment, state: StateType) -> MCTSNode:
+        """Run MCTS search using PUCT and network evaluation."""
+        self.reset_root()
+
+        self._current_search_net_time_ms = 0.0
+        search_timer = Timer() if self.enable_profiling else contextlib.nullcontext()
+
+        with search_timer:
+            logger.debug(f"--- AlphaZero MCTS Search Start: State={state} ---")
+
+            # TODO: Add Dirichlet noise to root priors if training
+
+            # Simulation loop
+            for sim_num in range(self.num_simulations):
+                logger.debug(f" Simulation {sim_num+1}/{self.num_simulations}")
+                sim_env = env.copy()
+                sim_env.set_state(state)
+
+                # 1. Selection: Find a leaf node using PUCT (_score_child).
+                leaf_node, leaf_env_state = self._select(self.root, sim_env)
+
+                # 2. Evaluation: Get the value of the leaf node.
+                value = 0.0
+                if not leaf_env_state.is_game_over():
+                    # Expand if not already expanded
+                    if not leaf_node.is_expanded():
+                        # _expand now handles its own timing internally if profiling enabled
+                        self._expand(leaf_node, leaf_env_state)
+                        # No need to accumulate expand_net_time here
+
+                    # Evaluate the leaf using network rollout (_rollout)
+                    # _rollout now handles its own timing internally if profiling enabled
+                    # It returns only the value
+                    value = self._rollout(leaf_env_state)
+                    # No need to accumulate rollout_net_time here
+                else:
+                    # Game ended during selection. Determine the outcome.
+                    # Value must be from the perspective of the player whose turn it was AT THE LEAF node.
+                    player_at_leaf = (
+                        leaf_env_state.get_current_player()
+                    )  # Whose turn it *would* be
+                    winner = leaf_env_state.get_winning_player()
+                    if winner is None:
+                        value = 0.0
+                    elif winner == player_at_leaf:
+                        value = 1.0  # Player at leaf wins
+                    else:
+                        value = -1.0  # Player at leaf loses
+                    logger.debug(
+                        f"  Terminal Found during Select: Winner={winner}, PlayerAtNode={player_at_leaf}, Value={value}"
+                    )
+
+                # 3. Backpropagation
+                self._backpropagate(leaf_node, value)
+
+        if self.enable_profiling and isinstance(search_timer, Timer):
+            search_time_ms = search_timer.elapsed_ms
+            logger.info(f"AlphaZero MCTS Search Time: {search_time_ms:.2f} ms")
+            logger.info(
+                f"AlphaZero MCTS Network Time: {self._current_search_net_time_ms:.2f} ms"
+            )
+
+        return self.root
+
 
 # --- MuZero MCTS ---
-# Note: This is a simplified structure. A full MuZero MCTS often involves
-# slightly different node structures (storing hidden state, reward) and search logic.
 
 
 class MuZeroMCTSNode:
@@ -403,45 +465,64 @@ class MuZeroMCTSNode:
             torch.Tensor
         ] = None  # s - Hidden state represented by this node
         self.children: Dict[ActionType, "MuZeroMCTSNode"] = {}
-        # Store policy logits and value prediction when node is first evaluated? Optional.
-        # self.policy_logits = None
-        # self.value = None
 
     @property
     def value(self) -> float:  # Q(s,a) - Mean action value
+        # MuZero Q value definition: Q(s, a) = R(s, a) + gamma * V(s')
+        # The stored total_value W should reflect sum(G) where G = R + gamma*V
+        # So, value = W / N should approximate Q.
         return self.total_value / self.visit_count if self.visit_count else 0.0
 
     def is_expanded(self) -> bool:
         return bool(self.children)
 
-    def expand(self, policy_logits: torch.Tensor, network: MuZeroNet):
+    def expand(
+        self,
+        policy_logits: torch.Tensor,
+        network: MuZeroNet,
+        legal_actions: Optional[List[ActionType]] = None,
+    ):
         """
         Expand node using policy predictions from the network.
-        Creates child nodes for all actions in the policy output, using the predicted priors.
-        Does NOT filter by legality from the environment rules.
+        Creates child nodes based on the predicted priors.
+        If legal_actions is provided (only for root), filters expansion to legal actions.
         """
         policy_probs = torch.softmax(policy_logits.squeeze(0), dim=0).cpu().numpy()
-        # Assumes policy_logits covers the entire potential action space defined by the network
-        # We need to map indices back to ActionType to use as keys.
-        # Requires an inverse mapping function in the network.
+
         if not hasattr(network, "get_action_from_index"):
-            print(
-                "ERROR: MuZeroNet needs get_action_from_index method for MCTS expansion."
+            logger.error(
+                "MuZeroNet needs get_action_from_index method for MCTS expansion."
             )
-            return  # Cannot expand without inverse mapping
+            return
+
+        # Convert legal_actions list to set for efficient lookup if provided
+        legal_action_set = (
+            set(tuple(a) if isinstance(a, list) else a for a in legal_actions)
+            if legal_actions is not None
+            else None
+        )
 
         for action_index, prior in enumerate(policy_probs):
-            if prior > 1e-6:  # Small threshold
+            if prior > 1e-6:  # Small threshold to avoid tiny priors
                 action = network.get_action_from_index(action_index)
                 if action is not None:
                     action_key = tuple(action) if isinstance(action, list) else action
+
+                    # If expanding root node, only add children for legal actions
+                    if (
+                        legal_action_set is not None
+                        and action_key not in legal_action_set
+                    ):
+                        continue  # Skip illegal action at the root
+
                     if action_key not in self.children:
                         self.children[action_key] = MuZeroMCTSNode(
                             parent=self, prior=float(prior)
                         )
                 else:
-                    # This might happen if policy size > actual max actions
-                    # print(f"Warning: Could not map action index {action_index} back to action.")
+                    logger.warning(
+                        f"Could not map action index {action_index} back to action."
+                    )
                     pass
 
 
@@ -452,107 +533,97 @@ class MuZeroMCTS:
         self,
         config: MuZeroConfig,
         network: MuZeroNet,
+        enable_profiling: bool = False,
     ):
         self.config = config
         self.network = network
+        self.enable_profiling = enable_profiling
         # Root node doesn't have a prior action, hidden state comes from representation(obs)
         self.root = MuZeroMCTSNode(prior=0.0)
+        self._current_search_net_time_ms = (
+            0.0  # Accumulator for network time within one search call
+        )
 
     def reset_root(self):
         self.root = MuZeroMCTSNode(prior=0.0)
 
-    def _puct_score(
-        self, node: MuZeroMCTSNode, parent_visits: int, discount: float = 0.99
-    ) -> float:
+    def _puct_score(self, node: MuZeroMCTSNode, parent_visits: int) -> float:
         """
         Calculate the PUCT score for a node in MuZero MCTS.
-        Uses G + discount * Q(s', a') formulation.
+        Using AlphaZero PUCT for now: Q(s,a) + U(s,a)
+        Q(s,a) is from the parent's perspective (-node.value).
         """
-        # Calculate Q-value (mean action value from this node onwards)
-        q_value = (
-            node.value
-        )  # Average value accumulated from visits passing through this node
-
         # Calculate U-value (exploration bonus)
         if node.visit_count == 0:
-            u_value = self.config.cpuct * node.prior * math.sqrt(max(1, parent_visits))
-        else:
+            q_value_for_parent = 0
+            # Use max(1, parent_visits) for sqrt robustness
             u_value = (
                 self.config.cpuct
                 * node.prior
-                * math.sqrt(parent_visits)
+                * math.sqrt(max(1, parent_visits))
+                # No division by (1 + node.visit_count)
+            )
+        else:
+            # Q value from parent perspective
+            q_value_for_parent = -node.value  # Assumes zero-sum game value definition
+            u_value = (
+                self.config.cpuct
+                * node.prior
+                * math.sqrt(parent_visits)  # parent_visits > 0 guaranteed
                 / (1 + node.visit_count)
             )
 
-        # MuZero PUCT: Maximize Q(s,a) + U(s,a)
-        # Where Q(s,a) = R(s,a) + discount * V(s') - Value is estimated from parent perspective
-        # Let's use the simpler AlphaZero PUCT for now: Q(s,a) + U(s,a)
-        # where Q(s,a) is the mean value of the child node, adjusted for parent perspective.
-        # Q(parent, action_to_node) = node.reward + discount * (-node.value) ??? This gets complex.
-
-        # Let's stick to AlphaZero PUCT for selection for now, using the node's stored value.
-        # We need to ensure backpropagation correctly updates node.total_value.
-        # Value from parent perspective = -node.value
-        q_score_parent_perspective = -node.value
-
-        return q_score_parent_perspective + u_value
+        # MuZero paper uses: Q(s,a) + P(s,a) * sqrt(N(s)) / (1 + N(s,a)) * (c1 + log((N(s) + c2 + 1)/c2))
+        # Using simpler AlphaZero PUCT for now:
+        return q_value_for_parent + u_value
 
     def _select_child(self, node: MuZeroMCTSNode) -> Tuple[ActionType, MuZeroMCTSNode]:
         """Selects the child node with the highest PUCT score."""
         parent_visits = node.visit_count
-        # TODO: Add discount factor from config if needed for PUCT variant
+        if not node.children:
+            # This should not happen if called after expansion check
+            logger.error("MuZero _select_child called on node with no children.")
+            # How to handle this? Maybe return the node itself? Or raise error?
+            # For now, let's return None to signal failure
+            return None, None
+
         best_item = max(
             node.children.items(),
             key=lambda item: self._puct_score(item[1], parent_visits),
         )
         return best_item  # Returns (action, child_node)
 
-    def _backpropagate(
-        self, node: MuZeroMCTSNode, value: float, discount: float = 0.99
-    ):
-        """Backpropagate value using MuZero logic (incorporating rewards)."""
+    def _backpropagate(self, node: MuZeroMCTSNode, value: float):
+        """
+        Backpropagate value using AlphaZero logic for now (flipping value).
+        Assumes zero-sum game. MuZero's reward/discount needs careful handling.
+        """
         current_node = node
         # Value is the predicted value V(s) from the leaf node perspective.
+        value_for_current_node = value
+
         while current_node is not None:
             current_node.visit_count += 1
-            # Update total value W(s,a) = sum(R(s,a) + discount * V(s'))
-            # The 'value' passed up is V(s') from the child.
-            # We add the reward R(s,a) obtained by reaching the current_node.
-            current_node.total_value += current_node.reward + discount * value
+            logger.debug(
+                f"  Backprop (MuZero): Node={current_node}, ValueToAdd={value_for_current_node:.3f}, OldW={current_node.total_value:.3f}, OldN={current_node.visit_count - 1}, NewW={current_node.total_value + value_for_current_node:.3f}, NewN={current_node.visit_count}"
+            )
+            # Standard MCTS backprop: Update W with value relative to player at node
+            current_node.total_value += value_for_current_node
 
-            # The value passed to the parent becomes the value estimate V(s) for the current node.
-            # This seems wrong. Let's rethink backprop.
+            # Flip perspective for parent in zero-sum game
+            value_for_current_node = -value_for_current_node
 
-            # Standard MCTS backprop:
-            # current_node.total_value += value
-            # value = -value # Flip for parent
-
-            # MuZero backprop (simplified):
-            # Update W using the value estimate from the leaf node.
-            # The value estimate needs to be relative to the player at each node.
-            current_node.total_value += value
-            # The value passed up should incorporate the reward received on the path.
-            value = current_node.reward + discount * value  # G = R + gamma*V
-
-            # Flip perspective for parent? MuZero often uses value relative to current player.
-            # If value is always relative to the player whose turn it is at the node, no flipping needed?
-            # Let's assume value is relative to the player at the node. Backprop needs care.
-
-            # Let's use AlphaZero backprop for now for simplicity, assuming zero-sum game.
-            # We'll need to revisit this if rewards aren't zero-sum or if using MuZero's value definition.
-            value = -value  # Flip for parent perspective in zero-sum game
+            # Incorporate reward? MuZero: G = R + gamma*V. W should sum G.
+            # If W sums G, then Q = W/N approximates G_avg.
+            # Backprop needs to pass G up.
+            # value_for_parent = current_node.reward + self.config.discount * value_for_current_node
+            # Let's stick to simple AZ backprop for now.
 
             current_node = current_node.parent
 
-    # TODO: This search implementation is a placeholder and needs significant refinement
-    # based on the MuZero paper / reference implementation, especially regarding:
-    # - Handling legal actions (either assuming all policy outputs are legal in latent space,
-    #   or predicting a mask).
-    # - Correct backpropagation incorporating rewards and value estimates.
-    # - Potentially different node selection criteria (e.g., PUCT variant).
     def search(
         self, observation_dict: dict, legal_actions: List[ActionType]
-    ) -> MuZeroMCTSNode:
+    ) -> MuZeroMCTSNode:  # Return type is just the node
         """
         Run MuZero MCTS search starting from a root observation.
 
@@ -563,103 +634,218 @@ class MuZeroMCTS:
         """
         self.reset_root()
         # --- Profiling Setup ---
-        total_network_time_ms = 0.0
-        search_timer = Timer() if SHOULD_PROFILE else contextlib.nullcontext()
+        self._current_search_net_time_ms = 0.0  # Reset accumulator
+        search_time_ms = 0.0
+        search_timer = Timer() if self.enable_profiling else contextlib.nullcontext()
         # --- End Profiling Setup ---
 
         with search_timer:
+            logger.debug(
+                f"--- MuZero MCTS Search Start: Obs={observation_dict}, Legal={legal_actions} ---"
+            )
+
             # Initial step: Get hidden state and initial prediction from observation
-            if SHOULD_PROFILE:
+            value, reward, policy_logits, hidden_state = (
+                None,
+                None,
+                None,
+                None,
+            )  # Initialize
+            if self.enable_profiling:
                 with Timer() as net_timer:
                     (
-                        value,
-                        sim_num,
-                        policy_logits,
-                        hidden_state,
+                        value,  # V(s_0)
+                        reward,  # r_0 (usually 0)
+                        policy_logits,  # p(a|s_0)
+                        hidden_state,  # h(o_1) -> s_0
                     ) = self.network.initial_inference(observation_dict)
-                total_network_time_ms += net_timer.elapsed_ms
-            else:
-                (
-                    value,
-                    sim_num,
-                    policy_logits,
-                    hidden_state,
-                ) = self.network.initial_inference(observation_dict)
-        self.root.hidden_state = hidden_state
-
-        # Use the provided legal actions for the root expansion
-        if not legal_actions:
-            print("Warning: No legal actions provided for MuZero MCTS root.")
-            # If root has no legal actions, MCTS cannot proceed meaningfully.
-            # Return the unexpanded root. The agent needs to handle this.
-            return self.root
-
-        self.root.expand(legal_actions, policy_logits, self.network)
-        # TODO: Add Dirichlet noise to root priors here if training
-
-        # Run simulations
-        for sim_num in range(self.config.num_simulations):
-            node = self.root
-            search_path = [node]  # Keep track of nodes visited
-
-            # 1. Selection: Traverse tree using PUCT until a leaf node is reached
-            while node.is_expanded():
-                action, node = self._select_child(node)
-                search_path.append(node)
-
-            # 2. Expansion & Evaluation: Expand leaf node, get prediction from network
-            parent = search_path[-2]  # Node from which the leaf was selected
-            leaf_node = search_path[-1]
-
-            # Use the parent's hidden state and the chosen action to get next state and reward via dynamics
-            # This requires the action index taken to reach the leaf node.
-            # Since children keys are ActionType, we need to find the action.
-            action_taken = None
-            for act, child in parent.children.items():
-                if child == leaf_node:
-                    action_taken = act
-                    break
-
-            if action_taken is None:
-                # Should not happen if selection works correctly
-                print(
-                    "Error: Could not find action leading to leaf node during MuZero search."
-                )
-                continue
-
-            # Infer next state, reward, policy, value using the learned model
-            # Profile recurrent inference if enabled
-            if SHOULD_PROFILE:
-                with Timer() as net_timer:
-                    (
-                        value,
-                        reward,
-                        policy_logits,
-                        next_hidden_state,
-                    ) = self.network.recurrent_inference(
-                        parent.hidden_state, action_taken
-                    )
-                total_network_time_ms += net_timer.elapsed_ms
+                self._current_search_net_time_ms += net_timer.elapsed_ms  # Accumulate
             else:
                 (
                     value,
                     reward,
                     policy_logits,
-                    next_hidden_state,
-                ) = self.network.recurrent_inference(parent.hidden_state, action_taken)
+                    hidden_state,
+                ) = self.network.initial_inference(
+                    observation_dict
+                )  # No timing
 
-            # Store results in the newly reached (or created) leaf node
-            leaf_node.hidden_state = next_hidden_state
-            leaf_node.reward = reward.item()  # Store reward obtained reaching this node
+            if hidden_state is None or policy_logits is None or value is None:
+                logger.error(
+                    "MuZero initial_inference failed to return expected values."
+                )
+                # Log timings even if inference failed before returning
+                if self.enable_profiling and isinstance(search_timer, Timer):
+                    search_time_ms = search_timer.elapsed_ms
+                    logger.info(
+                        f"MuZero MCTS Search Time (Inference Failed): {search_time_ms:.2f} ms"
+                    )
+                    logger.info(
+                        f"MuZero MCTS Network Time (Inference Failed): {self._current_search_net_time_ms:.2f} ms"
+                    )
+                return self.root  # Return the (likely empty) root
 
-            # Expand the leaf node using the predicted policy from the network.
-            # The expand method handles creating children based on the policy logits.
-            # It does NOT filter based on real environment legality here.
-            leaf_node.expand(policy_logits, self.network)
+            self.root.hidden_state = hidden_state
+            # Root node reward is typically 0 as no action led to it.
+            self.root.reward = reward.item() if reward is not None else 0.0
 
-            # --- Backpropagation ---
-            # Backpropagate the predicted value V(s_leaf)
-            self._backpropagate(leaf_node, value.item())  # Pass scalar value
+            # Use the provided legal actions for the root expansion
+            if not legal_actions:
+                logger.warning(
+                    "No legal actions provided for MuZero MCTS root. Search cannot proceed."
+                )
+                # Log timings even if no sims run
+                if self.enable_profiling and isinstance(search_timer, Timer):
+                    search_time_ms = search_timer.elapsed_ms
+                    logger.info(
+                        f"MuZero MCTS Search Time (No Legal Actions): {search_time_ms:.2f} ms"
+                    )
+                    logger.info(
+                        f"MuZero MCTS Network Time (No Legal Actions): {self._current_search_net_time_ms:.2f} ms"
+                    )
+                return self.root
 
-        # Return the root node containing search statistics
+            # Expand root using policy and filtering by legal_actions
+            self.root.expand(
+                policy_logits, self.network, legal_actions
+            )  # Pass list directly
+
+            # TODO: Add Dirichlet noise to root priors here if training
+
+            if not self.root.children:  # Check if root actually expanded
+                logger.warning(
+                    "MuZero MCTS root has no children after expansion (no legal actions had non-zero prior?)."
+                )
+                if self.enable_profiling and isinstance(search_timer, Timer):
+                    search_time_ms = search_timer.elapsed_ms
+                    logger.info(
+                        f"MuZero MCTS Search Time (No Root Children): {search_time_ms:.2f} ms"
+                    )
+                    logger.info(
+                        f"MuZero MCTS Network Time (No Root Children): {self._current_search_net_time_ms:.2f} ms"
+                    )
+                return self.root  # Return timings
+
+            # Run simulations
+            for sim_num in range(self.config.num_simulations):
+                logger.debug(
+                    f" MuZero Simulation {sim_num+1}/{self.config.num_simulations}"
+                )
+                node = self.root
+                search_path = [node]  # Keep track of nodes visited
+
+                # 1. Selection: Traverse tree using PUCT until a leaf node is reached
+                while node.is_expanded():
+                    action, next_node = self._select_child(node)
+                    if next_node is None:
+                        # Should not happen with checks, but handle defensively
+                        logger.error("MuZero selection failed.")
+                        break  # Exit this simulation
+                    logger.debug(
+                        f"  MuZero Select: Action={action}, ChildNode={next_node}"
+                    )
+                    node = next_node
+                    search_path.append(node)
+
+                if node is None:
+                    continue  # Skip backprop if selection failed
+
+                # 2. Expansion & Evaluation: Expand leaf node, get prediction from network
+                parent = search_path[-2] if len(search_path) > 1 else self.root
+                leaf_node = search_path[-1]
+
+                # Find action taken to reach the leaf node
+                action_taken = None
+                for act, child in parent.children.items():
+                    if child == leaf_node:
+                        action_taken = act
+                        break
+
+                if action_taken is None and leaf_node is not self.root:
+                    # Should not happen if selection works correctly
+                    logger.error(
+                        "Could not find action leading to leaf node during MuZero search."
+                    )
+                    continue  # Skip this simulation
+
+                # If leaf_node is root, value comes from initial_inference (already done)
+                # Otherwise, use recurrent_inference
+                leaf_value = 0.0  # Initialize
+                if leaf_node is not self.root:
+                    # Infer next state, reward, policy, value using the learned model
+                    value_rec, reward_rec, policy_logits_rec, next_hidden_state_rec = (
+                        None,
+                        None,
+                        None,
+                        None,
+                    )  # Initialize
+                    if self.enable_profiling:
+                        with Timer() as net_timer:
+                            (
+                                value_rec,  # V(s_k)
+                                reward_rec,  # R(s_{k-1}, a_k) -> r_k
+                                policy_logits_rec,  # p(a|s_k)
+                                next_hidden_state_rec,  # g(s_{k-1}, a_k) -> s_k
+                            ) = self.network.recurrent_inference(
+                                parent.hidden_state, action_taken
+                            )
+                        self._current_search_net_time_ms += (
+                            net_timer.elapsed_ms
+                        )  # Accumulate
+                    else:
+                        (
+                            value_rec,
+                            reward_rec,
+                            policy_logits_rec,
+                            next_hidden_state_rec,
+                        ) = self.network.recurrent_inference(
+                            parent.hidden_state, action_taken
+                        )  # No timing
+
+                    if (
+                        next_hidden_state_rec is None
+                        or policy_logits_rec is None
+                        or value_rec is None
+                    ):
+                        logger.error(
+                            "MuZero recurrent_inference failed to return expected values."
+                        )
+                        continue  # Skip this simulation
+
+                    # Store results in the newly reached (or created) leaf node
+                    leaf_node.hidden_state = next_hidden_state_rec
+                    leaf_node.reward = (
+                        reward_rec.item() if reward_rec is not None else 0.0
+                    )  # Store reward obtained *reaching* this node
+
+                    # Expand the leaf node using the predicted policy from the network.
+                    # No legal action filtering inside the tree.
+                    leaf_node.expand(
+                        policy_logits_rec, self.network
+                    )  # legal_actions=None
+                    leaf_value = value_rec.item()  # Use predicted value for backprop
+                    logger.debug(
+                        f"  MuZero Evaluate (Recurrent): Action={action_taken}, Reward={leaf_node.reward:.3f}, Value={leaf_value:.3f}"
+                    )
+
+                else:
+                    # If the loop terminated at the root (e.g., no children after expansion)
+                    # Use the value from initial_inference for backpropagation
+                    # Re-using 'value' from initial_inference call outside loop:
+                    leaf_value = value.item()  # Value from h(o) -> f(s_0)
+                    logger.debug(f"  MuZero Evaluate (Initial): Value={leaf_value:.3f}")
+
+                # --- Backpropagation ---
+                # Backpropagate the predicted value V(s_leaf)
+                self._backpropagate(leaf_node, leaf_value)  # Pass scalar value
+
+        # --- Log Timing Info ---
+        if self.enable_profiling and isinstance(search_timer, Timer):
+            search_time_ms = search_timer.elapsed_ms
+            logger.info(f"MuZero MCTS Search Time: {search_time_ms:.2f} ms")
+            logger.info(
+                f"MuZero MCTS Network Time: {self._current_search_net_time_ms:.2f} ms"
+            )
+        # --- End Log Timing Info ---
+
         return self.root
