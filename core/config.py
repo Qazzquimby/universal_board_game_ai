@@ -88,7 +88,7 @@ class TrainingConfig:
     # How often (in iterations) to run sanity checks (0=only at end, 1=every iteration)
     sanity_check_frequency: int = 5  # Run every 5 iterations
     # MCTS Profiling configuration
-    enable_mcts_profiling: bool = False # Set to True to enable MCTS timing
+    enable_mcts_profiling: bool = True
     # How often (in iterations) to report MCTS profiling stats (0=only at end)
     mcts_profiling_report_frequency: int = 10
 

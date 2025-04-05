@@ -65,7 +65,8 @@ def get_agents(env: BaseEnvironment, config: AppConfig) -> Dict[str, Agent]:
         )
     else:
         logger.info("Loaded pre-trained AlphaZero agent.")
-    az_agent.network.eval()  # Ensure network is in eval mode for evaluation
+    if az_agent.network:
+        az_agent.network.eval()
 
     # --- Benchmark MCTS Agent ---
     mcts_agent_name = f"MCTS_{config.mcts.num_simulations}"

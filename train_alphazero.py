@@ -254,90 +254,112 @@ def run_training(config: AppConfig, env_name_override: str = None):
     outer_loop_iterator = range(num_training_iterations)
 
     for iteration in outer_loop_iterator:
-        logger.info(f"\n--- Iteration {iteration + 1}/{num_training_iterations} ---")
-        iteration_timer = Timer()  # Time the whole iteration
+        # Start timer for the whole iteration
+        iteration_timer = Timer()
+        with iteration_timer:
+            logger.info(f"\n--- Iteration {iteration + 1}/{num_training_iterations} ---")
 
-        # 1. Self-Play Phase
-        agent.network.eval()  # Ensure network is in eval mode for self-play actions
-        logger.info("Running self-play games...")
-        current_iteration_games = 0
-        # Use enumerate to get game index for logging
-        inner_loop_iterator = (
-            tqdm(range(num_episodes_per_iteration), desc="Self-Play", leave=False)
-            if use_tqdm
-            else range(num_episodes_per_iteration)
-        )
-        with Timer() as self_play_timer:
-            for game_idx in inner_loop_iterator:
-                _, _, history = run_self_play_game(env, agent)
-                current_iteration_games += 1
-                # Save the game log after each game
-                save_game_log(history, iteration + 1, game_idx + 1, config.env.name)
-        logger.info(f"Self-Play Time: {self_play_timer.elapsed_ms:.2f} ms")
-        logger.info(
-            f"Completed {current_iteration_games} self-play games for iteration {iteration + 1}."
-        )
+            # 1. Self-Play Phase
+            if agent.network: # Check if network exists before setting mode
+                agent.network.eval()  # Ensure network is in eval mode for self-play actions
+            logger.info("Running self-play games...")
+            current_iteration_games = 0
 
-        # 2. Learning Phase
-        logger.info("Running learning step...")
-        loss_results = None
-        learn_timer = Timer()  # Use Timer directly
-        with learn_timer:
-            loss_results = agent.learn()
-        # Log learning time only if learning actually happened
-        if loss_results:
-            logger.info(f"Learning Time: {learn_timer.elapsed_ms:.2f} ms")
-            total_loss, value_loss, policy_loss = loss_results
-            total_losses.append(total_loss)
-            value_losses.append(value_loss)
-            policy_losses.append(policy_loss)
-        else:
-            logger.info("Learning Time: Skipped (buffer too small)")
+            # Get network time *before* self-play if profiling
+            net_time_before_self_play = 0.0
+            if agent.profiler:
+                net_time_before_self_play = agent.profiler.get_total_network_time()
 
-        # 3. Save Checkpoint Periodically
-        # TODO: Make save frequency configurable
-        if (iteration + 1) % 10 == 0:  # Save every 10 iterations
-            logger.info("Saving agent checkpoint...")
-            with Timer() as save_timer:
-                agent.save()
-            logger.info(f"Save Time: {save_timer.elapsed_ms:.2f} ms")
-
-        # Print buffer size and latest losses if available
-        buffer_size = len(agent.replay_buffer)
-        logger.info(
-            f"Iteration {iteration + 1} complete. Buffer size: {buffer_size}/{config.alpha_zero.replay_buffer_size}"
-        )
-        if total_losses:  # Check if any learning steps have occurred
-            logger.info(
-                f"  Latest Losses: Total={total_losses[-1]:.4f}, Value={value_losses[-1]:.4f}, Policy={policy_losses[-1]:.4f}"
+            # Use enumerate to get game index for logging
+            inner_loop_iterator = (
+                tqdm(range(num_episodes_per_iteration), desc="Self-Play", leave=False)
+                if use_tqdm
+                else range(num_episodes_per_iteration)
             )
-        else:
-            logger.info("  Latest Losses: (No learning step occurred)")
+            with Timer() as self_play_timer:
+                for game_idx in inner_loop_iterator:
+                    _, _, history = run_self_play_game(env, agent)
+                    current_iteration_games += 1
+                    # Save the game log after each game
+                    save_game_log(history, iteration + 1, game_idx + 1, config.env.name)
 
-        # --- Log MCTS Profiler Report ---
-        # Check if profiling is enabled and report periodically
-        report_freq = config.training.mcts_profiling_report_frequency
-        if agent.profiler and report_freq > 0 and (iteration + 1) % report_freq == 0:
+            # Log self-play duration and network time during self-play
+            logger.info(f"Self-Play Total Time: {self_play_timer.elapsed_ms:.2f} ms")
+            if agent.profiler:
+                net_time_after_self_play = agent.profiler.get_total_network_time()
+                self_play_network_time = net_time_after_self_play - net_time_before_self_play
+                # Log the network time spent specifically during this self-play phase
+                logger.info(f"Self-Play Network Time: {self_play_network_time:.2f} ms") # <-- Added this line
+            else:
+                # Add a log message indicating profiling was off for this part
+                logger.info("Self-Play Network Time: (Profiling Disabled)")
+
+
             logger.info(
-                "\n--- MCTS Profiling Stats (Last {} Iterations) ---".format(
-                    report_freq
+                f"Completed {current_iteration_games} self-play games for iteration {iteration + 1}."
+            )
+
+            # 2. Learning Phase
+            logger.info("Running learning step...")
+            loss_results = None
+            learn_timer = Timer()  # Use Timer directly
+            with learn_timer:
+                loss_results = agent.learn()
+            # Log learning time only if learning actually happened
+            if loss_results:
+                logger.info(f"Learning Time: {learn_timer.elapsed_ms:.2f} ms")
+                total_loss, value_loss, policy_loss = loss_results
+                total_losses.append(total_loss)
+                value_losses.append(value_loss)
+                policy_losses.append(policy_loss)
+            else:
+                logger.info("Learning Time: Skipped (buffer too small)")
+
+            # 3. Save Checkpoint Periodically
+            # TODO: Make save frequency configurable
+            if (iteration + 1) % 10 == 0:  # Save every 10 iterations
+                logger.info("Saving agent checkpoint...")
+                with Timer() as save_timer:
+                    agent.save()
+                logger.info(f"Save Time: {save_timer.elapsed_ms:.2f} ms")
+
+            # Print buffer size and latest losses if available
+            buffer_size = len(agent.replay_buffer)
+            logger.info(
+                f"Iteration {iteration + 1} complete. Buffer size: {buffer_size}/{config.alpha_zero.replay_buffer_size}"
+            )
+            if total_losses:  # Check if any learning steps have occurred
+                logger.info(
+                    f"  Latest Losses: Total={total_losses[-1]:.4f}, Value={value_losses[-1]:.4f}, Policy={policy_losses[-1]:.4f}"
                 )
-            )
-            logger.info(agent.profiler.report())  # Log the aggregated report
-            agent.profiler.reset()  # Reset for the next reporting period
-        # --- End MCTS Profiler Report ---
+            else:
+                logger.info("  Latest Losses: (No learning step occurred)")
 
-        # 4. Run Sanity Checks Periodically (and not on first iteration if frequency > 1)
-        if (
-            config.training.sanity_check_frequency > 0
-            and (iteration + 1) % config.training.sanity_check_frequency == 0
-        ):
-            with Timer() as sanity_timer:
-                run_sanity_checks(env, agent)  # Run checks on the current agent state
-            logger.info(f"Sanity Check Time: {sanity_timer.elapsed_ms:.2f} ms")
+            # --- Log MCTS Profiler Report ---
+            # Check if profiling is enabled and report periodically
+            report_freq = config.training.mcts_profiling_report_frequency
+            if agent.profiler and report_freq > 0 and (iteration + 1) % report_freq == 0:
+                logger.info(
+                    "\n--- MCTS Profiling Stats (Last {} Iterations) ---".format(
+                        report_freq
+                    )
+                )
+                logger.info(agent.profiler.report())  # Log the aggregated report
+                agent.profiler.reset()  # Reset for the next reporting period
+            # --- End MCTS Profiler Report ---
 
-        # Log total iteration time
+            # 4. Run Sanity Checks Periodically (and not on first iteration if frequency > 1)
+            if (
+                config.training.sanity_check_frequency > 0
+                and (iteration + 1) % config.training.sanity_check_frequency == 0
+            ):
+                with Timer() as sanity_timer:
+                    run_sanity_checks(env, agent)  # Run checks on the current agent state
+                logger.info(f"Sanity Check Time: {sanity_timer.elapsed_ms:.2f} ms")
+
+        # Log total iteration time *after* the 'with iteration_timer' block finishes
         logger.info(f"Total Iteration Time: {iteration_timer.elapsed_ms:.2f} ms")
+
 
     logger.info("\nTraining complete. Saving final agent state.")
     agent.save()
