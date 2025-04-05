@@ -32,7 +32,6 @@ class MCTSConfig:
     exploration_constant: float = 1.41
     discount_factor: float = 1.0  # Discount within the search tree
     num_simulations: int = 100  # Default simulations for the benchmark MCTS
-    debug: bool = False  # Flag for detailed MCTS logging
 
 
 @dataclass
@@ -88,6 +87,10 @@ class TrainingConfig:
     num_epochs_per_iteration: int = 4  # Increased epochs
     # How often (in iterations) to run sanity checks (0=only at end, 1=every iteration)
     sanity_check_frequency: int = 5  # Run every 5 iterations
+    # MCTS Profiling configuration
+    enable_mcts_profiling: bool = False # Set to True to enable MCTS timing
+    # How often (in iterations) to report MCTS profiling stats (0=only at end)
+    mcts_profiling_report_frequency: int = 10
 
 
 # --- Evaluation Configuration ---

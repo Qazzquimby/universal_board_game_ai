@@ -1,23 +1,17 @@
 import sys
 import json
 import datetime
-from pathlib import Path
-from typing import Tuple, List, Dict, Any
-import time # Import time for overall timing
-import contextlib # Import contextlib for nullcontext
+from typing import Tuple, List
 
-import torch.optim as optim
 import numpy as np
 from tqdm import tqdm
 from loguru import logger
 
-
 from core.config import AppConfig, DATA_DIR
 from environments.base import BaseEnvironment, StateType, ActionType
 from agents.alphazero_agent import AlphaZeroAgent
-from factories import get_environment
-from utils.plotting import plot_losses  # Import the new plotting function
-# Import Timer from mcts module
+from factories import get_environment, get_agents
+from utils.plotting import plot_losses
 from algorithms.mcts import Timer
 
 LOG_DIR = DATA_DIR / "game_logs"
@@ -49,6 +43,7 @@ def run_self_play_game(
         current_player = env.get_current_player()
         state = obs
 
+        # agent.act now uses the profiler internally if it exists
         action = agent.act(state, train=True)
 
         if action is None:
@@ -130,7 +125,9 @@ def save_game_log(
             json.dump(serializable_history, f, indent=2, default=_default_serializer)
 
     except Exception as e:
-        logger.error(f"Error saving game log for iter {iteration}, game {game_index}: {e}")
+        logger.error(
+            f"Error saving game log for iter {iteration}, game {game_index}: {e}"
+        )
 
 
 def load_game_logs_into_buffer(agent: AlphaZeroAgent, env_name: str, buffer_limit: int):
@@ -226,17 +223,12 @@ def run_training(config: AppConfig, env_name_override: str = None):
 
     # --- Instantiation ---
     env = get_environment(config.env)
-    # Pass env, agent config, and training config to the agent
-    agent = AlphaZeroAgent(env, config.alpha_zero, config.training)
+    agents = get_agents(env, config)
+    agent = agents.get("AlphaZero")
 
-    # --- Training Setup ---
-    # Try loading existing weights
-    if not agent.load():
-        logger.info("No pre-trained weights found. Starting training from scratch.")
-    else:
-        logger.info("Loaded existing weights. Continuing training.")
-
-    # Optimizer is managed internally by the agent
+    if not isinstance(agent, AlphaZeroAgent):
+        logger.error("Failed to retrieve AlphaZeroAgent from factory.")
+        return
 
     # --- Load Existing Game Logs into Buffer ---
     load_game_logs_into_buffer(
@@ -247,7 +239,9 @@ def run_training(config: AppConfig, env_name_override: str = None):
     num_training_iterations = config.training.num_iterations
     num_episodes_per_iteration = config.training.num_episodes_per_iteration
 
-    logger.info(f"Starting AlphaZero training for {num_training_iterations} iterations...")
+    logger.info(
+        f"Starting AlphaZero training for {num_training_iterations} iterations..."
+    )
     logger.info(f"({num_episodes_per_iteration} self-play games per iteration)")
 
     # Lists to store losses for plotting
@@ -259,10 +253,9 @@ def run_training(config: AppConfig, env_name_override: str = None):
     use_tqdm = not config.smoke_test
     outer_loop_iterator = range(num_training_iterations)
 
-
     for iteration in outer_loop_iterator:
         logger.info(f"\n--- Iteration {iteration + 1}/{num_training_iterations} ---")
-        iteration_timer = Timer() # Time the whole iteration
+        iteration_timer = Timer()  # Time the whole iteration
 
         # 1. Self-Play Phase
         agent.network.eval()  # Ensure network is in eval mode for self-play actions
@@ -288,7 +281,7 @@ def run_training(config: AppConfig, env_name_override: str = None):
         # 2. Learning Phase
         logger.info("Running learning step...")
         loss_results = None
-        learn_timer = Timer() # Use Timer directly
+        learn_timer = Timer()  # Use Timer directly
         with learn_timer:
             loss_results = agent.learn()
         # Log learning time only if learning actually happened
@@ -300,7 +293,6 @@ def run_training(config: AppConfig, env_name_override: str = None):
             policy_losses.append(policy_loss)
         else:
             logger.info("Learning Time: Skipped (buffer too small)")
-
 
         # 3. Save Checkpoint Periodically
         # TODO: Make save frequency configurable
@@ -320,8 +312,20 @@ def run_training(config: AppConfig, env_name_override: str = None):
                 f"  Latest Losses: Total={total_losses[-1]:.4f}, Value={value_losses[-1]:.4f}, Policy={policy_losses[-1]:.4f}"
             )
         else:
-             logger.info("  Latest Losses: (No learning step occurred)")
+            logger.info("  Latest Losses: (No learning step occurred)")
 
+        # --- Log MCTS Profiler Report ---
+        # Check if profiling is enabled and report periodically
+        report_freq = config.training.mcts_profiling_report_frequency
+        if agent.profiler and report_freq > 0 and (iteration + 1) % report_freq == 0:
+            logger.info(
+                "\n--- MCTS Profiling Stats (Last {} Iterations) ---".format(
+                    report_freq
+                )
+            )
+            logger.info(agent.profiler.report())  # Log the aggregated report
+            agent.profiler.reset()  # Reset for the next reporting period
+        # --- End MCTS Profiler Report ---
 
         # 4. Run Sanity Checks Periodically (and not on first iteration if frequency > 1)
         if (
@@ -329,12 +333,11 @@ def run_training(config: AppConfig, env_name_override: str = None):
             and (iteration + 1) % config.training.sanity_check_frequency == 0
         ):
             with Timer() as sanity_timer:
-                run_sanity_checks(env, agent) # Run checks on the current agent state
+                run_sanity_checks(env, agent)  # Run checks on the current agent state
             logger.info(f"Sanity Check Time: {sanity_timer.elapsed_ms:.2f} ms")
 
         # Log total iteration time
         logger.info(f"Total Iteration Time: {iteration_timer.elapsed_ms:.2f} ms")
-
 
     logger.info("\nTraining complete. Saving final agent state.")
     agent.save()
@@ -349,6 +352,13 @@ def run_training(config: AppConfig, env_name_override: str = None):
     logger.info("\n--- Running Final Sanity Checks ---")
     run_sanity_checks(env, agent)
 
+    # --- Optional: Final MCTS Profiler Report ---
+    # Log any remaining stats if the loop didn't end on a reporting interval
+    if agent.profiler and agent.profiler.get_num_searches() > 0:
+        logger.info("\n--- Final MCTS Profiler Stats (Since Last Report) ---")
+        logger.info(agent.profiler.report())
+    # --- End Final Report ---
+
     logger.info("\n--- AlphaZero Training Finished ---")
 
 
@@ -357,6 +367,11 @@ def run_sanity_checks(env: BaseEnvironment, agent: AlphaZeroAgent):
     """Runs network predictions on predefined sanity check states."""
     logger.info("\n--- Running Periodic Sanity Checks ---")
     sanity_states = env.get_sanity_check_states()
+
+    if not agent.network:
+        logger.warning("Cannot run sanity checks: Agent network not initialized.")
+        return
+
     agent.network.eval()  # Ensure network is in eval mode
 
     if not sanity_states:
@@ -368,7 +383,9 @@ def run_sanity_checks(env: BaseEnvironment, agent: AlphaZeroAgent):
         # Print board/piles for context
         if "board" in check_case.state:
             logger.info("Board:")
-            logger.info(f"\n{check_case.state['board']}") # Add newline for better formatting
+            logger.info(
+                f"\n{check_case.state['board']}"
+            )  # Add newline for better formatting
         elif "piles" in check_case.state:
             logger.info(f"Piles: {check_case.state['piles']}")
         logger.info(f"Current Player: {check_case.state['current_player']}")
@@ -423,5 +440,15 @@ if __name__ == "__main__":
     # --- Environment Selection (Optional: Add CLI arg parsing) ---
     if len(sys.argv) > 1:
         env_override = sys.argv[1]  # e.g., python train_alphazero.py Nim
+
+    # --- Loguru Configuration ---
+    # Remove the default handler to prevent duplicate messages if re-adding stderr
+    logger.remove()
+    # Add a handler for standard error (console) with level INFO or higher
+    # This will automatically filter out DEBUG messages.
+    logger.add(sys.stderr, level="INFO")
+    # You could also add file logging here if needed:
+    # logger.add("file_{time}.log", level="INFO")
+    # --- End Loguru Configuration ---
 
     run_training(config, env_name_override=env_override)

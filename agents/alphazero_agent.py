@@ -9,10 +9,11 @@ from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 import torch.nn.functional as F
 import numpy as np
+from loguru import logger
 
 from core.agent_interface import Agent
 from environments.base import BaseEnvironment, StateType, ActionType
-from algorithms.mcts import AlphaZeroMCTS
+from algorithms.mcts import AlphaZeroMCTS, MCTSProfiler
 from models.networks import AlphaZeroNet
 from core.config import AlphaZeroConfig, DATA_DIR, TrainingConfig
 
@@ -49,6 +50,7 @@ class AlphaZeroAgent(Agent):
         env: BaseEnvironment,
         config: AlphaZeroConfig,
         training_config: TrainingConfig,
+        profiler: Optional[MCTSProfiler] = None,  # Add profiler argument
     ):
         """
         Initialize the AlphaZero agent.
@@ -57,10 +59,12 @@ class AlphaZeroAgent(Agent):
             env: The environment instance.
             config: Configuration object with AlphaZero parameters.
             training_config: Configuration object with general training parameters.
+            profiler: An optional MCTSProfiler instance for collecting timing data.
         """
         self.env = env
         self.config = config
         self.training_config = training_config  # Store training config
+        self.profiler = profiler  # Store the profiler instance
 
         if self.config.should_use_network:
             self.network = AlphaZeroNet(
@@ -74,17 +78,18 @@ class AlphaZeroAgent(Agent):
         else:
             self.network = None
 
+        # Pass the stored profiler instance to the MCTS constructor
         self.mcts = AlphaZeroMCTS(
             exploration_constant=config.cpuct,
             num_simulations=config.num_simulations,
             network=self.network,
+            profiler=self.profiler  # Pass it here
             # TODO: Add dirichlet noise parameters from config if/when implemented
         )
 
         # Learning:
 
         # Experience buffer for training (stores (state, policy_target, value))
-        # TODO: Make buffer size configurable
         self.replay_buffer = deque(maxlen=config.replay_buffer_size)
         self._current_episode_history = []
 
@@ -125,11 +130,11 @@ class AlphaZeroAgent(Agent):
         if self.config.debug_mode and self.network:
             try:
                 policy_np, value_np = self.network.predict(state)
-                print(
+                logger.debug(
                     f"[DEBUG Act] State: {state.get('board', state.get('piles', 'N/A'))}"
                 )
-                print(f"[DEBUG Act] To Play: {state['current_player']}")
-                print(f"[DEBUG Act] Network Value Prediction: {value_np:.4f}")
+                logger.debug(f"[DEBUG Act] To Play: {state['current_player']}")
+                logger.debug(f"[DEBUG Act] Network Value Prediction: {value_np:.4f}")
                 legal_actions = self.env.get_legal_actions()
                 action_probs = {}
                 for action in legal_actions:
@@ -140,17 +145,18 @@ class AlphaZeroAgent(Agent):
                     action_probs.items(), key=lambda item: item[1], reverse=True
                 )
                 top_k = 5
-                print(f"[DEBUG Act] Network Policy Priors (Top {top_k} Legal):")
+                logger.debug(f"[DEBUG Act] Network Policy Priors (Top {top_k} Legal):")
                 for action, prob in sorted_probs[:top_k]:
-                    print(f"  - {action}: {prob:.4f}")
+                    logger.debug(f"  - {action}: {prob:.4f}")
             except Exception as e:
-                print(f"[DEBUG Act] Error during network predict debug: {e}")
+                logger.error(f"[DEBUG Act] Error during network predict debug: {e}")
 
+        # MCTS search now uses the profiler internally if it exists
         root_node = self.mcts.search(self.env, state)
 
         if not root_node.children:
-            print(
-                "Warning: MCTS root has no children after search. Choosing random action."
+            logger.warning(
+                "MCTS root has no children after search. Choosing random action."
             )
             temp_env = self.env.copy()
             temp_env.set_state(state)
@@ -181,10 +187,10 @@ class AlphaZeroAgent(Agent):
                             len(actions), p=action_probs
                         )
                     except ValueError as e:
-                        print(
-                            f"Warning: Error during np.random.choice (probs might not sum to 1?): {e}"
+                        logger.warning(
+                            f"Error during np.random.choice (probs might not sum to 1?): {e}"
                         )
-                        print(
+                        logger.warning(
                             f"Action probs: {action_probs}, Sum: {np.sum(action_probs)}"
                         )
                         chosen_action_index = np.argmax(
@@ -192,8 +198,8 @@ class AlphaZeroAgent(Agent):
                         )  # Fallback to greedy
                 else:
                     # Fallback if sum is zero (e.g., only one action, one visit?) - choose greedily
-                    print(
-                        "Warning: Sum of visit counts with temperature was zero. Choosing greedily."
+                    logger.warning(
+                        "Sum of visit counts with temperature was zero. Choosing greedily."
                     )
                     chosen_action_index = np.argmax(visit_counts)
             else:
@@ -207,13 +213,13 @@ class AlphaZeroAgent(Agent):
 
         # --- Optional Debug Print: MCTS Results ---
         if self.config.debug_mode:
-            print(f"[DEBUG Act] MCTS Visit Counts:")
+            logger.debug(f"[DEBUG Act] MCTS Visit Counts:")
             sorted_visits = sorted(
                 zip(actions, visit_counts), key=lambda item: item[1], reverse=True
             )
             for action, visits in sorted_visits:
-                print(f"  - {action}: {visits}")
-            print(f"[DEBUG Act] Chosen Action (Train={train}): {chosen_action}")
+                logger.debug(f"  - {action}: {visits}")
+            logger.debug(f"[DEBUG Act] Chosen Action (Train={train}): {chosen_action}")
 
         # --- Store data for training if in training mode ---
         if train:
@@ -235,29 +241,58 @@ class AlphaZeroAgent(Agent):
         if self.network:
             policy_size = self.network._calculate_policy_size(self.env)
         else:
-            policy_size = len(self.env.get_legal_actions())
+            # Estimate policy size based on max possible actions if no network
+            # This is less ideal, but needed for the fallback case
+            # A better approach might be to require the network or pass policy size explicitly
+            try:
+                policy_size = self.env.policy_vector_size
+            except AttributeError:
+                logger.error(
+                    "Cannot determine policy size without network or env.policy_vector_size"
+                )
+                return np.array([])  # Return empty array on error
+
         policy_target = np.zeros(policy_size, dtype=np.float32)
         total_visits = np.sum(visit_counts)
 
         if total_visits > 0:
-            # Use the network's action mapping
-            for i, action in enumerate(actions):
-                action_key = tuple(action) if isinstance(action, list) else action
-                # Get index from the network
-                action_idx = self.network.get_action_index(action_key)
+            # Use the network's action mapping if available
+            if self.network:
+                for i, action in enumerate(actions):
+                    action_key = tuple(action) if isinstance(action, list) else action
+                    # Get index from the network
+                    action_idx = self.network.get_action_index(action_key)
 
-                if action_idx is not None and 0 <= action_idx < policy_size:
-                    policy_target[action_idx] = visit_counts[i] / total_visits
+                    if action_idx is not None and 0 <= action_idx < policy_size:
+                        policy_target[action_idx] = visit_counts[i] / total_visits
+                    else:
+                        logger.warning(
+                            f"Action {action_key} could not be mapped to index during policy target calculation."
+                        )
+            else:
+                # Fallback if no network: Assume actions are indices directly? Risky.
+                # Or try mapping via env if available?
+                if hasattr(self.env, "map_action_to_policy_index"):
+                    for i, action in enumerate(actions):
+                        action_key = (
+                            tuple(action) if isinstance(action, list) else action
+                        )
+                        action_idx = self.env.map_action_to_policy_index(action_key)
+                        if action_idx is not None and 0 <= action_idx < policy_size:
+                            policy_target[action_idx] = visit_counts[i] / total_visits
+                        else:
+                            logger.warning(
+                                f"Action {action_key} could not be mapped via env during policy target calculation."
+                            )
                 else:
-                    # This warning might still occur if get_action_index fails for a valid action
-                    print(
-                        f"Warning: Action {action_key} could not be mapped to index during policy target calculation."
+                    logger.error(
+                        "Cannot calculate policy target without network or env mapping."
                     )
+
         else:
             # Handle case with no visits (should be rare if search runs)
-            # Maybe return uniform distribution over legal actions? Or zeros?
-            print(
-                "Warning: No visits recorded in MCTS root. Policy target will be zeros."
+            logger.warning(
+                "No visits recorded in MCTS root. Policy target will be zeros."
             )
 
         return policy_target
@@ -289,14 +324,14 @@ class AlphaZeroAgent(Agent):
             elif player_at_step == 1:
                 value_target = -final_outcome  # Flip outcome for opponent
             else:
-                print(
-                    f"Warning: Unknown player {player_at_step} at step {i}. Assigning value target 0.0."
+                logger.warning(
+                    f"Unknown player {player_at_step} at step {i}. Assigning value target 0.0."
                 )
                 value_target = 0.0
 
             # --- Debug Print: Check Value Target Assignment ---
             if self.config.debug_mode and i < 5:  # Print for first few steps
-                print(
+                logger.debug(
                     f"[DEBUG finish_episode] Step {i}: Player={player_at_step}, FinalOutcome(P0)={final_outcome}, AssignedValue={value_target}"
                 )
             # --- End Debug Print ---
@@ -354,8 +389,12 @@ class AlphaZeroAgent(Agent):
         Update the neural network by training for multiple epochs over the replay buffer.
         Returns average losses for the learning step.
         """
+        if not self.network or not self.optimizer:
+            logger.warning("Cannot learn: Network or optimizer not initialized.")
+            return None
+
         if len(self.replay_buffer) < self.config.batch_size:
-            print(
+            logger.info(
                 f"Skipping learn step: Buffer size {len(self.replay_buffer)} < Batch size {self.config.batch_size}"
             )
             return None  # Indicate no learning happened
@@ -428,7 +467,7 @@ class AlphaZeroAgent(Agent):
 
             if self.config.debug_mode:
                 current_lr = self.optimizer.param_groups[0]["lr"]
-                print(
+                logger.debug(
                     f"[DEBUG Learn] Epoch {epoch+1}/{num_epochs} Avg Losses: "
                     f"Total={total_loss_batches / batches_in_epoch:.4f}, "
                     f"Value={value_loss_batches / batches_in_epoch:.4f}, "
@@ -443,14 +482,14 @@ class AlphaZeroAgent(Agent):
             final_value_loss = value_loss_epoch_avg / epochs_done
             final_policy_loss = policy_loss_epoch_avg / epochs_done
 
-            print(
+            logger.info(
                 f"Learn Step Summary ({epochs_done} epochs): Avg Losses: "
                 f"Total={final_total_loss:.4f}, Value={final_value_loss:.4f}, Policy={final_policy_loss:.4f}"
             )
 
             return final_total_loss, final_value_loss, final_policy_loss
         else:
-            print("Warning: No epochs completed in learn step.")
+            logger.warning("No epochs completed in learn step.")
             return None  # Indicate no learning happened
 
     def _get_save_path(self) -> Path:
@@ -461,16 +500,22 @@ class AlphaZeroAgent(Agent):
 
     def save(self) -> None:
         """Save the neural network weights."""
+        if not self.network:
+            logger.warning("Cannot save: Network not initialized.")
+            return
         filepath = self._get_save_path()
         try:
             DATA_DIR.mkdir(parents=True, exist_ok=True)
             torch.save(self.network.state_dict(), filepath)
-            print(f"AlphaZero network saved to {filepath}")
+            logger.info(f"AlphaZero network saved to {filepath}")
         except Exception as e:
-            print(f"Error saving AlphaZero network to {filepath}: {e}")
+            logger.error(f"Error saving AlphaZero network to {filepath}: {e}")
 
     def load(self) -> bool:
         """Load the neural network weights."""
+        if not self.network:
+            logger.warning("Cannot load: Network not initialized.")
+            return False
         filepath = self._get_save_path()
         try:
             if filepath.exists():
@@ -482,34 +527,16 @@ class AlphaZeroAgent(Agent):
                 )
                 # self.network.to(self.device) # Move to target device if needed
                 self.network.eval()  # Set to evaluation mode after loading
-                print(f"AlphaZero network loaded from {filepath}")
+                logger.info(f"AlphaZero network loaded from {filepath}")
                 return True
             else:
-                print(f"Network weights file not found: {filepath}")
+                logger.info(f"Network weights file not found: {filepath}")
                 return False
         except Exception as e:
-            print(f"Error loading AlphaZero network from {filepath}: {e}")
+            logger.error(f"Error loading AlphaZero network from {filepath}: {e}")
             return False
 
     def reset(self) -> None:
         """Reset agent state (e.g., MCTS tree, episode history)."""
         self.mcts.reset_root()
         self._current_episode_history = []  # Clear temp history on reset
-
-    # --- Helper methods (potentially needed later) ---
-    # TODO: Move action mapping logic here or into network/utils
-    # def _map_action_to_policy_index(self, action: ActionType) -> Optional[int]:
-    #     """Maps an environment action to the corresponding index in the policy vector."""
-    #     # This needs to be implemented based on how actions are structured
-    #     # and how the policy head is defined in AlphaZeroNet.
-    #     # Example for a grid game: return action[0] * self.env.board_size + action[1]
-    #     # Example for Nim: Needs careful mapping based on max pile size etc.
-    #     # Needs to match the logic in AlphaZeroNet._calculate_policy_size
-    #     print(f"Warning: _map_action_to_policy_index not implemented for action {action}")
-    #     return None
-    #
-    # def _map_policy_index_to_action(self, index: int) -> Optional[ActionType]:
-    #     """Maps a policy vector index back to an environment action."""
-    #     # Inverse of the above mapping.
-    #     print(f"Warning: _map_policy_index_to_action not implemented for index {index}")
-    #     return None

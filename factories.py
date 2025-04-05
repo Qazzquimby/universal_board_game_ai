@@ -1,4 +1,5 @@
-from typing import Dict
+from typing import Dict, Optional
+from loguru import logger
 
 from core.agent_interface import Agent
 from core.config import (
@@ -10,6 +11,7 @@ from environments.connect4 import Connect4
 from environments.nim_env import NimEnv
 from agents.mcts_agent import MCTSAgent
 from agents.alphazero_agent import AlphaZeroAgent
+from algorithms.mcts import MCTSProfiler
 
 # Import MuZeroAgent when ready
 # from agents.muzero_agent import MuZeroAgent
@@ -19,7 +21,9 @@ def get_environment(env_config: EnvConfig) -> BaseEnvironment:
     """Factory function to create environment instances."""
     if env_config.name.lower() == "connect4":
         # Use connect4 specific dimensions from config
-        print(f"Using connect4 environment ({env_config.width}x{env_config.height})")
+        logger.info(
+            f"Using connect4 environment ({env_config.width}x{env_config.height})"
+        )
         return Connect4(
             width=env_config.width,
             height=env_config.height,
@@ -27,7 +31,7 @@ def get_environment(env_config: EnvConfig) -> BaseEnvironment:
             max_steps=env_config.max_steps,
         )
     elif env_config.name.lower() == "nim":
-        print(f"Using Nim environment with piles: {env_config.nim_piles}")
+        logger.info(f"Using Nim environment with piles: {env_config.nim_piles}")
         return NimEnv(
             initial_piles=env_config.nim_piles, num_players=env_config.num_players
         )
@@ -38,18 +42,29 @@ def get_environment(env_config: EnvConfig) -> BaseEnvironment:
 def get_agents(env: BaseEnvironment, config: AppConfig) -> Dict[str, Agent]:
     """Factory function to create agent instances for the given environment."""
 
-    # QLearning and Random agents removed from evaluation setup
+    profiler: Optional[MCTSProfiler] = None  # Initialize profiler variable
+
+    # Decide whether to enable profiling based on the config flag
+    if config.training.enable_mcts_profiling:
+        logger.info("MCTS Profiling enabled.")
+        profiler = MCTSProfiler()  # Create the profiler instance
 
     # --- AlphaZero Agent Initialization ---
     # Instantiate AlphaZero agent and attempt to load weights.
     # Training should happen separately via train_alphazero.py
-    az_agent = AlphaZeroAgent(env, config.alpha_zero)
+    # Pass the profiler instance to the agent's constructor
+    az_agent = AlphaZeroAgent(
+        env,
+        config.alpha_zero,
+        config.training,
+        profiler=profiler,  # Pass the created profiler here (can be None)
+    )
     if not az_agent.load():
-        print(
-            "WARNING: Could not load pre-trained AlphaZero weights. Agent will play randomly/poorly."
+        logger.warning(
+            "Could not load pre-trained AlphaZero weights. Agent will play randomly/poorly."
         )
     else:
-        print("Loaded pre-trained AlphaZero agent.")
+        logger.info("Loaded pre-trained AlphaZero agent.")
     az_agent.network.eval()  # Ensure network is in eval mode for evaluation
 
     # --- Benchmark MCTS Agent ---
@@ -64,5 +79,14 @@ def get_agents(env: BaseEnvironment, config: AppConfig) -> Dict[str, Agent]:
         "AlphaZero": az_agent,
         mcts_agent_name: mcts_agent,
     }
+
+    # --- MuZero Agent (Example) ---
+    # if config.training.agent_type == "muzero" or ... :
+    #     mz_agent = MuZeroAgent(
+    #         env,
+    #         config.muzero,
+    #         profiler=profiler # Pass the same profiler if needed
+    #     )
+    #     agents["muzero"] = mz_agent
 
     return agents

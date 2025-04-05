@@ -13,7 +13,6 @@ class MCTSAgent(Agent):
         env: BaseEnvironment,  # Use EnvInterface
         num_simulations: int = 100,
         exploration_constant: float = 1.41,
-        debug: bool = False, # Add debug flag
     ):
         """
         Args:
@@ -27,7 +26,6 @@ class MCTSAgent(Agent):
             num_simulations=num_simulations,
             exploration_constant=exploration_constant,
             discount_factor=1.0,
-            debug=debug # Pass debug flag to MCTS
         )
 
     def act(self, state: StateType) -> ActionType:
