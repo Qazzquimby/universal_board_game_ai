@@ -1,6 +1,8 @@
 import random
 
-from algorithms.mcts import MCTS, MCTSNode
+from loguru import logger
+
+from algorithms.mcts import MCTS
 from core.agent_interface import Agent
 from environments.base import BaseEnvironment, StateType, ActionType
 
@@ -63,11 +65,7 @@ class MCTSAgent(Agent):
             action: node.visit_count for action, node in root_node.children.items()
         }
         best_action = max(child_visits, key=child_visits.get)
-        # Only print summary if debug is off (detailed logs are in MCTS class)
-        if not self.mcts.debug:
-            print(f"--- MCTS Agent Act: State={state} ---")
-            print(f"  Root Child Visits: {child_visits}")
-            print(f"  Chosen Action (Max Visits): {best_action}")
+
         return best_action
 
     def reset(self) -> None:

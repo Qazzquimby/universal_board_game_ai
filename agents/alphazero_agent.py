@@ -2,6 +2,7 @@ import random
 from pathlib import Path
 from collections import deque
 from typing import List, Tuple, Optional
+from dataclasses import dataclass
 
 import torch
 from torch import optim
@@ -40,6 +41,14 @@ class ReplayBufferDataset(Dataset):
                 [value_target], dtype=torch.float32
             ),  # Ensure value is shape [1]
         )
+
+
+@dataclass
+class EpisodeResult:
+    """Holds the results of a finished self-play episode."""
+
+    buffer_experiences: List[Tuple[StateType, np.ndarray, float]]
+    logged_history: List[Tuple[StateType, ActionType, np.ndarray, float]]
 
 
 class AlphaZeroAgent(Agent):
@@ -297,20 +306,21 @@ class AlphaZeroAgent(Agent):
 
         return policy_target
 
-    def finish_episode(self, final_outcome: float):
+    def finish_episode(self, final_outcome: float) -> EpisodeResult:
         """
         Called at the end of a self-play episode. Assigns the final outcome
-        to all steps in the temporary history, adds the necessary data to the
-        replay buffer, and returns the complete game history for logging.
+        to all steps in the temporary history, prepares data for buffer and logging,
+        and returns the results in an EpisodeResult object.
 
         Args:
             final_outcome: The outcome for player 0 (+1 win, -1 loss, 0 draw).
 
         Returns:
-            List[Tuple[StateType, ActionType, np.ndarray, float]]: The full game history,
-                where each tuple is (state, action, policy_target, value_target).
+            EpisodeResult: An object containing lists of experiences for the
+                           replay buffer and the raw history for logging.
         """
-        processed_history = []
+        buffer_experiences = []
+        logged_history = []
         num_steps = len(self._current_episode_history)
 
         for i, (state_at_step, action_taken, policy_target) in enumerate(
@@ -329,12 +339,10 @@ class AlphaZeroAgent(Agent):
                 )
                 value_target = 0.0
 
-            # --- Debug Print: Check Value Target Assignment ---
-            if self.config.debug_mode and i < 5:  # Print for first few steps
+            if i < 5:  # Print for first few steps
                 logger.debug(
                     f"[DEBUG finish_episode] Step {i}: Player={player_at_step}, FinalOutcome(P0)={final_outcome}, AssignedValue={value_target}"
                 )
-            # --- End Debug Print ---
 
             # --- Standardize state before adding to buffer ---
             # Ensure board/piles are numpy arrays for consistent network input processing
@@ -353,18 +361,26 @@ class AlphaZeroAgent(Agent):
                 # NimEnv currently returns tuple, convert it
                 buffer_state["piles"] = np.array(buffer_state["piles"], dtype=np.int32)
 
-            # Add the experience tuple (standardized_state, policy_target, value_target) to replay buffer
-            self.replay_buffer.append((buffer_state, policy_target, value_target))
+            # Prepare the experience tuple for the buffer
+            buffer_experiences.append((buffer_state, policy_target, value_target))
 
             # Store the original step info (without modification) for the returned history log
-            processed_history.append(
+            logged_history.append(
                 (state_at_step, action_taken, policy_target, value_target)
             )
 
         # Clear the temporary history *after* processing
         self._current_episode_history = []
 
-        return processed_history
+        return EpisodeResult(
+            buffer_experiences=buffer_experiences, logged_history=logged_history
+        )
+
+    def add_experiences_to_buffer(
+        self, experiences: List[Tuple[StateType, np.ndarray, float]]
+    ):
+        """Adds a list of experiences to the replay buffer."""
+        self.replay_buffer.extend(experiences)
 
     def _calculate_loss(
         self, policy_logits, value_preds, policy_targets, value_targets

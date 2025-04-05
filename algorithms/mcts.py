@@ -30,6 +30,7 @@ class Timer:
 
 class MCTSProfiler:
     """Collects timing data for MCTS searches."""
+
     def __init__(self):
         self.search_times_ms: List[float] = []
         self.network_times_ms: List[float] = []
@@ -73,8 +74,12 @@ class MCTSProfiler:
         avg_network = self.get_average_network_time()
         total_search = self.get_total_search_time()
         total_network = self.get_total_network_time()
-        avg_net_calls_per_search = num_net_calls / num_searches if num_searches > 0 else 0
-        avg_net_time_per_search = total_network / num_searches if num_searches > 0 else 0
+        avg_net_calls_per_search = (
+            num_net_calls / num_searches if num_searches > 0 else 0
+        )
+        avg_net_time_per_search = (
+            total_network / num_searches if num_searches > 0 else 0
+        )
 
         report_str = (
             f"MCTS Profiler Report ({num_searches} searches):\n"
@@ -124,7 +129,6 @@ class MCTS:
         exploration_constant: float = 1.41,  # Standard UCB1 exploration constant
         discount_factor: float = 1.0,  # Discount factor for rollout rewards
         num_simulations: int = 100,
-        # No enable_profiling flag needed here anymore
     ):
         self.exploration_constant = exploration_constant
         self.discount_factor = (
@@ -328,9 +332,7 @@ class AlphaZeroMCTS(MCTS):
         # self.dirichlet_epsilon = dirichlet_epsilon
         # self.dirichlet_alpha = dirichlet_alpha
 
-    def _expand(
-        self, node: MCTSNode, env: BaseEnvironment
-    ) -> None:
+    def _expand(self, node: MCTSNode, env: BaseEnvironment) -> None:
         """
         Expand the leaf node using policy predictions from the network
         for legal actions.
@@ -694,16 +696,13 @@ class MuZeroMCTS:
                     reward,
                     policy_logits,
                     hidden_state,
-                ) = self.network.initial_inference(
-                    observation_dict
-                )
+                ) = self.network.initial_inference(observation_dict)
 
             if hidden_state is None or policy_logits is None or value is None:
                 logger.error(
                     "MuZero initial_inference failed to return expected values."
                 )
                 if self.profiler and isinstance(search_timer, Timer):
-                     # Record search time even if inference failed
                     self.profiler.record_search_time(search_timer.elapsed_ms)
                 return self.root
 
@@ -720,9 +719,7 @@ class MuZeroMCTS:
                 return self.root
 
             # Expand root using policy and filtering by legal_actions
-            self.root.expand(
-                policy_logits, self.network, legal_actions
-            )
+            self.root.expand(policy_logits, self.network, legal_actions)
 
             # TODO: Add Dirichlet noise to root priors here if training
 
@@ -777,19 +774,28 @@ class MuZeroMCTS:
                 leaf_value = 0.0
                 if leaf_node is not self.root:
                     value_rec, reward_rec, policy_logits_rec, next_hidden_state_rec = (
-                        None, None, None, None,
+                        None,
+                        None,
+                        None,
+                        None,
                     )
                     if self.profiler:
                         with Timer() as net_timer:
                             (
-                                value_rec, reward_rec, policy_logits_rec, next_hidden_state_rec,
+                                value_rec,
+                                reward_rec,
+                                policy_logits_rec,
+                                next_hidden_state_rec,
                             ) = self.network.recurrent_inference(
                                 parent.hidden_state, action_taken
                             )
                         self.profiler.record_network_time(net_timer.elapsed_ms)
                     else:
                         (
-                            value_rec, reward_rec, policy_logits_rec, next_hidden_state_rec,
+                            value_rec,
+                            reward_rec,
+                            policy_logits_rec,
+                            next_hidden_state_rec,
                         ) = self.network.recurrent_inference(
                             parent.hidden_state, action_taken
                         )

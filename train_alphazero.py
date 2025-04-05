@@ -9,7 +9,7 @@ from loguru import logger
 
 from core.config import AppConfig, DATA_DIR
 from environments.base import BaseEnvironment, StateType, ActionType
-from agents.alphazero_agent import AlphaZeroAgent
+from agents.alphazero_agent import AlphaZeroAgent, EpisodeResult
 from factories import get_environment, get_agents
 from utils.plotting import plot_losses
 from algorithms.mcts import Timer
@@ -19,10 +19,11 @@ LOG_DIR = DATA_DIR / "game_logs"
 
 def run_self_play_game(
     env: BaseEnvironment, agent: AlphaZeroAgent
-) -> Tuple[float, int, List]:
+) -> Tuple[float, int, EpisodeResult]:
     """
     Plays one game of self-play using the AlphaZero agent.
-    The agent collects training data internally via agent.act(train=True).
+    The agent collects training data internally via agent.act(train=True) and
+    processes it in finish_episode.
 
     Args:
         env: The environment instance.
@@ -32,7 +33,7 @@ def run_self_play_game(
         A tuple containing:
         - final_outcome: The outcome for player 0 (+1 win, -1 loss, 0 draw).
         - num_steps: The number of steps taken in the game.
-        - game_history: The processed game history list from the agent.
+        - episode_result: An EpisodeResult object containing buffer experiences and logged history.
     """
     obs = env.reset()
     agent.reset()
@@ -74,9 +75,9 @@ def run_self_play_game(
         else:  # Draw
             final_outcome = 0.0
 
-    game_history = agent.finish_episode(final_outcome)
+    episode_result = agent.finish_episode(final_outcome)
 
-    return final_outcome, game_steps, game_history
+    return final_outcome, game_steps, episode_result
 
 
 def _default_serializer(obj):
@@ -94,7 +95,7 @@ def _default_serializer(obj):
 
 
 def save_game_log(
-    game_history: List[Tuple[StateType, ActionType, np.ndarray, float]],
+    logged_history: List[Tuple[StateType, ActionType, np.ndarray, float]],
     iteration: int,
     game_index: int,
     env_name: str,
@@ -106,12 +107,11 @@ def save_game_log(
         filename = f"{env_name}_game{game_index:04d}_{timestamp}.json"
         filepath = LOG_DIR / filename
 
-        # Prepare data for JSON (convert numpy arrays)
-        serializable_history = []
-        for state, action, policy, value in game_history:
-            # Ensure state is serializable (should be if it's dicts/lists/primitives)
-            # Ensure action is serializable (should be if int/tuple)
-            serializable_history.append(
+        # Prepare data for JSON
+        serializable_log = []
+        for state, action, policy, value in logged_history:
+            # Ensure state and action are serializable
+            serializable_log.append(
                 {
                     "state": state,
                     "action": action,
@@ -121,8 +121,7 @@ def save_game_log(
             )
 
         with open(filepath, "w") as f:
-            # Pass the custom serializer to handle numpy arrays within state dicts etc.
-            json.dump(serializable_history, f, indent=2, default=_default_serializer)
+            json.dump(serializable_log, f, indent=2, default=_default_serializer)
 
     except Exception as e:
         logger.error(
@@ -214,6 +213,69 @@ def load_game_logs_into_buffer(agent: AlphaZeroAgent, env_name: str, buffer_limi
     logger.info(f"Current buffer size: {len(agent.replay_buffer)}/{buffer_limit}")
 
 
+def collect_self_play_data(
+    env: BaseEnvironment,
+    agent: AlphaZeroAgent,
+    num_episodes: int,
+    iteration: int,
+    env_name: str,
+    use_tqdm: bool = True,
+) -> Tuple[List[Tuple[StateType, np.ndarray, float]], float, float]:
+    """
+    Runs multiple self-play games sequentially and collects experiences.
+
+    Args:
+        env: Environment instance.
+        agent: AlphaZeroAgent instance.
+        num_episodes: Number of games to play.
+        iteration: Current training iteration number (for logging).
+        env_name: Name of the environment (for logging).
+        use_tqdm: Whether to display a progress bar.
+
+    Returns:
+        A tuple containing:
+        - all_experiences: A flat list of (state, policy_target, value_target) tuples from all games.
+        - total_self_play_time_ms: Total time spent in self-play games (excluding logging).
+        - total_network_time_ms: Total network inference time during self-play.
+    """
+    all_experiences = []
+    total_games = 0
+    total_steps = 0
+
+    # Get network time *before* self-play if profiling
+    net_time_before_self_play = 0.0
+    if agent.profiler:
+        net_time_before_self_play = agent.profiler.get_total_network_time()
+
+    inner_loop_iterator = (
+        tqdm(range(num_episodes), desc="Self-Play", leave=False)
+        if use_tqdm
+        else range(num_episodes)
+    )
+
+    with Timer() as self_play_timer:
+        for game_idx in inner_loop_iterator:
+            outcome, steps, episode_result = run_self_play_game(env, agent)
+            all_experiences.extend(episode_result.buffer_experiences)
+            total_games += 1
+            total_steps += steps
+            # Save the game log after each game
+            save_game_log(
+                episode_result.logged_history, iteration, game_idx + 1, env_name
+            )
+
+    # Calculate network time spent during this self-play phase
+    network_time_ms = 0.0
+    if agent.profiler:
+        net_time_after_self_play = agent.profiler.get_total_network_time()
+        network_time_ms = net_time_after_self_play - net_time_before_self_play
+
+    logger.info(
+        f"Collected {len(all_experiences)} experiences from {total_games} games ({total_steps} steps)."
+    )
+    return all_experiences, self_play_timer.elapsed_ms, network_time_ms
+
+
 def run_training(config: AppConfig, env_name_override: str = None):
     """Runs the AlphaZero training process."""
 
@@ -257,47 +319,43 @@ def run_training(config: AppConfig, env_name_override: str = None):
         # Start timer for the whole iteration
         iteration_timer = Timer()
         with iteration_timer:
-            logger.info(f"\n--- Iteration {iteration + 1}/{num_training_iterations} ---")
+            logger.info(
+                f"\n--- Iteration {iteration + 1}/{num_training_iterations} ---"
+            )
 
             # 1. Self-Play Phase
-            if agent.network: # Check if network exists before setting mode
+            if agent.network:  # Check if network exists before setting mode
                 agent.network.eval()  # Ensure network is in eval mode for self-play actions
-            logger.info("Running self-play games...")
-            current_iteration_games = 0
+            logger.info("Collecting self-play data...")
 
-            # Get network time *before* self-play if profiling
-            net_time_before_self_play = 0.0
-            if agent.profiler:
-                net_time_before_self_play = agent.profiler.get_total_network_time()
-
-            # Use enumerate to get game index for logging
-            inner_loop_iterator = (
-                tqdm(range(num_episodes_per_iteration), desc="Self-Play", leave=False)
-                if use_tqdm
-                else range(num_episodes_per_iteration)
+            (
+                collected_experiences,
+                self_play_time,
+                network_time,
+            ) = collect_self_play_data(
+                env,
+                agent,
+                num_episodes_per_iteration,
+                iteration + 1,
+                config.env.name,
+                use_tqdm,
             )
-            with Timer() as self_play_timer:
-                for game_idx in inner_loop_iterator:
-                    _, _, history = run_self_play_game(env, agent)
-                    current_iteration_games += 1
-                    # Save the game log after each game
-                    save_game_log(history, iteration + 1, game_idx + 1, config.env.name)
 
-            # Log self-play duration and network time during self-play
-            logger.info(f"Self-Play Total Time: {self_play_timer.elapsed_ms:.2f} ms")
+            # Log self-play duration and network time
+            logger.info(f"Self-Play Total Time: {self_play_time:.2f} ms")
             if agent.profiler:
-                net_time_after_self_play = agent.profiler.get_total_network_time()
-                self_play_network_time = net_time_after_self_play - net_time_before_self_play
-                # Log the network time spent specifically during this self-play phase
-                logger.info(f"Self-Play Network Time: {self_play_network_time:.2f} ms") # <-- Added this line
+                logger.info(f"Self-Play Network Time: {network_time:.2f} ms")
             else:
-                # Add a log message indicating profiling was off for this part
                 logger.info("Self-Play Network Time: (Profiling Disabled)")
 
-
-            logger.info(
-                f"Completed {current_iteration_games} self-play games for iteration {iteration + 1}."
-            )
+            # Add collected data to the agent's replay buffer
+            if collected_experiences:
+                agent.add_experiences_to_buffer(collected_experiences)
+                logger.info(
+                    f"Added {len(collected_experiences)} experiences to replay buffer."
+                )
+            else:
+                logger.warning("No experiences collected in this iteration.")
 
             # 2. Learning Phase
             logger.info("Running learning step...")
@@ -338,7 +396,11 @@ def run_training(config: AppConfig, env_name_override: str = None):
             # --- Log MCTS Profiler Report ---
             # Check if profiling is enabled and report periodically
             report_freq = config.training.mcts_profiling_report_frequency
-            if agent.profiler and report_freq > 0 and (iteration + 1) % report_freq == 0:
+            if (
+                agent.profiler
+                and report_freq > 0
+                and (iteration + 1) % report_freq == 0
+            ):
                 logger.info(
                     "\n--- MCTS Profiling Stats (Last {} Iterations) ---".format(
                         report_freq
@@ -354,12 +416,13 @@ def run_training(config: AppConfig, env_name_override: str = None):
                 and (iteration + 1) % config.training.sanity_check_frequency == 0
             ):
                 with Timer() as sanity_timer:
-                    run_sanity_checks(env, agent)  # Run checks on the current agent state
+                    run_sanity_checks(
+                        env, agent
+                    )  # Run checks on the current agent state
                 logger.info(f"Sanity Check Time: {sanity_timer.elapsed_ms:.2f} ms")
 
         # Log total iteration time *after* the 'with iteration_timer' block finishes
         logger.info(f"Total Iteration Time: {iteration_timer.elapsed_ms:.2f} ms")
-
 
     logger.info("\nTraining complete. Saving final agent state.")
     agent.save()
