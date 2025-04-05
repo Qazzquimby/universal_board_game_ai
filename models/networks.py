@@ -1,4 +1,4 @@
-from typing import Tuple, Optional
+from typing import Tuple, Optional, List
 
 import torch
 import torch.nn as nn
@@ -70,23 +70,28 @@ class AlphaZeroNet(nn.Module):
                 # Normalize board: 0->0, 1->0.5, 2->1.0 (approx)
                 normalized_board = torch.from_numpy(board).float() / 2.0
                 flat_tensors.append(normalized_board.flatten())
-            elif torch.is_tensor(board): # Keep tensor handling just in case
-                print("Warning: Board tensor encountered in _flatten_state, expected ndarray.")
+            elif torch.is_tensor(board):  # Keep tensor handling just in case
+                print(
+                    "Warning: Board tensor encountered in _flatten_state, expected ndarray."
+                )
                 normalized_board = board.float() / 2.0
                 flat_tensors.append(normalized_board.flatten())
         elif "piles" in state_dict:
             piles = state_dict["piles"]
             # Normalize piles relative to max initial pile size (if available)
-            max_pile_size = 1.0 # Default if not available
-            if hasattr(self.env, 'initial_piles') and self.env.initial_piles:
-                 max_pile_size = float(max(self.env.initial_piles))
-            if max_pile_size == 0: max_pile_size = 1.0 # Avoid division by zero
+            max_pile_size = 1.0  # Default if not available
+            if hasattr(self.env, "initial_piles") and self.env.initial_piles:
+                max_pile_size = float(max(self.env.initial_piles))
+            if max_pile_size == 0:
+                max_pile_size = 1.0  # Avoid division by zero
 
             if isinstance(piles, np.ndarray):
                 normalized_piles = torch.from_numpy(piles).float() / max_pile_size
                 flat_tensors.append(normalized_piles)
-            elif torch.is_tensor(piles): # Keep tensor handling just in case
-                print("Warning: Piles tensor encountered in _flatten_state, expected ndarray.")
+            elif torch.is_tensor(piles):  # Keep tensor handling just in case
+                print(
+                    "Warning: Piles tensor encountered in _flatten_state, expected ndarray."
+                )
                 normalized_piles = piles.float() / max_pile_size
                 flat_tensors.append(normalized_piles)
 
@@ -97,7 +102,9 @@ class AlphaZeroNet(nn.Module):
 
         # Concatenate all parts
         if not flat_tensors:
-            raise ValueError("Could not extract numerical data from state for network input.")
+            raise ValueError(
+                "Could not extract numerical data from state for network input."
+            )
 
         return torch.cat(flat_tensors)
 
@@ -252,6 +259,45 @@ class AlphaZeroNet(nn.Module):
 
         return policy_np, value_np
 
+    def predict_batch(
+        self, state_dicts: List[dict]
+    ) -> Tuple[List[np.ndarray], List[float]]:
+        """
+        Performs batched inference on a list of state dictionaries.
+
+        Args:
+            state_dicts: A list of environment state observation dictionaries.
+
+        Returns:
+            A tuple containing:
+            - List[np.ndarray]: A list of policy probability numpy arrays.
+            - List[float]: A list of scalar value predictions.
+        """
+        if not state_dicts:
+            return [], []
+
+        self.eval()  # Set model to evaluation mode
+        batch_tensors = []
+        for state_dict in state_dicts:
+            flat_state = self._flatten_state(state_dict)
+            batch_tensors.append(flat_state)
+
+        # Stack tensors into a batch
+        batch = torch.stack(batch_tensors)
+        # TODO: Add device handling if needed: batch = batch.to(self.device)
+
+        with torch.no_grad():
+            policy_logits, values = self.forward(batch)
+            policy_probs = F.softmax(policy_logits, dim=1)
+
+            # Move to CPU, detach, and convert to numpy lists
+            policy_list = [p.cpu().numpy() for p in policy_probs]
+            value_list = [
+                v.item() for v in values.squeeze(-1).cpu()
+            ]  # Ensure values are scalar
+
+        return policy_list, value_list
+
 
 # --- MuZero Network ---
 
@@ -360,22 +406,27 @@ class MuZeroNet(nn.Module):
                 normalized_board = torch.from_numpy(board).float() / 2.0
                 flat_tensors.append(normalized_board.flatten())
             elif torch.is_tensor(board):
-                print("Warning: Board tensor encountered in MuZeroNet._flatten_state, expected ndarray.")
+                print(
+                    "Warning: Board tensor encountered in MuZeroNet._flatten_state, expected ndarray."
+                )
                 normalized_board = board.float() / 2.0
                 flat_tensors.append(normalized_board.flatten())
         elif "piles" in state_dict:
             piles = state_dict["piles"]
             # Normalize piles relative to max initial pile size (if available)
-            max_pile_size = 1.0 # Default if not available
-            if hasattr(self.env, 'initial_piles') and self.env.initial_piles:
-                 max_pile_size = float(max(self.env.initial_piles))
-            if max_pile_size == 0: max_pile_size = 1.0 # Avoid division by zero
+            max_pile_size = 1.0  # Default if not available
+            if hasattr(self.env, "initial_piles") and self.env.initial_piles:
+                max_pile_size = float(max(self.env.initial_piles))
+            if max_pile_size == 0:
+                max_pile_size = 1.0  # Avoid division by zero
 
             if isinstance(piles, np.ndarray):
                 normalized_piles = torch.from_numpy(piles).float() / max_pile_size
                 flat_tensors.append(normalized_piles)
             elif torch.is_tensor(piles):
-                print("Warning: Piles tensor encountered in MuZeroNet._flatten_state, expected ndarray.")
+                print(
+                    "Warning: Piles tensor encountered in MuZeroNet._flatten_state, expected ndarray."
+                )
                 normalized_piles = piles.float() / max_pile_size
                 flat_tensors.append(normalized_piles)
 
@@ -384,7 +435,9 @@ class MuZeroNet(nn.Module):
             torch.tensor([state_dict.get("current_player", -1)], dtype=torch.float32)
         )
         if not flat_tensors:
-            raise ValueError("Could not extract numerical data from state for network input.")
+            raise ValueError(
+                "Could not extract numerical data from state for network input."
+            )
         return torch.cat(flat_tensors)
 
     def _calculate_input_size(self, env: BaseEnvironment) -> int:

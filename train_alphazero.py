@@ -213,21 +213,23 @@ def load_game_logs_into_buffer(agent: AlphaZeroAgent, env_name: str, buffer_limi
     logger.info(f"Current buffer size: {len(agent.replay_buffer)}/{buffer_limit}")
 
 
-def collect_self_play_data(
-    env: BaseEnvironment,
+def collect_parallel_self_play_data(
+    env_factory: callable, # Function to create a new env instance
     agent: AlphaZeroAgent,
-    num_episodes: int,
+    num_episodes_to_collect: int,
+    num_parallel_games: int,
     iteration: int,
     env_name: str,
     use_tqdm: bool = True,
 ) -> Tuple[List[Tuple[StateType, np.ndarray, float]], float, float]:
     """
-    Runs multiple self-play games sequentially and collects experiences.
+    Runs multiple self-play games in parallel using batched inference and collects experiences.
 
     Args:
-        env: Environment instance.
-        agent: AlphaZeroAgent instance.
-        num_episodes: Number of games to play.
+        env_factory: A function that returns a new instance of the environment.
+        agent: AlphaZeroAgent instance (contains the network and MCTS).
+        num_episodes_to_collect: Target number of episodes to complete.
+        num_parallel_games: Number of games to run simultaneously.
         iteration: Current training iteration number (for logging).
         env_name: Name of the environment (for logging).
         use_tqdm: Whether to display a progress bar.
@@ -235,45 +237,171 @@ def collect_self_play_data(
     Returns:
         A tuple containing:
         - all_experiences: A flat list of (state, policy_target, value_target) tuples from all games.
-        - total_self_play_time_ms: Total time spent in self-play games (excluding logging).
-        - total_network_time_ms: Total network inference time during self-play.
+        - total_self_play_time_ms: Total time spent in the collection loop.
+        - total_network_time_ms: Total network inference time recorded by the profiler during this phase.
     """
     all_experiences = []
-    total_games = 0
-    total_steps = 0
+    finished_episodes_count = 0
+    total_steps_taken = 0
+
+    # --- Initialize Parallel Environments and States ---
+    envs = [env_factory() for _ in range(num_parallel_games)]
+    observations = [env.reset() for env in envs]
+    # Track temporary history for each parallel game before finish_episode is called
+    # Maps game_idx -> List[Tuple[StateType, ActionType, np.ndarray]]
+    parallel_histories: Dict[int, List[Tuple[StateType, ActionType, np.ndarray]]] = {
+        i: [] for i in range(num_parallel_games)
+    }
+    dones = [False] * num_parallel_games
+    active_game_indices = list(range(num_parallel_games)) # Indices of games currently running
 
     # Get network time *before* self-play if profiling
     net_time_before_self_play = 0.0
     if agent.profiler:
-        net_time_before_self_play = agent.profiler.get_total_network_time()
+        agent.profiler.reset() # Reset profiler for this collection phase
+        net_time_before_self_play = agent.profiler.get_total_network_time() # Should be 0
 
-    inner_loop_iterator = (
-        tqdm(range(num_episodes), desc="Self-Play", leave=False)
-        if use_tqdm
-        else range(num_episodes)
-    )
+    pbar = None
+    if use_tqdm:
+        pbar = tqdm(total=num_episodes_to_collect, desc="Parallel Self-Play", leave=False)
 
-    with Timer() as self_play_timer:
-        for game_idx in inner_loop_iterator:
-            outcome, steps, episode_result = run_self_play_game(env, agent)
-            all_experiences.extend(episode_result.buffer_experiences)
-            total_games += 1
-            total_steps += steps
-            # Save the game log after each game
-            save_game_log(
-                episode_result.logged_history, iteration, game_idx + 1, env_name
-            )
+    collection_timer = Timer()
+    with collection_timer:
+        while finished_episodes_count < num_episodes_to_collect:
+            if not active_game_indices:
+                logger.warning("No active games left, but haven't collected enough episodes. Breaking.")
+                break
+
+            current_batch_indices = active_game_indices[:] # Process all active games in this step
+            logger.debug(f"Processing step for {len(current_batch_indices)} active games.")
+
+            # --- Get Actions (using batched MCTS internally) ---
+            actions = {} # game_idx -> action
+            policy_targets = {} # game_idx -> policy_target (from MCTS)
+            states_for_step = {} # game_idx -> state_dict (before action)
+
+            for game_idx in current_batch_indices:
+                state = observations[game_idx]
+                states_for_step[game_idx] = state.copy() # Store state before action
+
+                # agent.act performs MCTS search (which now uses batching internally)
+                # It also stores the state/action/policy_target internally if train=True
+                # We need to retrieve the policy target *after* act is called for logging/buffer
+                # Let's modify agent.act slightly or add a way to get the last policy target.
+                # --- Modification needed in Agent.act ---
+                # For now, assume agent.act stores the necessary info and we retrieve it later.
+                # agent.act now returns (action, policy_target) when train=True
+                act_result = agent.act(state, train=True)
+
+                if isinstance(act_result, tuple):
+                    action, policy_target = act_result
+                else: # Should happen only if train=False, but handle defensively
+                    action = act_result
+                    policy_target = None # No policy target if not training
+
+                if action is None:
+                    logger.warning(f"Agent returned None action for game {game_idx}. Ending game.")
+                    dones[game_idx] = True
+                    actions[game_idx] = None
+                    policy_targets[game_idx] = None
+                else:
+                    actions[game_idx] = action
+                    if policy_target is None: # Fallback if train=True but target is None
+                         logger.warning(f"Policy target missing for game {game_idx}. Using zeros.")
+                         policy_size = agent.network._calculate_policy_size(envs[game_idx])
+                         policy_targets[game_idx] = np.zeros(policy_size, dtype=np.float32)
+                    else:
+                         policy_targets[game_idx] = policy_target
+
+            # --- Step Environments ---
+            next_observations = {}
+            rewards = {} # Not used by AlphaZero, but store anyway
+            step_dones = {} # Track dones from this step
+
+            for game_idx in current_batch_indices:
+                action = actions.get(game_idx)
+                if dones[game_idx] or action is None: # Skip if already marked done or no action
+                    step_dones[game_idx] = dones[game_idx]
+                    next_observations[game_idx] = observations[game_idx] # Keep old obs
+                    rewards[game_idx] = 0.0
+                    continue
+
+                try:
+                    obs, reward, done = envs[game_idx].step(action)
+                    next_observations[game_idx] = obs
+                    rewards[game_idx] = reward
+                    step_dones[game_idx] = done
+                    total_steps_taken += 1
+
+                    # Store the step history for this game (using state *before* action)
+                    state_before_action = states_for_step[game_idx]
+                    policy_target = policy_targets[game_idx]
+                    parallel_histories[game_idx].append((state_before_action, action, policy_target))
+
+                except ValueError as e:
+                    logger.warning(f"Invalid action {action} in game {game_idx}. Error: {e}. Ending game.")
+                    # Penalize the player who made the invalid move? AZ uses outcome. Mark done.
+                    next_observations[game_idx] = observations[game_idx] # Keep old obs
+                    rewards[game_idx] = 0.0 # No reward signal needed here
+                    step_dones[game_idx] = True # Mark as done due to error
+                    # How to set outcome? Let finish_episode handle it based on winner.
+
+            # --- Update Game States and Handle Finished Games ---
+            new_active_game_indices = []
+            for game_idx in current_batch_indices:
+                observations[game_idx] = next_observations[game_idx]
+                dones[game_idx] = step_dones[game_idx]
+
+                if dones[game_idx]:
+                    # Game finished, process history
+                    winner = envs[game_idx].get_winning_player()
+                    if winner == 0: final_outcome = 1.0
+                    elif winner == 1: final_outcome = -1.0
+                    else: final_outcome = 0.0 # Draw
+
+                    # Use the refactored agent method to process the history
+                    game_history = parallel_histories[game_idx]
+                    episode_result = agent.process_finished_episode(game_history, final_outcome)
+
+                    # Add experiences to the main list
+                    all_experiences.extend(episode_result.buffer_experiences)
+
+                    # Save log for the finished game using the processed logged_history
+                    save_game_log(episode_result.logged_history, iteration, finished_episodes_count + 1, env_name)
+
+                    finished_episodes_count += 1
+                    if pbar: pbar.update(1)
+                    logger.debug(f"Game {game_idx} finished. Total finished: {finished_episodes_count}/{num_episodes_to_collect}")
+
+                    # Reset environment and history for this index
+                    observations[game_idx] = envs[game_idx].reset()
+                    dones[game_idx] = False
+                    parallel_histories[game_idx] = []
+                    # Keep the game index active for the next iteration
+                    new_active_game_indices.append(game_idx)
+
+                else:
+                    # Game not done, keep it active
+                    new_active_game_indices.append(game_idx)
+
+            active_game_indices = new_active_game_indices # Update list of active games
+
+    # --- End of Collection Loop ---
+    if pbar: pbar.close()
 
     # Calculate network time spent during this self-play phase
     network_time_ms = 0.0
     if agent.profiler:
         net_time_after_self_play = agent.profiler.get_total_network_time()
-        network_time_ms = net_time_after_self_play - net_time_before_self_play
+        network_time_ms = net_time_after_self_play - net_time_before_self_play # Total time recorded by profiler
 
     logger.info(
-        f"Collected {len(all_experiences)} experiences from {total_games} games ({total_steps} steps)."
+        f"Collected {len(all_experiences)} experiences from {finished_episodes_count} games ({total_steps_taken} steps)."
     )
-    return all_experiences, self_play_timer.elapsed_ms, network_time_ms
+    # Clear agent's internal episode history just in case act() left something
+    agent.reset()
+
+    return all_experiences, collection_timer.elapsed_ms, network_time_ms
 
 
 def run_training(config: AppConfig, env_name_override: str = None):
@@ -326,16 +454,20 @@ def run_training(config: AppConfig, env_name_override: str = None):
             # 1. Self-Play Phase
             if agent.network:  # Check if network exists before setting mode
                 agent.network.eval()  # Ensure network is in eval mode for self-play actions
-            logger.info("Collecting self-play data...")
+            logger.info("Collecting self-play data (parallel)...")
+
+            # Need a way to create new env instances for parallel collection
+            env_factory = lambda: get_environment(config.env)
 
             (
                 collected_experiences,
                 self_play_time,
                 network_time,
-            ) = collect_self_play_data(
-                env,
+            ) = collect_parallel_self_play_data(
+                env_factory,
                 agent,
                 num_episodes_per_iteration,
+                config.alpha_zero.num_parallel_games, # Use config for parallel games
                 iteration + 1,
                 config.env.name,
                 use_tqdm,

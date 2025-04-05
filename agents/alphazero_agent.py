@@ -230,20 +230,22 @@ class AlphaZeroAgent(Agent):
                 logger.debug(f"  - {action}: {visits}")
             logger.debug(f"[DEBUG Act] Chosen Action (Train={train}): {chosen_action}")
 
+        policy_target = None
         # --- Store data for training if in training mode ---
         if train:
             # Calculate policy target based on visit counts
             policy_target = self._calculate_policy_target(
                 root_node, actions, visit_counts
             )
-            # Store state, chosen action, and policy target temporarily.
-            # The final outcome (value) will be added later in finish_episode.
-            # Ensure state is copied or immutable if necessary (current state dicts seem okay)
-            self._current_episode_history.append(
-                (state, chosen_action, policy_target)  # Store as tuple
-            )
+            # NOTE: History is no longer stored internally in the agent for parallel execution.
+            # The caller (training loop) is responsible for storing state, action, policy_target.
 
-        return chosen_action
+        # Return action, and policy_target if training
+        if train:
+            return chosen_action, policy_target
+        else:
+            return chosen_action
+
 
     def _calculate_policy_target(self, root_node, actions, visit_counts) -> np.ndarray:
         """Calculates the policy target vector based on MCTS visit counts."""
@@ -303,16 +305,23 @@ class AlphaZeroAgent(Agent):
             logger.warning(
                 "No visits recorded in MCTS root. Policy target will be zeros."
             )
+        # Ensure policy target sums to 1 (handle potential float issues)
+        if policy_target.sum() > 0:
+             policy_target /= policy_target.sum()
 
         return policy_target
 
-    def finish_episode(self, final_outcome: float) -> EpisodeResult:
+    def process_finished_episode(
+        self,
+        game_history: List[Tuple[StateType, ActionType, np.ndarray]],
+        final_outcome: float,
+    ) -> EpisodeResult:
         """
-        Called at the end of a self-play episode. Assigns the final outcome
-        to all steps in the temporary history, prepares data for buffer and logging,
-        and returns the results in an EpisodeResult object.
+        Processes the history of a completed episode to generate training data.
+        Assigns the final outcome to all steps and prepares data for buffer and logging.
 
         Args:
+            game_history: A list of tuples (state, action, policy_target) for the episode.
             final_outcome: The outcome for player 0 (+1 win, -1 loss, 0 draw).
 
         Returns:
@@ -321,11 +330,13 @@ class AlphaZeroAgent(Agent):
         """
         buffer_experiences = []
         logged_history = []
-        num_steps = len(self._current_episode_history)
+        num_steps = len(game_history)
 
-        for i, (state_at_step, action_taken, policy_target) in enumerate(
-            self._current_episode_history
-        ):
+        if num_steps == 0:
+             logger.warning("process_finished_episode called with empty history.")
+             return EpisodeResult(buffer_experiences=[], logged_history=[])
+
+        for i, (state_at_step, action_taken, policy_target) in enumerate(game_history):
             # Determine the value target from the perspective of the player at that state
             player_at_step = state_at_step.get("current_player", -1)
 
@@ -369,8 +380,7 @@ class AlphaZeroAgent(Agent):
                 (state_at_step, action_taken, policy_target, value_target)
             )
 
-        # Clear the temporary history *after* processing
-        self._current_episode_history = []
+        # Note: Internal history (_current_episode_history) is no longer used by this method.
 
         return EpisodeResult(
             buffer_experiences=buffer_experiences, logged_history=logged_history
@@ -553,6 +563,6 @@ class AlphaZeroAgent(Agent):
             return False
 
     def reset(self) -> None:
-        """Reset agent state (e.g., MCTS tree, episode history)."""
+        """Reset agent state (e.g., MCTS tree)."""
+        # Only reset MCTS root, internal episode history is no longer used by agent.
         self.mcts.reset_root()
-        self._current_episode_history = []  # Clear temp history on reset
