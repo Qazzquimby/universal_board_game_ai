@@ -757,49 +757,7 @@ class AlphaZeroMCTS(MCTS):
                     self._backpropagate(leaf_node, value)
                     continue # Move to next simulation
 
-
-                # --- Process Batch (if network exists and batch is ready) ---
-                if self.network and (
-                    len(pending_evaluations) >= self.inference_batch_size or
-                    (sim_num == self.num_simulations - 1 and pending_evaluations)
-                   ):
-
-                    logger.debug(f"Processing Batch: Size={len(pending_evaluations)}")
-                    # Extract states and nodes, keeping track of the original env state for expansion
-                    states_to_predict = [env.get_observation() for _, _, env in pending_evaluations]
-                    # Store key, node, and env together for processing results
-                    nodes_to_process = [(key, node, env) for key, node, env in pending_evaluations]
-
-                    # Call batched prediction
-                    policy_list, value_list = [], []
-                    if self.profiler:
-                        with Timer() as net_timer:
-                            policy_list, value_list = self.network.predict_batch(states_to_predict)
-                        self.profiler.record_network_time(net_timer.elapsed_ms)
-                    else:
-                        policy_list, value_list = self.network.predict_batch(states_to_predict)
-
-                    # Distribute results, expand, and backpropagate
-                    if len(policy_list) != len(nodes_to_process) or len(value_list) != len(nodes_to_process):
-                         logger.error(f"Batch prediction result size mismatch! Expected {len(nodes_to_process)}, Got P={len(policy_list)}, V={len(value_list)}")
-                         # Skip processing this batch to avoid index errors
-                    else:
-                        for i, (state_key, node_to_process, original_env_state) in enumerate(nodes_to_process):
-                            policy_np_result, value_result = policy_list[i], value_list[i]
-                            logger.debug(f"  Batch Result: StateKey={state_key}, Value={value_result:.3f}")
-
-                            # Cache the result
-                            evaluation_cache[state_key] = (policy_np_result, value_result)
-
-                            # Expand the node using the received policy if not already expanded
-                            if not node_to_process.is_expanded():
-                                self._expand(node_to_process, original_env_state, policy_np_result)
-
-                            # Backpropagate the received value
-                            self._backpropagate(node_to_process, value_result)
-
-                    # Clear the processed batch
-                    pending_evaluations.clear()
+                # --- Internal batch processing block removed ---
 
 
             # --- End of Simulation Loop ---

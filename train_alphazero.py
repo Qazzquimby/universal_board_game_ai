@@ -608,15 +608,21 @@ def collect_parallel_self_play_data(
 
                     # Store history step using state saved *before* MCTS search
                     state_before_action = states_before_action.get(game_idx)
-                    if state_before_action and policy_target is not None:
+                    is_valid_policy = (
+                        isinstance(policy_target, np.ndarray) and policy_target.size > 0
+                    )
+
+                    if state_before_action and is_valid_policy:
                         parallel_histories[game_idx].append(
                             (state_before_action, action, policy_target)
                         )
                     elif not state_before_action:
-                        logger.error(f"Missing state_before_action for game {game_idx}")
-                    elif policy_target is None:
+                        logger.error(
+                            f"Game {game_idx}: Skipping history append - Missing state_before_action"
+                        )
+                    elif not is_valid_policy:
                         logger.warning(
-                            f"Missing policy_target for game {game_idx} step."
+                            f"Game {game_idx}: Skipping history append - policy_target is None or empty array (type: {type(policy_target)})."
                         )
 
                 except ValueError as e:
