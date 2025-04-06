@@ -1,7 +1,15 @@
 import sys
 import json
 import datetime
-from typing import Tuple, List, Dict
+import random  # Import random
+from typing import (
+    Tuple,
+    List,
+    Dict,
+    Generator,
+    Any,
+    Optional,
+)  # Import Generator, Any, Optional
 from dataclasses import dataclass
 
 import numpy as np
@@ -13,7 +21,7 @@ from environments.base import BaseEnvironment, StateType, ActionType
 from agents.alphazero_agent import AlphaZeroAgent, EpisodeResult
 from factories import get_environment, get_agents
 from utils.plotting import plot_losses
-from algorithms.mcts import Timer
+from algorithms.mcts import Timer, MCTSNode  # Import MCTSNode
 
 LOG_DIR = DATA_DIR / "game_logs"
 
@@ -75,10 +83,6 @@ def run_self_play_game(
             final_outcome = -1.0
         else:  # Draw
             final_outcome = 0.0
-
-    episode_result = agent.finish_episode(final_outcome)
-
-    return final_outcome, game_steps, episode_result
 
 
 def _default_serializer(obj):
@@ -230,10 +234,12 @@ def collect_parallel_self_play_data(
     num_parallel_games: int,
     iteration: int,
     env_name: str,
+    inference_batch_size: int,  # Add batch size from config
     use_tqdm: bool = True,
 ) -> SelfPlayResult:
     """
-    Runs multiple self-play games in parallel using batched inference and collects experiences.
+    Runs multiple self-play games concurrently, managing MCTS search generators
+    and performing batched network inference across games.
 
     Args:
         env_factory: A function that returns a new instance of the environment.
@@ -242,6 +248,7 @@ def collect_parallel_self_play_data(
         num_parallel_games: Number of games to run simultaneously.
         iteration: Current training iteration number (for logging).
         env_name: Name of the environment (for logging).
+        inference_batch_size: Max number of requests to batch for the network.
         use_tqdm: Whether to display a progress bar.
 
     Returns:
@@ -254,13 +261,29 @@ def collect_parallel_self_play_data(
     # --- Initialize Parallel Environments and States ---
     envs = [env_factory() for _ in range(num_parallel_games)]
     observations = [env.reset() for env in envs]
-    # Track temporary history for each parallel game before finish_episode is called
-    # Maps game_idx -> List[Tuple[StateType, ActionType, np.ndarray]]
+    # Track temporary history for each parallel game
     parallel_histories: Dict[int, List[Tuple[StateType, ActionType, np.ndarray]]] = {
         i: [] for i in range(num_parallel_games)
     }
     dones = [False] * num_parallel_games
-    active_game_indices = list(range(num_parallel_games))
+    # Track MCTS search generators for games waiting for an action
+    # Maps game_idx -> generator instance
+    mcts_generators: Dict[int, Generator] = {}
+    # Track which games are ready for the next environment step (need an action)
+    ready_for_action_search: List[int] = list(range(num_parallel_games))
+
+    # --- State for External Batching ---
+    # Stores requests yielded by generators: List[(game_idx, state_key, state_obs, node)]
+    pending_requests: List[Tuple[int, str, StateType, MCTSNode]] = []
+    # Maps state_key -> List[Tuple[int, MCTSNode]] for generators waiting on that state
+    waiting_generators: Dict[str, List[Tuple[int, MCTSNode]]] = {}
+    # Store chosen actions/policies when search completes, before stepping env
+    # Maps game_idx -> (action, policy_target)
+    completed_searches: Dict[
+        int, Tuple[Optional[ActionType], Optional[np.ndarray]]
+    ] = {}
+    # Store state before action for history
+    states_before_action: Dict[int, StateType] = {}
 
     # Get network time *before* self-play if profiling
     net_time_before_self_play = 0.0
@@ -279,79 +302,300 @@ def collect_parallel_self_play_data(
     collection_timer = Timer()
     with collection_timer:
         while finished_episodes_count < num_episodes_to_collect:
-            if not active_game_indices:
-                logger.warning(
-                    "No active games left, but haven't collected enough episodes. Breaking."
-                )
-                break
 
-            current_batch_indices = active_game_indices[
-                :
-            ]  # Process all active games in this step
-            logger.debug(
-                f"Processing step for {len(current_batch_indices)} active games."
-            )
+            # --- Start MCTS searches for games needing an action ---
+            games_to_start_search = ready_for_action_search[:]
+            ready_for_action_search.clear()  # Clear the list as we are starting searches
+            for game_idx in games_to_start_search:
+                if dones[game_idx]:
+                    continue  # Skip finished games
 
-            # --- Get Actions (using batched MCTS internally) ---
-            actions = {}  # game_idx -> action
-            policy_targets = {}  # game_idx -> policy_target (from MCTS)
-            states_for_step = {}  # game_idx -> state_dict (before action)
-
-            for game_idx in current_batch_indices:
                 state = observations[game_idx]
-                states_for_step[game_idx] = state.copy()  # Store state before action
+                states_before_action[
+                    game_idx
+                ] = state.copy()  # Store state before action search
+                # Create and store the generator for this game's MCTS search
+                mcts_generators[game_idx] = agent.mcts.search_generator(
+                    envs[game_idx], state
+                )
+                logger.debug(f"Started MCTS search for game {game_idx}")
 
-                # agent.act performs MCTS search (which now uses batching internally)
-                # It also stores the state/action/policy_target internally if train=True
-                # We need to retrieve the policy target *after* act is called for logging/buffer
-                # Let's modify agent.act slightly or add a way to get the last policy target.
-                # --- Modification needed in Agent.act ---
-                # For now, assume agent.act stores the necessary info and we retrieve it later.
-                # agent.act now returns (action, policy_target) when train=True
-                act_result = agent.act(state, train=True)
+            # --- Advance MCTS Generators and Collect Network Requests ---
+            active_generator_indices = list(mcts_generators.keys())
+            if not active_generator_indices and not pending_requests:
+                # Check if we have collected enough episodes
+                if finished_episodes_count >= num_episodes_to_collect:
+                    break
+                # Otherwise, check if there are games waiting for action
+                if ready_for_action_search:
+                    continue  # Go back to start searches
+                # If no generators, no requests, and not enough episodes, something is wrong
+                logger.warning(
+                    "No active MCTS generators or pending requests, but not enough episodes collected. Checking game states."
+                )
+                all_done = True
+                for i in range(num_parallel_games):
+                    if not dones[i]:
+                        all_done = False
+                        if (
+                            i not in mcts_generators
+                            and i not in ready_for_action_search
+                        ):
+                            logger.warning(
+                                f"Game {i} is not done but has no MCTS generator. Marking ready."
+                            )
+                            ready_for_action_search.append(i)
+                if all_done:
+                    break  # All games finished unexpectedly early?
+                if (
+                    not ready_for_action_search
+                ):  # If still nothing, break to avoid infinite loop
+                    logger.error(
+                        "Stuck state: No active generators, no pending requests, but games not done. Breaking."
+                    )
+                    break
+                else:
+                    continue  # Go back to start searches
 
-                if isinstance(act_result, tuple):
-                    action, policy_target = act_result
-                else:  # Should happen only if train=False, but handle defensively
-                    action = act_result
-                    policy_target = None  # No policy target if not training
+            generators_finished_this_cycle = []
+            # Use while loop to handle generators finishing mid-iteration
+            current_generator_indices = active_generator_indices[:]
+            idx_pointer = 0
+            while idx_pointer < len(current_generator_indices):
+                game_idx = current_generator_indices[idx_pointer]
+                idx_pointer += 1  # Increment pointer for next iteration
+
+                if game_idx not in mcts_generators:
+                    continue  # Generator might have finished already
+
+                generator = mcts_generators[game_idx]
+                try:
+                    # Send None initially or after receiving a result
+                    # Use next() for the very first call to prime the generator
+                    yielded_value = (
+                        next(generator)
+                        if generator.gi_frame.f_lasti == -1
+                        else generator.send(None)
+                    )
+
+                    if yielded_value[0] == "predict_request":
+                        _, state_key, state_obs, node = yielded_value
+                        logger.debug(
+                            f"Game {game_idx} yielded request for state {state_key}"
+                        )
+                        # Store request
+                        pending_requests.append((game_idx, state_key, state_obs, node))
+                        # Register generator as waiting for this state_key
+                        if state_key not in waiting_generators:
+                            waiting_generators[state_key] = []
+                        # Avoid adding duplicates if generator yields same state multiple times before batch processes
+                        if (game_idx, node) not in waiting_generators[state_key]:
+                            waiting_generators[state_key].append((game_idx, node))
+                        # Generator is now paused until result is sent back
+
+                    elif yielded_value[0] == "search_complete":
+                        _, root_node = yielded_value
+                        logger.debug(f"MCTS search complete for game {game_idx}")
+                        generators_finished_this_cycle.append(
+                            game_idx
+                        )  # Mark for removal later
+
+                        # --- Process completed search (similar to agent.act logic) ---
+                        if not root_node.children:
+                            logger.warning(
+                                f"MCTS root for game {game_idx} has no children. Choosing random."
+                            )
+                            legal_actions = envs[game_idx].get_legal_actions()
+                            action = (
+                                random.choice(legal_actions) if legal_actions else None
+                            )
+                            policy_target = None  # Cannot calculate policy target
+                        else:
+                            visit_counts = np.array(
+                                [
+                                    child.visit_count
+                                    for child in root_node.children.values()
+                                ]
+                            )
+                            actions = list(root_node.children.keys())
+                            # Use temperature=0 for action selection (greedy) for now
+                            # TODO: Re-introduce temperature if needed for exploration during collection
+                            chosen_action_index = np.argmax(visit_counts)
+                            action = actions[chosen_action_index]
+                            # Calculate policy target
+                            policy_target = agent._calculate_policy_target(
+                                root_node, actions, visit_counts
+                            )
+
+                        # Store the result, ready for env step
+                        completed_searches[game_idx] = (action, policy_target)
+
+                except StopIteration:
+                    # Generator finished without yielding 'search_complete' (should not happen)
+                    logger.warning(
+                        f"MCTS generator for game {game_idx} stopped unexpectedly."
+                    )
+                    generators_finished_this_cycle.append(game_idx)
+                    if game_idx not in completed_searches:
+                        completed_searches[game_idx] = (
+                            None,
+                            None,
+                        )  # Mark as completed with error
+
+                except Exception as e:
+                    logger.error(
+                        f"Error processing MCTS generator for game {game_idx}: {e}",
+                        exc_info=True,
+                    )
+                    generators_finished_this_cycle.append(game_idx)
+                    if game_idx not in completed_searches:
+                        completed_searches[game_idx] = (
+                            None,
+                            None,
+                        )  # Mark as completed with error
+
+            # Remove finished generators *after* iterating
+            for game_idx in generators_finished_this_cycle:
+                if game_idx in mcts_generators:
+                    del mcts_generators[game_idx]
+
+            # --- Process Network Batch if Ready ---
+            # Process batch if enough pending requests OR if no generators are running (to flush remaining requests)
+            if agent.network and (
+                len(pending_requests) >= inference_batch_size
+                or (not mcts_generators and pending_requests)
+            ):
+                batch_size_to_process = len(pending_requests)
+                logger.debug(f"Processing network batch. Size: {batch_size_to_process}")
+
+                # --- Prepare Batch ---
+                # Deduplicate requests for the same state_key within this batch
+                batch_dict: Dict[str, Tuple[StateType, List[Tuple[int, MCTSNode]]]] = {}
+                requests_in_batch = pending_requests[
+                    :batch_size_to_process
+                ]  # Take the requests for this batch
+                pending_requests = pending_requests[
+                    batch_size_to_process:
+                ]  # Remove them from pending list
+
+                for game_idx, state_key, state_obs, node in requests_in_batch:
+                    if state_key not in batch_dict:
+                        # Store the state observation only once per unique state key
+                        batch_dict[state_key] = (state_obs, [])
+                    # Add the waiting game/node to the list for this state key
+                    # Check if this specific game/node pair is already waiting (shouldn't happen with current logic, but safety)
+                    if (game_idx, node) not in batch_dict[state_key][1]:
+                        batch_dict[state_key][1].append((game_idx, node))
+
+                state_keys_in_batch = list(batch_dict.keys())
+                states_to_predict_batch = [
+                    batch_dict[key][0] for key in state_keys_in_batch
+                ]
+
+                # --- Call Network ---
+                policy_list, value_list = [], []
+                if agent.profiler:
+                    with Timer() as net_timer:
+                        policy_list, value_list = agent.network.predict_batch(
+                            states_to_predict_batch
+                        )
+                    agent.profiler.record_network_time(net_timer.elapsed_ms)
+                else:
+                    policy_list, value_list = agent.network.predict_batch(
+                        states_to_predict_batch
+                    )
+
+                # --- Distribute Results ---
+                if len(policy_list) != len(state_keys_in_batch):
+                    logger.error("Network batch result size mismatch!")
+                else:
+                    for i, state_key in enumerate(state_keys_in_batch):
+                        policy_result, value_result = policy_list[i], value_list[i]
+                        logger.debug(f"Distributing result for state {state_key}")
+
+                        # Find all generators/nodes waiting for this state_key from the batch_dict
+                        waiting_list = batch_dict[state_key][1]
+                        # Also clear from the global waiting dict (important!)
+                        if state_key in waiting_generators:
+                            del waiting_generators[state_key]
+
+                        for waiting_game_idx, waiting_node in waiting_list:
+                            if waiting_game_idx in mcts_generators:
+                                generator_to_resume = mcts_generators[waiting_game_idx]
+                                try:
+                                    # Send result back to the specific waiting generator
+                                    generator_to_resume.send(
+                                        (policy_result, value_result)
+                                    )
+                                    # Generator will resume execution in the next cycle's generator loop
+                                except StopIteration:
+                                    logger.warning(
+                                        f"Generator for game {waiting_game_idx} finished while sending result."
+                                    )
+                                    if waiting_game_idx in mcts_generators:
+                                        del mcts_generators[
+                                            waiting_game_idx
+                                        ]  # Clean up
+                                except Exception as e:
+                                    logger.error(
+                                        f"Error sending result to generator for game {waiting_game_idx}: {e}",
+                                        exc_info=True,
+                                    )
+                                    if waiting_game_idx in mcts_generators:
+                                        del mcts_generators[
+                                            waiting_game_idx
+                                        ]  # Clean up
+                            else:
+                                # This can happen if the generator finished between yielding and batch processing
+                                logger.warning(
+                                    f"Generator for game {waiting_game_idx} no longer active while distributing results for state {state_key}."
+                                )
+
+            # --- Step Environments for games where MCTS search completed ---
+            games_ready_to_step = list(completed_searches.keys())
+            if not games_ready_to_step:
+                # If no games ready to step, and no generators running, and requests pending, continue to process requests
+                if not mcts_generators and pending_requests:
+                    continue
+                # If no games ready, no generators, no requests, check termination condition
+                elif not mcts_generators and not pending_requests:
+                    if finished_episodes_count >= num_episodes_to_collect:
+                        break
+                    else:
+                        # This state should ideally be caught earlier
+                        logger.warning(
+                            "No games ready to step, no generators running, no pending requests. Checking status."
+                        )
+                        if (
+                            not ready_for_action_search
+                        ):  # If no games need action search either, break
+                            logger.error(
+                                "Stuck: No games ready to step and none need action search. Breaking."
+                            )
+                            break
+                        else:
+                            continue  # Go back to start searches
+
+            next_observations = {}
+            rewards = {}
+            step_dones = {}
+
+            for game_idx in games_ready_to_step:
+                action, policy_target = completed_searches[game_idx]
+
+                if dones[game_idx]:  # If game ended previously (e.g., MCTS error)
+                    step_dones[game_idx] = True
+                    next_observations[game_idx] = observations[game_idx]
+                    rewards[game_idx] = 0.0
+                    continue
 
                 if action is None:
-                    logger.warning(
-                        f"Agent returned None action for game {game_idx}. Ending game."
+                    logger.error(
+                        f"Game {game_idx} MCTS completed but action is None. Ending game."
                     )
                     dones[game_idx] = True
-                    actions[game_idx] = None
-                    policy_targets[game_idx] = None
-                else:
-                    actions[game_idx] = action
-                    if (
-                        policy_target is None
-                    ):  # Fallback if train=True but target is None
-                        logger.warning(
-                            f"Policy target missing for game {game_idx}. Using zeros."
-                        )
-                        policy_size = agent.network._calculate_policy_size(
-                            envs[game_idx]
-                        )
-                        policy_targets[game_idx] = np.zeros(
-                            policy_size, dtype=np.float32
-                        )
-                    else:
-                        policy_targets[game_idx] = policy_target
-
-            # --- Step Environments ---
-            next_observations = {}
-            rewards = {}  # Not used by AlphaZero, but store anyway
-            step_dones = {}  # Track dones from this step
-
-            for game_idx in current_batch_indices:
-                action = actions.get(game_idx)
-                if (
-                    dones[game_idx] or action is None
-                ):  # Skip if already marked done or no action
-                    step_dones[game_idx] = dones[game_idx]
-                    next_observations[game_idx] = observations[game_idx]  # Keep old obs
+                    step_dones[game_idx] = True
+                    next_observations[game_idx] = observations[game_idx]
                     rewards[game_idx] = 0.0
                     continue
 
@@ -362,55 +606,62 @@ def collect_parallel_self_play_data(
                     step_dones[game_idx] = done
                     total_steps_taken += 1
 
-                    # Store the step history for this game (using state *before* action)
-                    state_before_action = states_for_step[game_idx]
-                    policy_target = policy_targets[game_idx]
-                    parallel_histories[game_idx].append(
-                        (state_before_action, action, policy_target)
-                    )
+                    # Store history step using state saved *before* MCTS search
+                    state_before_action = states_before_action.get(game_idx)
+                    if state_before_action and policy_target is not None:
+                        parallel_histories[game_idx].append(
+                            (state_before_action, action, policy_target)
+                        )
+                    elif not state_before_action:
+                        logger.error(f"Missing state_before_action for game {game_idx}")
+                    elif policy_target is None:
+                        logger.warning(
+                            f"Missing policy_target for game {game_idx} step."
+                        )
 
                 except ValueError as e:
                     logger.warning(
-                        f"Invalid action {action} in game {game_idx}. Error: {e}. Ending game."
+                        f"Invalid action {action} in game {game_idx} step. Error: {e}. Ending game."
                     )
-                    # Penalize the player who made the invalid move? AZ uses outcome. Mark done.
-                    next_observations[game_idx] = observations[game_idx]  # Keep old obs
-                    rewards[game_idx] = 0.0  # No reward signal needed here
-                    step_dones[game_idx] = True  # Mark as done due to error
-                    # How to set outcome? Let finish_episode handle it based on winner.
+                    next_observations[game_idx] = observations[game_idx]
+                    rewards[game_idx] = 0.0
+                    step_dones[game_idx] = True  # Mark done
 
             # --- Update Game States and Handle Finished Games ---
-            new_active_game_indices = []
-            for game_idx in current_batch_indices:
+            for game_idx in games_ready_to_step:  # Only update games we tried to step
                 observations[game_idx] = next_observations[game_idx]
                 dones[game_idx] = step_dones[game_idx]
 
                 if dones[game_idx]:
                     # Game finished, process history
                     winner = envs[game_idx].get_winning_player()
-                    if winner == 0:
-                        final_outcome = 1.0
-                    elif winner == 1:
-                        final_outcome = -1.0
-                    else:
-                        final_outcome = 0.0  # Draw
+                    final_outcome = 1.0 if winner == 0 else -1.0 if winner == 1 else 0.0
 
-                    # Use the refactored agent method to process the history
                     game_history = parallel_histories[game_idx]
-                    episode_result = agent.process_finished_episode(
-                        game_history, final_outcome
-                    )
+                    # Ensure policy target is valid if last step had None
+                    valid_history = [
+                        (s, a, p) for s, a, p in game_history if p is not None
+                    ]
+                    if len(valid_history) != len(game_history):
+                        logger.warning(
+                            f"Game {game_idx} history contained steps with None policy target."
+                        )
 
-                    # Add experiences to the main list
-                    all_experiences.extend(episode_result.buffer_experiences)
-
-                    # Save log for the finished game using the processed logged_history
-                    save_game_log(
-                        episode_result.logged_history,
-                        iteration,
-                        finished_episodes_count + 1,
-                        env_name,
-                    )
+                    if valid_history:  # Only process if there's valid history
+                        episode_result = agent.process_finished_episode(
+                            valid_history, final_outcome
+                        )
+                        all_experiences.extend(episode_result.buffer_experiences)
+                        save_game_log(
+                            episode_result.logged_history,
+                            iteration,
+                            finished_episodes_count + 1,
+                            env_name,
+                        )
+                    else:
+                        logger.warning(
+                            f"Game {game_idx} finished with no valid history steps. No experiences added."
+                        )
 
                     finished_episodes_count += 1
                     if pbar:
@@ -423,14 +674,18 @@ def collect_parallel_self_play_data(
                     observations[game_idx] = envs[game_idx].reset()
                     dones[game_idx] = False
                     parallel_histories[game_idx] = []
-                    # Keep the game index active for the next iteration
-                    new_active_game_indices.append(game_idx)
-
+                    # Mark ready for next action search
+                    if game_idx not in ready_for_action_search:
+                        ready_for_action_search.append(game_idx)
                 else:
-                    # Game not done, keep it active
-                    new_active_game_indices.append(game_idx)
+                    # Game not done, mark ready for next action search
+                    if game_idx not in ready_for_action_search:
+                        ready_for_action_search.append(game_idx)
 
-            active_game_indices = new_active_game_indices  # Update list of active games
+                # Clean up completed search data
+                del completed_searches[game_idx]
+                if game_idx in states_before_action:
+                    del states_before_action[game_idx]
 
     # --- End of Collection Loop ---
     if pbar:
@@ -520,6 +775,7 @@ def run_training(config: AppConfig, env_name_override: str = None):
                 num_parallel_games=config.alpha_zero.num_parallel_games,
                 iteration=iteration + 1,
                 env_name=config.env.name,
+                inference_batch_size=config.alpha_zero.inference_batch_size,  # Pass batch size
                 use_tqdm=use_tqdm,
             )
 

@@ -48,9 +48,9 @@ class AlphaZeroConfig:
     value_loss_weight: float = 2.0
     # Number of game steps before reducing temperature
     temperature_decay_steps: int = 30
-    # Parallel Self-Play
+    # Parallel Self-Play & Batching
     num_parallel_games: int = 64 # Number of games to run in parallel during self-play
-    # inference_batch_size removed - batching is no longer handled within MCTS search
+    inference_batch_size: int = 32 # Max batch size for network inference (managed externally)
     # --- Learning Rate ---
     lr_scheduler_step_size: int = 100  # Decay LR every N training iterations
     lr_scheduler_gamma: float = 0.9  # Multiplicative factor for LR decay

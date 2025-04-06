@@ -441,26 +441,50 @@ class AlphaZeroMCTS(MCTS):
             )
         return q_value_for_parent + u_score
 
-    def search(self, env: BaseEnvironment, state: StateType) -> MCTSNode:
+    # Renamed from search to search_generator
+    def search_generator(self, env: BaseEnvironment, state: StateType):
         """
-        Run MCTS search using PUCT and batched network evaluation (if network exists),
-        or random rollouts (if no network).
+        Generator-based MCTS search. Yields network requests and expects results via send().
+
+        Yields:
+            ('predict_request', state_key, state_obs, node): When network evaluation is needed.
+            ('search_complete', root_node): When all simulations are done.
+
+        Receives (via send):
+            (policy_np, value): The result of a network prediction for a yielded request.
 
         Args:
             env: The *real* environment instance (used for copying and initial state).
             state: The current state dictionary from the real environment.
 
         Returns:
-            The root node of the MCTS tree after search.
+            Nothing directly, yields results. The final root is yielded in 'search_complete'.
         """
         self.reset_root()
         initial_state_obs = state # Keep the original state dict
 
-        # Internal batching state (pending_evaluations, evaluation_cache) removed
+        # --- State for Generator-Based Batching ---
+        # Cache for network results within this single search instance
+        # Maps unique_state_key to (policy_np, value)
+        evaluation_cache: Dict[str, Tuple[np.ndarray, float]] = {}
+
+        # Helper to create a unique key for a state (moved inside for encapsulation)
+        def get_state_key(s: StateType) -> str:
+            try:
+                items = []
+                # Sort items for consistency
+                for k, v in sorted(s.items()):
+                    if isinstance(v, np.ndarray): items.append((k, v.tobytes()))
+                    elif isinstance(v, list): items.append((k, tuple(v))) # Convert lists to tuples
+                    else: items.append((k, v))
+                return str(tuple(items))
+            except TypeError as e:
+                logger.warning(f"State not easily hashable: {s}. Error: {e}. Using simple str().")
+                return str(s)
 
         search_timer = Timer() if self.profiler else contextlib.nullcontext()
         with search_timer:
-            log_prefix = f"AZ MCTS Search (Network={self.network is not None})" # Updated log prefix
+            log_prefix = f"AZ MCTS Search Gen (Network={self.network is not None})"
             logger.debug(f"--- {log_prefix} Start: State={initial_state_obs} ---")
 
             # TODO: Add Dirichlet noise to root priors if training and network exists
@@ -524,27 +548,39 @@ class AlphaZeroMCTS(MCTS):
 
                 # --- Non-Terminal Leaf Node ---
                 if self.network:
-                    # --- Network-Based Evaluation (Synchronous) ---
+                    # --- Network-Based Evaluation (Yielding Logic) ---
                     leaf_state_obs = leaf_env_state.get_observation()
+                    state_key = get_state_key(leaf_state_obs)
 
-                    # Call network predict directly
-                    policy_np, value = None, 0.0 # Initialize
-                    if self.profiler:
-                        with Timer() as net_timer:
-                            policy_np, value = self.network.predict(leaf_state_obs)
-                        self.profiler.record_network_time(net_timer.elapsed_ms)
+                    if state_key in evaluation_cache:
+                        # Cache Hit
+                        policy_np, value = evaluation_cache[state_key]
+                        logger.debug(f"  Cache Hit: StateKey={state_key}, Value={value:.3f}")
+                        # Expand node immediately using cached policy if not already expanded
+                        if not leaf_node.is_expanded():
+                             self._expand(leaf_node, leaf_env_state, policy_np)
+                        # Backpropagate cached value
+                        self._backpropagate(leaf_node, value)
+                        continue # Move to next simulation
                     else:
-                        policy_np, value = self.network.predict(leaf_state_obs)
+                        # Cache Miss: Yield request and wait for result
+                        logger.debug(f"  Yield Request: StateKey={state_key}")
+                        # Yield the request: identifier, key, state, node needing result
+                        policy_np, value = yield ('predict_request', state_key, leaf_state_obs, leaf_node)
+                        # --- Resumed after yield ---
+                        if policy_np is None or value is None:
+                             logger.error(f"Generator received None result for state {state_key}. Skipping backprop.")
+                             continue # Skip to next simulation
 
-                    logger.debug(f"  Evaluate (NN): Value={value:.3f}")
-
-                    # Expand node using the received policy if not already expanded
-                    if not leaf_node.is_expanded():
-                        self._expand(leaf_node, leaf_env_state, policy_np)
-
-                    # Backpropagate the received value immediately
-                    self._backpropagate(leaf_node, value)
-                    continue # Move to next simulation
+                        logger.debug(f"  Received Result: StateKey={state_key}, Value={value:.3f}")
+                        # Cache the received result
+                        evaluation_cache[state_key] = (policy_np, value)
+                        # Expand node using the received policy if not already expanded
+                        if not leaf_node.is_expanded():
+                            self._expand(leaf_node, leaf_env_state, policy_np)
+                        # Backpropagate the received value
+                        self._backpropagate(leaf_node, value)
+                        continue # Move to next simulation
 
                 else:
                     # --- Networkless Evaluation (Expand + Rollout) ---
@@ -565,9 +601,12 @@ class AlphaZeroMCTS(MCTS):
 
         if self.profiler and isinstance(search_timer, Timer):
             self.profiler.record_search_time(search_timer.elapsed_ms)
-            # No cache stats to log as internal cache was removed
+            # Log cache stats if network was used
+            if self.network:
+                 logger.debug(f"MCTS Search Gen End: Cache size={len(evaluation_cache)}")
 
-        return self.root
+        # Signal completion and yield the final root node
+        yield ('search_complete', self.root)
         # Use self.exploration_constant as c_puct
         if node.visit_count == 0:
             q_value_for_parent = 0

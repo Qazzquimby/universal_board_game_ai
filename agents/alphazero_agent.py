@@ -92,7 +92,7 @@ class AlphaZeroAgent(Agent):
             num_simulations=config.num_simulations,
             network=self.network,
             profiler=self.profiler,
-            # inference_batch_size removed from MCTS constructor
+            # inference_batch_size is not needed by MCTS itself anymore
             # TODO: Add dirichlet noise parameters from config if/when implemented
         )
 
