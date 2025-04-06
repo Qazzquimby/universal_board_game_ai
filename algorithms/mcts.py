@@ -319,7 +319,7 @@ class AlphaZeroMCTS(MCTS):
         network: Optional[AlphaZeroNet] = None, # Type hint Optional
         discount_factor: float = 1.0,
         profiler: Optional[MCTSProfiler] = None,
-        inference_batch_size: int = 32, # Add batch size parameter
+        # inference_batch_size removed, batching will be handled externally
         # TODO: Add dirichlet_epsilon and dirichlet_alpha for root noise
     ):
         super().__init__(
@@ -329,7 +329,6 @@ class AlphaZeroMCTS(MCTS):
         )
         self.network = network
         self.profiler = profiler
-        self.inference_batch_size = inference_batch_size # Store batch size
         # self.dirichlet_epsilon = dirichlet_epsilon
         # self.dirichlet_alpha = dirichlet_alpha
 
@@ -457,31 +456,11 @@ class AlphaZeroMCTS(MCTS):
         self.reset_root()
         initial_state_obs = state # Keep the original state dict
 
-        # --- Prepare for Batching (only if network exists) ---
-        # Stores tuples of (unique_state_key, node_needing_evaluation, env_at_node)
-        pending_evaluations: List[Tuple[str, MCTSNode, BaseEnvironment]] = []
-        # Cache for network results to avoid re-computation within a single search
-        # Maps unique_state_key to (policy_np, value)
-        evaluation_cache: Dict[str, Tuple[np.ndarray, float]] = {}
-
-        # Helper to create a unique key for a state
-        def get_state_key(s: StateType) -> str:
-            try:
-                items = []
-                # Sort items for consistency
-                for k, v in sorted(s.items()):
-                    if isinstance(v, np.ndarray): items.append((k, v.tobytes()))
-                    elif isinstance(v, list): items.append((k, tuple(v))) # Convert lists to tuples
-                    else: items.append((k, v))
-                return str(tuple(items))
-            except TypeError as e:
-                logger.warning(f"State not easily hashable: {s}. Error: {e}. Using simple str().")
-                return str(s)
-
+        # Internal batching state (pending_evaluations, evaluation_cache) removed
 
         search_timer = Timer() if self.profiler else contextlib.nullcontext()
         with search_timer:
-            log_prefix = f"AZ MCTS Search (Batched={self.network is not None})"
+            log_prefix = f"AZ MCTS Search (Network={self.network is not None})" # Updated log prefix
             logger.debug(f"--- {log_prefix} Start: State={initial_state_obs} ---")
 
             # TODO: Add Dirichlet noise to root priors if training and network exists
@@ -545,26 +524,27 @@ class AlphaZeroMCTS(MCTS):
 
                 # --- Non-Terminal Leaf Node ---
                 if self.network:
-                    # --- Network-Based Evaluation ---
+                    # --- Network-Based Evaluation (Synchronous) ---
                     leaf_state_obs = leaf_env_state.get_observation()
-                    state_key = get_state_key(leaf_state_obs)
 
-                    if state_key in evaluation_cache:
-                        # Cache Hit
-                        policy_np, value = evaluation_cache[state_key]
-                        logger.debug(f"  Cache Hit: StateKey={state_key}, Value={value:.3f}")
-                        # Expand node immediately using cached policy if not already expanded
-                        if not leaf_node.is_expanded():
-                             self._expand(leaf_node, leaf_env_state, policy_np)
-                        # Backpropagate cached value
-                        self._backpropagate(leaf_node, value)
-                        continue # Move to next simulation
+                    # Call network predict directly
+                    policy_np, value = None, 0.0 # Initialize
+                    if self.profiler:
+                        with Timer() as net_timer:
+                            policy_np, value = self.network.predict(leaf_state_obs)
+                        self.profiler.record_network_time(net_timer.elapsed_ms)
                     else:
-                        # Cache Miss: Add to pending list
-                        logger.debug(f"  Eval Request: StateKey={state_key}")
-                        # Store state key, node, and a *copy* of the env state at the node
-                        pending_evaluations.append((state_key, leaf_node, leaf_env_state.copy()))
-                        # Don't backpropagate yet, wait for batch result
+                        policy_np, value = self.network.predict(leaf_state_obs)
+
+                    logger.debug(f"  Evaluate (NN): Value={value:.3f}")
+
+                    # Expand node using the received policy if not already expanded
+                    if not leaf_node.is_expanded():
+                        self._expand(leaf_node, leaf_env_state, policy_np)
+
+                    # Backpropagate the received value immediately
+                    self._backpropagate(leaf_node, value)
+                    continue # Move to next simulation
 
                 else:
                     # --- Networkless Evaluation (Expand + Rollout) ---
@@ -579,58 +559,13 @@ class AlphaZeroMCTS(MCTS):
                     self._backpropagate(leaf_node, value)
                     continue # Move to next simulation
 
-
-                # --- Process Batch (if network exists and batch is ready) ---
-                if self.network and (
-                    len(pending_evaluations) >= self.inference_batch_size or
-                    (sim_num == self.num_simulations - 1 and pending_evaluations)
-                   ):
-
-                    logger.debug(f"Processing Batch: Size={len(pending_evaluations)}")
-                    # Extract states and nodes, keeping track of the original env state for expansion
-                    states_to_predict = [env.get_observation() for _, _, env in pending_evaluations]
-                    # Store key, node, and env together for processing results
-                    nodes_to_process = [(key, node, env) for key, node, env in pending_evaluations]
-
-                    # Call batched prediction
-                    policy_list, value_list = [], []
-                    if self.profiler:
-                        with Timer() as net_timer:
-                            policy_list, value_list = self.network.predict_batch(states_to_predict)
-                        self.profiler.record_network_time(net_timer.elapsed_ms)
-                    else:
-                        policy_list, value_list = self.network.predict_batch(states_to_predict)
-
-                    # Distribute results, expand, and backpropagate
-                    if len(policy_list) != len(nodes_to_process) or len(value_list) != len(nodes_to_process):
-                         logger.error(f"Batch prediction result size mismatch! Expected {len(nodes_to_process)}, Got P={len(policy_list)}, V={len(value_list)}")
-                         # Skip processing this batch to avoid index errors
-                    else:
-                        for i, (state_key, node_to_process, original_env_state) in enumerate(nodes_to_process):
-                            policy_np_result, value_result = policy_list[i], value_list[i]
-                            logger.debug(f"  Batch Result: StateKey={state_key}, Value={value_result:.3f}")
-
-                            # Cache the result
-                            evaluation_cache[state_key] = (policy_np_result, value_result)
-
-                            # Expand the node using the received policy if not already expanded
-                            if not node_to_process.is_expanded():
-                                self._expand(node_to_process, original_env_state, policy_np_result)
-
-                            # Backpropagate the received value
-                            self._backpropagate(node_to_process, value_result)
-
-                    # Clear the processed batch
-                    pending_evaluations.clear()
-
+                # --- Internal batch processing block removed ---
 
             # --- End of Simulation Loop ---
 
         if self.profiler and isinstance(search_timer, Timer):
             self.profiler.record_search_time(search_timer.elapsed_ms)
-            if self.network: # Only log cache stats if network was used
-                 logger.debug(f"MCTS Search End: Cache size={len(evaluation_cache)}")
-
+            # No cache stats to log as internal cache was removed
 
         return self.root
         # Use self.exploration_constant as c_puct
