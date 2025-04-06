@@ -284,6 +284,8 @@ def collect_parallel_self_play_data(
     ] = {}
     # Store state before action for history
     states_before_action: Dict[int, StateType] = {}
+    # Track generator states ('running', 'waiting_predict')
+    generator_states: Dict[int, str] = {}
 
     # Get network time *before* self-play if profiling
     net_time_before_self_play = 0.0
@@ -318,6 +320,7 @@ def collect_parallel_self_play_data(
                 mcts_generators[game_idx] = agent.mcts.search_generator(
                     envs[game_idx], state
                 )
+                generator_states[game_idx] = "running"  # Set initial state
                 logger.debug(f"Started MCTS search for game {game_idx}")
 
             # --- Advance MCTS Generators and Collect Network Requests ---
@@ -366,16 +369,24 @@ def collect_parallel_self_play_data(
                 idx_pointer += 1  # Increment pointer for next iteration
 
                 if game_idx not in mcts_generators:
-                    continue  # Generator might have finished already
+                    continue  # Generator might have finished
+
+                # Only advance generators that are not waiting for a prediction
+                if generator_states.get(game_idx) == "waiting_predict":
+                    logger.debug(
+                        f"Skipping generator {game_idx}, waiting for prediction."
+                    )
+                    continue
 
                 generator = mcts_generators[game_idx]
                 try:
-                    # Send None initially or after receiving a result
-                    # Use next() for the very first call to prime the generator
+                    # Use next() for the very first call, send(None) otherwise
                     yielded_value = (
                         next(generator)
                         if generator.gi_frame.f_lasti == -1
-                        else generator.send(None)
+                        else generator.send(
+                            None
+                        )  # Send None because we are just advancing it
                     )
 
                     if yielded_value[0] == "predict_request":
@@ -388,17 +399,15 @@ def collect_parallel_self_play_data(
                         # Register generator as waiting for this state_key
                         if state_key not in waiting_generators:
                             waiting_generators[state_key] = []
-                        # Avoid adding duplicates if generator yields same state multiple times before batch processes
                         if (game_idx, node) not in waiting_generators[state_key]:
                             waiting_generators[state_key].append((game_idx, node))
-                        # Generator is now paused until result is sent back
+                        # Set state to waiting
+                        generator_states[game_idx] = "waiting_predict"
 
                     elif yielded_value[0] == "search_complete":
                         _, root_node = yielded_value
                         logger.debug(f"MCTS search complete for game {game_idx}")
-                        generators_finished_this_cycle.append(
-                            game_idx
-                        )  # Mark for removal later
+                        generators_finished_this_cycle.append(game_idx)
 
                         # --- Process completed search (similar to agent.act logic) ---
                         if not root_node.children:
@@ -454,10 +463,12 @@ def collect_parallel_self_play_data(
                             None,
                         )  # Mark as completed with error
 
-            # Remove finished generators *after* iterating
+            # Remove finished generators and their states *after* iterating
             for game_idx in generators_finished_this_cycle:
                 if game_idx in mcts_generators:
                     del mcts_generators[game_idx]
+                if game_idx in generator_states:
+                    del generator_states[game_idx]  # Clean up state tracking
 
             # --- Process Network Batch if Ready ---
             # Process batch if enough pending requests OR if no generators are running (to flush remaining requests)
@@ -528,28 +539,37 @@ def collect_parallel_self_play_data(
                                         (policy_result, value_result)
                                     )
                                     # Generator will resume execution in the next cycle's generator loop
+                                    # If send was successful, mark generator as running again
+                                    generator_states[waiting_game_idx] = "running"
                                 except StopIteration:
                                     logger.warning(
                                         f"Generator for game {waiting_game_idx} finished while sending result."
                                     )
                                     if waiting_game_idx in mcts_generators:
-                                        del mcts_generators[
+                                        del mcts_generators[waiting_game_idx]
+                                    if waiting_game_idx in generator_states:
+                                        del generator_states[
                                             waiting_game_idx
-                                        ]  # Clean up
+                                        ]  # Clean up state
                                 except Exception as e:
                                     logger.error(
                                         f"Error sending result to generator for game {waiting_game_idx}: {e}",
                                         exc_info=True,
                                     )
                                     if waiting_game_idx in mcts_generators:
-                                        del mcts_generators[
+                                        del mcts_generators[waiting_game_idx]
+                                    if waiting_game_idx in generator_states:
+                                        del generator_states[
                                             waiting_game_idx
-                                        ]  # Clean up
+                                        ]  # Clean up state
                             else:
                                 # This can happen if the generator finished between yielding and batch processing
                                 logger.warning(
                                     f"Generator for game {waiting_game_idx} no longer active while distributing results for state {state_key}."
                                 )
+                                # Clean up its state if it exists
+                                if waiting_game_idx in generator_states:
+                                    del generator_states[waiting_game_idx]
 
             # --- Step Environments for games where MCTS search completed ---
             games_ready_to_step = list(completed_searches.keys())
@@ -688,10 +708,14 @@ def collect_parallel_self_play_data(
                     if game_idx not in ready_for_action_search:
                         ready_for_action_search.append(game_idx)
 
-                # Clean up completed search data
+                # Clean up completed search data and generator state
                 del completed_searches[game_idx]
                 if game_idx in states_before_action:
                     del states_before_action[game_idx]
+                if game_idx in generator_states:
+                    del generator_states[
+                        game_idx
+                    ]  # Should have been deleted already, but safety
 
     # --- End of Collection Loop ---
     if pbar:
