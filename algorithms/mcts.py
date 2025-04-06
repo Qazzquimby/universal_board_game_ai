@@ -2,7 +2,16 @@ import math
 import random
 import time
 import contextlib
-from typing import List, Tuple, Optional, Dict, Set
+from typing import (
+    List,
+    Tuple,
+    Optional,
+    Dict,
+    Set,
+    Generator,
+    Union,
+    Literal,
+)  # Added Generator, Union, Literal
 
 import torch
 from loguru import logger
@@ -13,6 +22,20 @@ from environments.base import ActionType, StateType, BaseEnvironment
 from models.networks import AlphaZeroNet, MuZeroNet
 
 PredictResult = Tuple[np.ndarray, float]
+
+
+# --- Type Aliases for Generator Yield Values ---
+# Yielded when the generator needs a network prediction
+PredictRequestYield = Tuple[Literal["predict_request"], str, StateType]
+# Yielded when the generator has resumed after an internal step (cache hit, rollout)
+ResumedYield = Tuple[Literal["resumed"]]
+# Yielded when the MCTS search is complete
+SearchCompleteYield = Tuple[
+    Literal["search_complete"], "MCTSNode"
+]  # Forward reference MCTSNode
+
+# Union of all possible yield types from search_generator
+GeneratorYield = Union[PredictRequestYield, ResumedYield, SearchCompleteYield]
 
 
 class Timer:
@@ -318,7 +341,7 @@ class AlphaZeroMCTS(MCTS):
         self,
         exploration_constant: float = 1.0,  # c_puct in AlphaZero
         num_simulations: int = 100,
-        network: Optional[AlphaZeroNet] = None, # Type hint Optional
+        network: Optional[AlphaZeroNet] = None,  # Type hint Optional
         discount_factor: float = 1.0,
         profiler: Optional[MCTSProfiler] = None,
         # inference_batch_size removed, batching will be handled externally
@@ -337,8 +360,8 @@ class AlphaZeroMCTS(MCTS):
     def _expand(
         self,
         node: MCTSNode,
-        env_state: BaseEnvironment, # Pass env state for legal actions
-        policy_priors_np: Optional[np.ndarray] = None, # Optional policy from network
+        env_state: BaseEnvironment,  # Pass env state for legal actions
+        policy_priors_np: Optional[np.ndarray] = None,  # Optional policy from network
     ) -> None:
         """
         Expand the leaf node. Uses network policy priors if provided, otherwise uniform.
@@ -353,7 +376,7 @@ class AlphaZeroMCTS(MCTS):
 
         legal_actions = env_state.get_legal_actions()
         if not legal_actions:
-            return # Cannot expand if no legal actions
+            return  # Cannot expand if no legal actions
 
         action_priors_dict = {}
         if self.network and policy_priors_np is not None:
@@ -363,17 +386,23 @@ class AlphaZeroMCTS(MCTS):
                 # Use network's mapping function
                 action_index = self.network.get_action_index(action_key)
 
-                if action_index is not None and 0 <= action_index < len(policy_priors_np):
+                if action_index is not None and 0 <= action_index < len(
+                    policy_priors_np
+                ):
                     prior = policy_priors_np[action_index]
                     action_priors_dict[action_key] = prior
                 else:
                     # Assign 0 prior if action is illegal according to network mapping or out of bounds
                     action_priors_dict[action_key] = 0.0
-                    logger.warning(f"Action {action_key} (index {action_index}) not found in policy vector during expand.")
+                    logger.warning(
+                        f"Action {action_key} (index {action_index}) not found in policy vector during expand."
+                    )
 
             # Log sorted priors for debugging
-            sorted_priors = sorted(action_priors_dict.items(), key=lambda item: item[1], reverse=True)
-            state_obs = env_state.get_observation() # Get obs for logging
+            sorted_priors = sorted(
+                action_priors_dict.items(), key=lambda item: item[1], reverse=True
+            )
+            state_obs = env_state.get_observation()  # Get obs for logging
             logger.debug(
                 f"  Expand (Network): State={state_obs.get('board', state_obs.get('piles', 'N/A'))}, Player={state_obs['current_player']}"
             )
@@ -386,10 +415,12 @@ class AlphaZeroMCTS(MCTS):
             num_legal = len(legal_actions)
             uniform_prior = 1.0 / num_legal if num_legal > 0 else 1.0
             action_priors_dict = {
-                 (tuple(action) if isinstance(action, list) else action): uniform_prior
-                 for action in legal_actions
+                (tuple(action) if isinstance(action, list) else action): uniform_prior
+                for action in legal_actions
             }
-            logger.debug(f"  Expand (Uniform): Legal Actions={legal_actions}, Prior={uniform_prior:.3f}")
+            logger.debug(
+                f"  Expand (Uniform): Legal Actions={legal_actions}, Prior={uniform_prior:.3f}"
+            )
 
         # Call the base node expansion method
         node.expand(action_priors_dict)
@@ -411,7 +442,6 @@ class AlphaZeroMCTS(MCTS):
                                          it was at the leaf_node.
         """
         super()._backpropagate(leaf_node, value_from_leaf_perspective)
-
 
     def _score_child(self, node: MCTSNode, parent_visits: int) -> float:
         """Calculate the PUCT score for a node."""
@@ -438,13 +468,15 @@ class AlphaZeroMCTS(MCTS):
             u_score = (
                 self.exploration_constant
                 * node.prior
-                * math.sqrt(parent_visits) # parent_visits > 0 guaranteed here
+                * math.sqrt(parent_visits)  # parent_visits > 0 guaranteed here
                 / (1 + node.visit_count)
             )
         return q_value_for_parent + u_score
 
     # Renamed from search to search_generator
-    def search_generator(self, env: BaseEnvironment, state: StateType):
+    def search_generator(
+        self, env: BaseEnvironment, state: StateType
+    ) -> Generator[GeneratorYield, Optional[PredictResult], None]:
         """
         Generator-based MCTS search. Yields network requests and expects results via send().
 
@@ -463,7 +495,7 @@ class AlphaZeroMCTS(MCTS):
             Nothing directly, yields results. The final root is yielded in 'search_complete'.
         """
         self.reset_root()
-        initial_state_obs = state # Keep the original state dict
+        initial_state_obs = state  # Keep the original state dict
 
         # --- State for Generator-Based Batching ---
         # Cache for network results within this single search instance
@@ -476,12 +508,17 @@ class AlphaZeroMCTS(MCTS):
                 items = []
                 # Sort items for consistency
                 for k, v in sorted(s.items()):
-                    if isinstance(v, np.ndarray): items.append((k, v.tobytes()))
-                    elif isinstance(v, list): items.append((k, tuple(v))) # Convert lists to tuples
-                    else: items.append((k, v))
+                    if isinstance(v, np.ndarray):
+                        items.append((k, v.tobytes()))
+                    elif isinstance(v, list):
+                        items.append((k, tuple(v)))  # Convert lists to tuples
+                    else:
+                        items.append((k, v))
                 return str(tuple(items))
             except TypeError as e:
-                logger.warning(f"State not easily hashable: {s}. Error: {e}. Using simple str().")
+                logger.warning(
+                    f"State not easily hashable: {s}. Error: {e}. Using simple str()."
+                )
                 return str(s)
 
         search_timer = Timer() if self.profiler else contextlib.nullcontext()
@@ -497,17 +534,21 @@ class AlphaZeroMCTS(MCTS):
                 # --- Run one simulation path ---
                 node = self.root
                 sim_env = env.copy()
-                sim_env.set_state(initial_state_obs) # Start from the root state
+                sim_env.set_state(initial_state_obs)  # Start from the root state
                 search_path = [node]
 
                 # 1. Selection: Find a leaf node using PUCT (_score_child).
                 while node.is_expanded() and not sim_env.is_game_over():
                     parent_visits = node.visit_count
-                    valid_children = node.children # Assume children are valid for deterministic games
+                    valid_children = (
+                        node.children
+                    )  # Assume children are valid for deterministic games
 
                     if not valid_children:
-                        logger.warning("MCTS Select: Node expanded but no children found.")
-                        break # Cannot select further
+                        logger.warning(
+                            "MCTS Select: Node expanded but no children found."
+                        )
+                        break  # Cannot select further
 
                     child_scores = {
                         act: self._score_child(child, parent_visits)
@@ -515,38 +556,52 @@ class AlphaZeroMCTS(MCTS):
                     }
 
                     best_action = max(child_scores, key=child_scores.get)
-                    logger.debug(f"  Select: ParentVisits={parent_visits}, Scores={ {a: f'{s:.3f}' for a, s in child_scores.items()} }, Chosen={best_action}")
+                    logger.debug(
+                        f"  Select: ParentVisits={parent_visits}, Scores={ {a: f'{s:.3f}' for a, s in child_scores.items()} }, Chosen={best_action}"
+                    )
 
                     try:
                         sim_env.step(best_action)
-                        node = valid_children[best_action] # Move to the chosen child node
+                        node = valid_children[
+                            best_action
+                        ]  # Move to the chosen child node
                         search_path.append(node)
                     except (ValueError, KeyError) as e:
-                         logger.error(f"MCTS Select: Error stepping env or finding child for action {best_action}. Error: {e}")
-                         node = None # Signal error
-                         break
+                        logger.error(
+                            f"MCTS Select: Error stepping env or finding child for action {best_action}. Error: {e}"
+                        )
+                        node = None  # Signal error
+                        break
 
-                if node is None: continue # Skip to next simulation if error occurred
+                if node is None:
+                    continue  # Skip to next simulation if error occurred
 
                 # --- Reached a leaf node (or terminal state) ---
                 leaf_node = node
-                leaf_env_state = sim_env # Environment state at the leaf
+                leaf_env_state = sim_env  # Environment state at the leaf
 
-                value = 0.0 # Default value
-                policy_np = None # Default policy
+                value = 0.0  # Default value
+                policy_np = None  # Default policy
 
                 # 2. Evaluation: Determine value and potentially expand.
                 if leaf_env_state.is_game_over():
                     # Game ended during selection. Determine the outcome.
-                    player_at_leaf = leaf_env_state.get_current_player() # Whose turn it *would* be
+                    player_at_leaf = (
+                        leaf_env_state.get_current_player()
+                    )  # Whose turn it *would* be
                     winner = leaf_env_state.get_winning_player()
-                    if winner is None: value = 0.0
-                    elif winner == player_at_leaf: value = 1.0 # Player at leaf wins
-                    else: value = -1.0 # Player at leaf loses
-                    logger.debug(f"  Terminal Found during Select: Winner={winner}, PlayerAtNode={player_at_leaf}, Value={value}")
+                    if winner is None:
+                        value = 0.0
+                    elif winner == player_at_leaf:
+                        value = 1.0  # Player at leaf wins
+                    else:
+                        value = -1.0  # Player at leaf loses
+                    logger.debug(
+                        f"  Terminal Found during Select: Winner={winner}, PlayerAtNode={player_at_leaf}, Value={value}"
+                    )
                     # Backpropagate terminal value immediately
                     self._backpropagate(leaf_node, value)
-                    continue # Move to next simulation
+                    continue  # Move to next simulation
 
                 # --- Non-Terminal Leaf Node ---
                 if self.network:
@@ -557,39 +612,60 @@ class AlphaZeroMCTS(MCTS):
                     if state_key in evaluation_cache:
                         # Cache Hit
                         policy_np, value = evaluation_cache[state_key]
-                        logger.debug(f"  Cache Hit: StateKey={state_key}, Value={value:.3f}")
-                        # Expand node immediately using cached policy if not already expanded
+                        logger.debug(
+                            f"  Cache Hit: StateKey={state_key}, Value={value:.3f}"
+                        )
                         if not leaf_node.is_expanded():
-                             self._expand(leaf_node, leaf_env_state, policy_np)
-                        # Backpropagate cached value
+                            self._expand(leaf_node, leaf_env_state, policy_np)
                         self._backpropagate(leaf_node, value)
-                        continue # Move to next simulation
+                        resumed_yield: ResumedYield = ("resumed",)
+                        yield resumed_yield
                     else:
                         # Cache Miss: Yield request and wait for result
                         logger.debug(f"  Yield Request: StateKey={state_key}")
                         # Yield only the info needed by the caller to get the prediction
+                        predict_request_yield: PredictRequestYield = (
+                            "predict_request",
+                            state_key,
+                            leaf_state_obs,
+                        )
                         # Add type hint for received value
-                        received_result: Optional[PredictResult] = yield ('predict_request', state_key, leaf_state_obs)
+                        received_result: Optional[
+                            PredictResult
+                        ] = yield predict_request_yield
                         # --- Resumed after yield ---
                         # Expecting received_result to be a tuple (policy_np, value)
                         # Check if None explicitly first
                         if received_result is None:
-                            logger.error(f"Generator received None result for state {state_key}. Skipping backprop.")
+                            logger.error(
+                                f"Generator received None result for state {state_key}. Skipping backprop."
+                            )
                             continue
                         # Check tuple structure and types more carefully
-                        if not isinstance(received_result, tuple) or len(received_result) != 2:
-                             logger.error(f"Generator received invalid result structure for state {state_key}. Type: {type(received_result)}, Value: {received_result}. Skipping backprop.")
-                             continue
+                        if (
+                            not isinstance(received_result, tuple)
+                            or len(received_result) != 2
+                        ):
+                            logger.error(
+                                f"Generator received invalid result structure for state {state_key}. Type: {type(received_result)}, Value: {received_result}. Skipping backprop."
+                            )
+                            continue
 
-                        policy_np, value = received_result # Unpack the received tuple
+                        policy_np, value = received_result  # Unpack the received tuple
                         # Add extra check for types inside the tuple
-                        if not isinstance(policy_np, np.ndarray) or not isinstance(value, (float, int)): # Allow int just in case
-                             logger.error(f"Generator received tuple with unexpected types for state {state_key}: ({type(policy_np)}, {type(value)}). Skipping backprop.")
-                             continue
+                        if not isinstance(policy_np, np.ndarray) or not isinstance(
+                            value, (float, int)
+                        ):  # Allow int just in case
+                            logger.error(
+                                f"Generator received tuple with unexpected types for state {state_key}: ({type(policy_np)}, {type(value)}). Skipping backprop."
+                            )
+                            continue
                         # Convert value to float if it was int
                         value = float(value)
 
-                        logger.debug(f"  Received Result: StateKey={state_key}, Value={value:.3f}")
+                        logger.debug(
+                            f"  Received Result: StateKey={state_key}, Value={value:.3f}"
+                        )
                         # Cache the received result
                         evaluation_cache[state_key] = (policy_np, value)
                         # Expand node using the received policy if not already expanded
@@ -597,20 +673,28 @@ class AlphaZeroMCTS(MCTS):
                             self._expand(leaf_node, leaf_env_state, policy_np)
                         # Backpropagate the received value
                         self._backpropagate(leaf_node, value)
-                        continue # Move to next simulation
+                        # Instead of continue, signal resumption
+                        resumed_yield: ResumedYield = ("resumed",)
+                        yield resumed_yield
+                        # continue # REMOVED
 
                 else:
                     # --- Networkless Evaluation (Expand + Rollout) ---
                     logger.debug("  Networkless: Expanding and Rolling out.")
                     # Expand using uniform priors
                     if not leaf_node.is_expanded():
-                        self._expand(leaf_node, leaf_env_state, policy_priors_np=None) # Pass None policy
+                        self._expand(
+                            leaf_node, leaf_env_state, policy_priors_np=None
+                        )  # Pass None policy
 
                     # Perform random rollout using base class method
-                    value = super()._rollout(leaf_env_state) # Call MCTS._rollout
+                    value = super()._rollout(leaf_env_state)  # Call MCTS._rollout
                     # Backpropagate rollout result immediately
                     self._backpropagate(leaf_node, value)
-                    continue # Move to next simulation
+                    # Instead of continue, signal resumption
+                    resumed_yield: ResumedYield = ("resumed",)
+                    yield resumed_yield
+                    # continue # REMOVED
 
                 # --- Internal batch processing block removed ---
 
@@ -620,10 +704,12 @@ class AlphaZeroMCTS(MCTS):
             self.profiler.record_search_time(search_timer.elapsed_ms)
             # Log cache stats if network was used
             if self.network:
-                 logger.debug(f"MCTS Search Gen End: Cache size={len(evaluation_cache)}")
+                logger.debug(f"MCTS Search Gen End: Cache size={len(evaluation_cache)}")
 
         # Signal completion and yield the final root node
-        yield ('search_complete', self.root)
+        # Explicitly cast to satisfy type checker if needed, though structure matches
+        search_complete_yield: SearchCompleteYield = ("search_complete", self.root)
+        yield search_complete_yield
 
     # Removed duplicated search method - search_generator is the active one
 
