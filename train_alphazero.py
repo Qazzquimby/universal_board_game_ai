@@ -390,17 +390,22 @@ def collect_parallel_self_play_data(
                     )
 
                     if yielded_value[0] == "predict_request":
-                        _, state_key, state_obs, node = yielded_value
+                        # Generator now yields ('predict_request', state_key, state_obs)
+                        _, state_key, state_obs = yielded_value
                         logger.debug(
                             f"Game {game_idx} yielded request for state {state_key}"
                         )
-                        # Store request
-                        pending_requests.append((game_idx, state_key, state_obs, node))
-                        # Register generator as waiting for this state_key
+                        # Generator yields ('predict_request', state_key, state_obs)
+                        # We need the node later if we want to expand it, but MCTS handles that internally now.
+                        # Let's stick to the simpler yield for now.
+                        # Store request (game_idx, state_key, state_obs)
+                        pending_requests.append((game_idx, state_key, state_obs))
+                        # Register generator's game_idx as waiting for this state_key
                         if state_key not in waiting_generators:
                             waiting_generators[state_key] = []
-                        if (game_idx, node) not in waiting_generators[state_key]:
-                            waiting_generators[state_key].append((game_idx, node))
+                        # Store only game_idx, as the generator knows its internal node state
+                        if game_idx not in waiting_generators[state_key]:
+                             waiting_generators[state_key].append(game_idx)
                         # Set state to waiting
                         generator_states[game_idx] = "waiting_predict"
 
@@ -481,7 +486,8 @@ def collect_parallel_self_play_data(
 
                 # --- Prepare Batch ---
                 # Deduplicate requests for the same state_key within this batch
-                batch_dict: Dict[str, Tuple[StateType, List[Tuple[int, MCTSNode]]]] = {}
+                # Maps state_key -> (state_obs, List[game_idx])
+                batch_dict: Dict[str, Tuple[StateType, List[int]]] = {} # Stores state_obs and list of waiting game_idx
                 requests_in_batch = pending_requests[
                     :batch_size_to_process
                 ]  # Take the requests for this batch
@@ -489,14 +495,13 @@ def collect_parallel_self_play_data(
                     batch_size_to_process:
                 ]  # Remove them from pending list
 
-                for game_idx, state_key, state_obs, node in requests_in_batch:
+                for game_idx, state_key, state_obs in requests_in_batch:
                     if state_key not in batch_dict:
                         # Store the state observation only once per unique state key
                         batch_dict[state_key] = (state_obs, [])
-                    # Add the waiting game/node to the list for this state key
-                    # Check if this specific game/node pair is already waiting (shouldn't happen with current logic, but safety)
-                    if (game_idx, node) not in batch_dict[state_key][1]:
-                        batch_dict[state_key][1].append((game_idx, node))
+                    # Add the waiting game_idx to the list for this state key
+                    if game_idx not in batch_dict[state_key][1]:
+                         batch_dict[state_key][1].append(game_idx) # Add game_idx to list for this state
 
                 state_keys_in_batch = list(batch_dict.keys())
                 states_to_predict_batch = [
@@ -524,33 +529,36 @@ def collect_parallel_self_play_data(
                         policy_result, value_result = policy_list[i], value_list[i]
                         logger.debug(f"Distributing result for state {state_key}")
 
-                        # Find all generators/nodes waiting for this state_key from the batch_dict
-                        waiting_list = batch_dict[state_key][1]
+                        # Find all game indices waiting for this state_key from the batch_dict
+                        waiting_game_indices = batch_dict[state_key][1] # Get list of game_idx
                         # Also clear from the global waiting dict (important!)
                         if state_key in waiting_generators:
                             del waiting_generators[state_key]
 
-                        for waiting_game_idx, waiting_node in waiting_list:
+                        for waiting_game_idx in waiting_game_indices: # Iterate through game indices
                             if waiting_game_idx in mcts_generators:
                                 generator_to_resume = mcts_generators[waiting_game_idx]
                                 try:
-                                    # Send result back to the specific waiting generator
+                                    # Send the (policy, value) tuple result back
                                     generator_to_resume.send(
-                                        (policy_result, value_result)
+                                        (policy_result, value_result) # Send the tuple
                                     )
                                     # Generator will resume execution in the next cycle's generator loop
                                     # If send was successful, mark generator as running again
                                     generator_states[waiting_game_idx] = "running"
                                 except StopIteration:
-                                    logger.warning(
-                                        f"Generator for game {waiting_game_idx} finished while sending result."
+                                    # This means the generator finished *immediately* after processing the sent result.
+                                    # This is expected if the sent result was for the very last simulation.
+                                    logger.debug(
+                                        f"Generator for game {waiting_game_idx} finished immediately after receiving result (expected for last sim)."
                                     )
+                                    # Clean up the generator and its state tracking.
+                                    # The 'search_complete' yield might not have been processed by the main loop yet,
+                                    # but the generator is done.
                                     if waiting_game_idx in mcts_generators:
                                         del mcts_generators[waiting_game_idx]
                                     if waiting_game_idx in generator_states:
-                                        del generator_states[
-                                            waiting_game_idx
-                                        ]  # Clean up state
+                                        del generator_states[waiting_game_idx]
                                 except Exception as e:
                                     logger.error(
                                         f"Error sending result to generator for game {waiting_game_idx}: {e}",
