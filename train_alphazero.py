@@ -1,15 +1,14 @@
 import sys
 import json
 import datetime
-import random  # Import random
+import random
 from typing import (
     Tuple,
     List,
     Dict,
     Generator,
-    Any,
     Optional,
-)  # Import Generator, Any, Optional
+)
 from dataclasses import dataclass
 
 import numpy as np
@@ -18,71 +17,12 @@ from loguru import logger
 
 from core.config import AppConfig, DATA_DIR
 from environments.base import BaseEnvironment, StateType, ActionType
-from agents.alphazero_agent import AlphaZeroAgent, EpisodeResult
+from agents.alphazero_agent import AlphaZeroAgent
 from factories import get_environment, get_agents
 from utils.plotting import plot_losses
-from algorithms.mcts import Timer, MCTSNode  # Import MCTSNode
+from algorithms.mcts import Timer, PredictResult
 
 LOG_DIR = DATA_DIR / "game_logs"
-
-
-def run_self_play_game(
-    env: BaseEnvironment, agent: AlphaZeroAgent
-) -> Tuple[float, int, EpisodeResult]:
-    """
-    Plays one game of self-play using the AlphaZero agent.
-    The agent collects training data internally via agent.act(train=True) and
-    processes it in finish_episode.
-
-    Args:
-        env: The environment instance.
-        agent: The AlphaZero agent instance.
-
-    Returns:
-        A tuple containing:
-        - final_outcome: The outcome for player 0 (+1 win, -1 loss, 0 draw).
-        - num_steps: The number of steps taken in the game.
-        - episode_result: An EpisodeResult object containing buffer experiences and logged history.
-    """
-    obs = env.reset()
-    agent.reset()
-    done = False
-    game_steps = 0
-
-    while not done:
-        current_player = env.get_current_player()
-        state = obs
-
-        # agent.act now uses the profiler internally if it exists
-        action = agent.act(state, train=True)
-
-        if action is None:
-            logger.warning(f"Agent returned None action in self-play. Ending game.")
-            # Assign outcome based on rules (e.g., loss for player who can't move)
-            # For simplicity, let's call it a draw if this happens unexpectedly.
-            final_outcome = 0.0
-            break
-
-        try:
-            obs, _, done = env.step(action)
-            game_steps += 1
-        except ValueError as e:
-            logger.warning(
-                f"Invalid action {action} during self-play. Error: {e}. Ending game."
-            )
-            # Penalize the player who made the invalid move
-            final_outcome = -1.0 if current_player == 0 else 1.0
-            break
-
-    # If loop finished normally
-    if "final_outcome" not in locals():
-        winner = env.get_winning_player()
-        if winner == 0:
-            final_outcome = 1.0
-        elif winner == 1:
-            final_outcome = -1.0
-        else:  # Draw
-            final_outcome = 0.0
 
 
 def _default_serializer(obj):
@@ -219,6 +159,15 @@ def load_game_logs_into_buffer(agent: AlphaZeroAgent, env_name: str, buffer_limi
 
 
 @dataclass
+class PredictRequest:
+    """Bundles information needed for a network prediction request."""
+
+    game_idx: int
+    state_key: str
+    state_obs: StateType
+
+
+@dataclass
 class SelfPlayResult:
     """Holds the results of the self-play data collection phase."""
 
@@ -265,7 +214,7 @@ def collect_parallel_self_play_data(
     parallel_histories: Dict[int, List[Tuple[StateType, ActionType, np.ndarray]]] = {
         i: [] for i in range(num_parallel_games)
     }
-    dones = [False] * num_parallel_games
+    game_is_done = [False] * num_parallel_games
     # Track MCTS search generators for games waiting for an action
     # Maps game_idx -> generator instance
     mcts_generators: Dict[int, Generator] = {}
@@ -273,10 +222,10 @@ def collect_parallel_self_play_data(
     ready_for_action_search: List[int] = list(range(num_parallel_games))
 
     # --- State for External Batching ---
-    # Stores requests yielded by generators: List[(game_idx, state_key, state_obs, node)]
-    pending_requests: List[Tuple[int, str, StateType, MCTSNode]] = []
-    # Maps state_key -> List[Tuple[int, MCTSNode]] for generators waiting on that state
-    waiting_generators: Dict[str, List[Tuple[int, MCTSNode]]] = {}
+    # Stores requests yielded by generators
+    pending_requests: List[PredictRequest] = []
+    # Maps state_key -> List[game_idx] for generators waiting on that state
+    waiting_generators: Dict[str, List[int]] = {}
     # Store chosen actions/policies when search completes, before stepping env
     # Maps game_idx -> (action, policy_target)
     completed_searches: Dict[
@@ -307,20 +256,17 @@ def collect_parallel_self_play_data(
 
             # --- Start MCTS searches for games needing an action ---
             games_to_start_search = ready_for_action_search[:]
-            ready_for_action_search.clear()  # Clear the list as we are starting searches
+            ready_for_action_search.clear()
             for game_idx in games_to_start_search:
-                if dones[game_idx]:
-                    continue  # Skip finished games
+                if game_is_done[game_idx]:
+                    continue
 
                 state = observations[game_idx]
-                states_before_action[
-                    game_idx
-                ] = state.copy()  # Store state before action search
-                # Create and store the generator for this game's MCTS search
+                states_before_action[game_idx] = state.copy()
                 mcts_generators[game_idx] = agent.mcts.search_generator(
                     envs[game_idx], state
                 )
-                generator_states[game_idx] = "running"  # Set initial state
+                generator_states[game_idx] = "running"
                 logger.debug(f"Started MCTS search for game {game_idx}")
 
             # --- Advance MCTS Generators and Collect Network Requests ---
@@ -338,7 +284,7 @@ def collect_parallel_self_play_data(
                 )
                 all_done = True
                 for i in range(num_parallel_games):
-                    if not dones[i]:
+                    if not game_is_done[i]:
                         all_done = False
                         if (
                             i not in mcts_generators
@@ -398,14 +344,20 @@ def collect_parallel_self_play_data(
                         # Generator yields ('predict_request', state_key, state_obs)
                         # We need the node later if we want to expand it, but MCTS handles that internally now.
                         # Let's stick to the simpler yield for now.
-                        # Store request (game_idx, state_key, state_obs)
-                        pending_requests.append((game_idx, state_key, state_obs))
+                        # Store request as a PredictRequest object
+                        pending_requests.append(
+                            PredictRequest(
+                                game_idx=game_idx,
+                                state_key=state_key,
+                                state_obs=state_obs,
+                            )
+                        )
                         # Register generator's game_idx as waiting for this state_key
                         if state_key not in waiting_generators:
                             waiting_generators[state_key] = []
                         # Store only game_idx, as the generator knows its internal node state
                         if game_idx not in waiting_generators[state_key]:
-                             waiting_generators[state_key].append(game_idx)
+                            waiting_generators[state_key].append(game_idx)
                         # Set state to waiting
                         generator_states[game_idx] = "waiting_predict"
 
@@ -455,6 +407,11 @@ def collect_parallel_self_play_data(
                             None,
                             None,
                         )  # Mark as completed with error
+                    # Ensure generator and state are removed
+                    if game_idx in mcts_generators:
+                        del mcts_generators[game_idx]  # ADD THIS
+                    if game_idx in generator_states:
+                        del generator_states[game_idx]
 
                 except Exception as e:
                     logger.error(
@@ -467,6 +424,11 @@ def collect_parallel_self_play_data(
                             None,
                             None,
                         )  # Mark as completed with error
+                    # Ensure generator and state are removed immediately on error
+                    if game_idx in mcts_generators:
+                        del mcts_generators[game_idx]
+                    if game_idx in generator_states:
+                        del generator_states[game_idx]
 
             # Remove finished generators and their states *after* iterating
             for game_idx in generators_finished_this_cycle:
@@ -487,21 +449,23 @@ def collect_parallel_self_play_data(
                 # --- Prepare Batch ---
                 # Deduplicate requests for the same state_key within this batch
                 # Maps state_key -> (state_obs, List[game_idx])
-                batch_dict: Dict[str, Tuple[StateType, List[int]]] = {} # Stores state_obs and list of waiting game_idx
-                requests_in_batch = pending_requests[
-                    :batch_size_to_process
-                ]  # Take the requests for this batch
-                pending_requests = pending_requests[
-                    batch_size_to_process:
-                ]  # Remove them from pending list
+                batch_dict: Dict[str, Tuple[StateType, List[int]]] = {}
 
-                for game_idx, state_key, state_obs in requests_in_batch:
-                    if state_key not in batch_dict:
+                # Take the requests for this batch
+                requests_in_batch: List[PredictRequest] = pending_requests[
+                    :batch_size_to_process
+                ]
+                # Remove them from pending list
+                pending_requests = pending_requests[batch_size_to_process:]
+
+                # Process PredictRequest objects
+                for request in requests_in_batch:
+                    if request.state_key not in batch_dict:
                         # Store the state observation only once per unique state key
-                        batch_dict[state_key] = (state_obs, [])
+                        batch_dict[request.state_key] = (request.state_obs, [])
                     # Add the waiting game_idx to the list for this state key
-                    if game_idx not in batch_dict[state_key][1]:
-                         batch_dict[state_key][1].append(game_idx) # Add game_idx to list for this state
+                    if request.game_idx not in batch_dict[request.state_key][1]:
+                        batch_dict[request.state_key][1].append(request.game_idx)
 
                 state_keys_in_batch = list(batch_dict.keys())
                 states_to_predict_batch = [
@@ -509,7 +473,6 @@ def collect_parallel_self_play_data(
                 ]
 
                 # --- Call Network ---
-                policy_list, value_list = [], []
                 if agent.profiler:
                     with Timer() as net_timer:
                         policy_list, value_list = agent.network.predict_batch(
@@ -530,22 +493,27 @@ def collect_parallel_self_play_data(
                         logger.debug(f"Distributing result for state {state_key}")
 
                         # Find all game indices waiting for this state_key from the batch_dict
-                        waiting_game_indices = batch_dict[state_key][1] # Get list of game_idx
+                        waiting_game_indices = batch_dict[state_key][
+                            1
+                        ]  # Get list of game_idx
                         # Also clear from the global waiting dict (important!)
                         if state_key in waiting_generators:
                             del waiting_generators[state_key]
 
-                        for waiting_game_idx in waiting_game_indices: # Iterate through game indices
+                        for (
+                            waiting_game_idx
+                        ) in waiting_game_indices:  # Iterate through game indices
                             if waiting_game_idx in mcts_generators:
                                 generator_to_resume = mcts_generators[waiting_game_idx]
                                 try:
                                     # Send the (policy, value) tuple result back
-                                    generator_to_resume.send(
-                                        (policy_result, value_result) # Send the tuple
+                                    result_tuple: PredictResult = (
+                                        policy_result,
+                                        value_result,
                                     )
-                                    # Generator will resume execution in the next cycle's generator loop
-                                    # If send was successful, mark generator as running again
-                                    generator_states[waiting_game_idx] = "running"
+                                    generator_to_resume.send(result_tuple)
+                                    # Generator will resume execution in the next cycle's generator loop.
+                                    # so do not mark generator as 'running' here.
                                 except StopIteration:
                                     # This means the generator finished *immediately* after processing the sent result.
                                     # This is expected if the sent result was for the very last simulation.
@@ -611,7 +579,9 @@ def collect_parallel_self_play_data(
             for game_idx in games_ready_to_step:
                 action, policy_target = completed_searches[game_idx]
 
-                if dones[game_idx]:  # If game ended previously (e.g., MCTS error)
+                if game_is_done[
+                    game_idx
+                ]:  # If game ended previously (e.g., MCTS error)
                     step_dones[game_idx] = True
                     next_observations[game_idx] = observations[game_idx]
                     rewards[game_idx] = 0.0
@@ -621,7 +591,7 @@ def collect_parallel_self_play_data(
                     logger.error(
                         f"Game {game_idx} MCTS completed but action is None. Ending game."
                     )
-                    dones[game_idx] = True
+                    game_is_done[game_idx] = True
                     step_dones[game_idx] = True
                     next_observations[game_idx] = observations[game_idx]
                     rewards[game_idx] = 0.0
@@ -664,9 +634,9 @@ def collect_parallel_self_play_data(
             # --- Update Game States and Handle Finished Games ---
             for game_idx in games_ready_to_step:  # Only update games we tried to step
                 observations[game_idx] = next_observations[game_idx]
-                dones[game_idx] = step_dones[game_idx]
+                game_is_done[game_idx] = step_dones[game_idx]
 
-                if dones[game_idx]:
+                if game_is_done[game_idx]:
                     # Game finished, process history
                     winner = envs[game_idx].get_winning_player()
                     final_outcome = 1.0 if winner == 0 else -1.0 if winner == 1 else 0.0
@@ -706,7 +676,7 @@ def collect_parallel_self_play_data(
 
                     # Reset environment and history for this index
                     observations[game_idx] = envs[game_idx].reset()
-                    dones[game_idx] = False
+                    game_is_done[game_idx] = False
                     parallel_histories[game_idx] = []
                     # Mark ready for next action search
                     if game_idx not in ready_for_action_search:

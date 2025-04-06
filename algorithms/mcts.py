@@ -12,6 +12,8 @@ from core.config import MuZeroConfig
 from environments.base import ActionType, StateType, BaseEnvironment
 from models.networks import AlphaZeroNet, MuZeroNet
 
+PredictResult = Tuple[np.ndarray, float]
+
 
 class Timer:
     """Context manager for timing code blocks."""
@@ -566,20 +568,27 @@ class AlphaZeroMCTS(MCTS):
                         # Cache Miss: Yield request and wait for result
                         logger.debug(f"  Yield Request: StateKey={state_key}")
                         # Yield only the info needed by the caller to get the prediction
-                        received_result = yield ('predict_request', state_key, leaf_state_obs)
+                        # Add type hint for received value
+                        received_result: Optional[PredictResult] = yield ('predict_request', state_key, leaf_state_obs)
                         # --- Resumed after yield ---
                         # Expecting received_result to be a tuple (policy_np, value)
+                        # Check if None explicitly first
+                        if received_result is None:
+                            logger.error(f"Generator received None result for state {state_key}. Skipping backprop.")
+                            continue
+                        # Check tuple structure and types more carefully
                         if not isinstance(received_result, tuple) or len(received_result) != 2:
-                             # Log the type and value received for detailed debugging
-                             logger.error(f"Generator received invalid result for state {state_key}. Type: {type(received_result)}, Value: {received_result}. Skipping backprop.")
-                             continue # Skip to next simulation
+                             logger.error(f"Generator received invalid result structure for state {state_key}. Type: {type(received_result)}, Value: {received_result}. Skipping backprop.")
+                             continue
 
-                        # Now we know it's a tuple of length 2
                         policy_np, value = received_result # Unpack the received tuple
-                        # Add extra check for None values inside the tuple, just in case
-                        if policy_np is None or value is None:
-                             logger.error(f"Generator received tuple with None values for state {state_key}: ({policy_np}, {value}). Skipping backprop.")
-                             continue # Skip to next simulation
+                        # Add extra check for types inside the tuple
+                        if not isinstance(policy_np, np.ndarray) or not isinstance(value, (float, int)): # Allow int just in case
+                             logger.error(f"Generator received tuple with unexpected types for state {state_key}: ({type(policy_np)}, {type(value)}). Skipping backprop.")
+                             continue
+                        # Convert value to float if it was int
+                        value = float(value)
+
                         logger.debug(f"  Received Result: StateKey={state_key}, Value={value:.3f}")
                         # Cache the received result
                         evaluation_cache[state_key] = (policy_np, value)
