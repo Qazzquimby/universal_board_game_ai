@@ -21,9 +21,6 @@ def get_environment(env_config: EnvConfig) -> BaseEnvironment:
     """Factory function to create environment instances."""
     if env_config.name.lower() == "connect4":
         # Use connect4 specific dimensions from config
-        logger.info(
-            f"Using connect4 environment ({env_config.width}x{env_config.height})"
-        )
         return Connect4(
             width=env_config.width,
             height=env_config.height,
@@ -31,7 +28,6 @@ def get_environment(env_config: EnvConfig) -> BaseEnvironment:
             max_steps=env_config.max_steps,
         )
     elif env_config.name.lower() == "nim":
-        logger.info(f"Using Nim environment with piles: {env_config.nim_piles}")
         return NimEnv(
             initial_piles=env_config.nim_piles, num_players=env_config.num_players
         )
