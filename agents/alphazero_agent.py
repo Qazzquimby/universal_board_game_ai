@@ -242,6 +242,15 @@ class AlphaZeroAgent(Agent):
 
         # Return action, and policy_target if training
         if train:
+            # Ensure policy_target is not None before returning
+            if policy_target is None:
+                raise ValueError(
+                    "Policy target is None during training act(). This should not happen."
+                )
+                # Handle error case: maybe return a default policy or raise exception?
+                # For now, let's create a zero policy as a fallback, though this indicates a deeper issue.
+                # policy_size = self.network._calculate_policy_size(self.env) if self.network else self.env.policy_vector_size
+                # policy_target = np.zeros(policy_size, dtype=np.float32)
             return chosen_action, policy_target
         else:
             return chosen_action
@@ -265,7 +274,17 @@ class AlphaZeroAgent(Agent):
         policy_target = np.zeros(policy_size, dtype=np.float32)
         total_visits = np.sum(visit_counts)
 
+        # Log visit counts for debugging, especially if total_visits is 0
+        if self.config.debug_mode or total_visits == 0:
+            visit_dict = {str(a): v for a, v in zip(actions, visit_counts)}
+            logger.debug(f"[DEBUG PolicyTarget] Visit Counts: {visit_dict}")
+            logger.debug(f"[DEBUG PolicyTarget] Total Visits: {total_visits}")
+
         if total_visits > 0:
+            # --- Calculate policy based on visit counts ---
+            logger.debug(
+                "[DEBUG PolicyTarget] Calculating policy based on VISIT COUNTS."
+            )
             # Use the network's action mapping if available
             if self.network:
                 for i, action in enumerate(actions):
@@ -305,8 +324,15 @@ class AlphaZeroAgent(Agent):
                 "No visits recorded in MCTS root. Policy target will be zeros."
             )
         # Ensure policy target sums to 1 (handle potential float issues)
-        if policy_target.sum() > 0:
-            policy_target /= policy_target.sum()
+        current_sum = policy_target.sum()
+        if current_sum > 1e-6:  # Avoid division by zero
+            policy_target /= current_sum
+        elif policy_target.size > 0:
+            # If sum is zero but size > 0, distribute uniformly as a last resort?
+            logger.warning(
+                f"Policy target sum is near zero ({current_sum}). Setting uniform distribution."
+            )
+            policy_target.fill(1.0 / policy_target.size)
 
         return policy_target
 

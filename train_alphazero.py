@@ -21,10 +21,8 @@ from agents.alphazero_agent import AlphaZeroAgent
 from factories import get_environment, get_agents
 from utils.plotting import plot_losses
 
-# Import MCTSNode, PredictResult, and Generator Yield types
 from algorithms.mcts import (
     Timer,
-    MCTSNode,  # Need to import MCTSNode here too
     PredictResult,
     GeneratorYield,
     PredictRequestYield,
@@ -1113,8 +1111,6 @@ if __name__ == "__main__":
     # --- Loguru Configuration ---
     # Remove the default handler to prevent duplicate messages if re-adding stderr
     logger.remove()
-    # Add a handler for standard error (console) with level INFO or higher
-    # This will automatically filter out DEBUG messages.
     logger.add(sys.stderr, level="INFO")
     # You could also add file logging here if needed:
     # logger.add("file_{time}.log", level="INFO")

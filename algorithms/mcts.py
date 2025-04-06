@@ -523,13 +523,14 @@ class AlphaZeroMCTS(MCTS):
 
         search_timer = Timer() if self.profiler else contextlib.nullcontext()
         with search_timer:
-            log_prefix = f"AZ MCTS Search Gen (Network={self.network is not None})"
+            log_prefix = f"AZ MCTS Search Gen (Network={self.network is not None}, Sims={self.num_simulations})"
             logger.debug(f"--- {log_prefix} Start: State={initial_state_obs} ---")
 
             # TODO: Add Dirichlet noise to root priors if training and network exists
 
             for sim_num in range(self.num_simulations):
-                logger.debug(f" Simulation {sim_num+1}/{self.num_simulations}")
+                sim_log_prefix = f"  Sim {sim_num+1}/{self.num_simulations}:"
+                logger.debug(f"{sim_log_prefix} Starting...")
 
                 # --- Run one simulation path ---
                 node = self.root
@@ -538,42 +539,79 @@ class AlphaZeroMCTS(MCTS):
                 search_path = [node]
 
                 # 1. Selection: Find a leaf node using PUCT (_score_child).
-                while node.is_expanded() and not sim_env.is_game_over():
+                selection_active = True
+                while (
+                    selection_active
+                    and node.is_expanded()
+                    and not sim_env.is_game_over()
+                ):
+                    logger.debug(
+                        f"{sim_log_prefix} Selection Loop: Node expanded={node.is_expanded()}, Game Over={sim_env.is_game_over()}"
+                    )
                     parent_visits = node.visit_count
-                    valid_children = (
-                        node.children
-                    )  # Assume children are valid for deterministic games
+                    all_children = node.children
 
-                    if not valid_children:
-                        logger.warning(
-                            "MCTS Select: Node expanded but no children found."
+                    # --- Filter children based on current legal actions in sim_env ---
+                    current_legal_actions = set(sim_env.get_legal_actions())
+                    selectable_children = {
+                        act: child
+                        for act, child in all_children.items()
+                        if act in current_legal_actions
+                    }
+                    # --- End Filter ---
+
+                    if not selectable_children:
+                        logger.debug(  # Use debug level, this can happen legitimately
+                            f"MCTS Select: Node expanded, but no children correspond to currently legal actions in sim_env. Legal: {current_legal_actions}, Children Actions: {list(all_children.keys())}. Treating node as leaf."
                         )
-                        break  # Cannot select further
+                        # If no legal children can be selected, this node effectively becomes the leaf for this simulation path.
+                        selection_active = False  # Exit loop
+                        continue  # Skip rest of loop iteration
 
                     child_scores = {
                         act: self._score_child(child, parent_visits)
-                        for act, child in valid_children.items()
+                        for act, child in selectable_children.items()
                     }
 
                     best_action = max(child_scores, key=child_scores.get)
                     logger.debug(
-                        f"  Select: ParentVisits={parent_visits}, Scores={ {a: f'{s:.3f}' for a, s in child_scores.items()} }, Chosen={best_action}"
+                        f"{sim_log_prefix} Select: ParentVisits={parent_visits}, LegalScores={ {a: f'{s:.3f}' for a, s in child_scores.items()} }, Chosen={best_action}"
                     )
 
                     try:
+                        # Step the environment with the chosen legal action
+                        logger.debug(
+                            f"{sim_log_prefix} Select: Stepping env with {best_action}"
+                        )
                         sim_env.step(best_action)
-                        node = valid_children[
+                        # Update node using the filtered dictionary
+                        logger.debug(
+                            f"{sim_log_prefix} Select: Moving to child node for action {best_action}"
+                        )
+                        node = selectable_children[
                             best_action
                         ]  # Move to the chosen child node
                         search_path.append(node)
-                    except (ValueError, KeyError) as e:
+                    except (
+                        ValueError,
+                        KeyError,
+                    ) as e:  # ValueError for invalid step, KeyError for dict lookup (shouldn't happen)
                         logger.error(
-                            f"MCTS Select: Error stepping env or finding child for action {best_action}. Error: {e}"
+                            f"{sim_log_prefix} Select: Error stepping env or finding child for action {best_action}. Error: {e}"
                         )
                         node = None  # Signal error
-                        break
+                        selection_active = False  # Exit loop
+                        # break # Replaced by selection_active = False
+
+                # --- End of Selection Loop ---
+                logger.debug(
+                    f"{sim_log_prefix} Selection loop finished. Final node in path: {node}"
+                )
 
                 if node is None:
+                    logger.error(
+                        f"{sim_log_prefix} Skipping simulation due to error during selection."
+                    )
                     continue  # Skip to next simulation if error occurred
 
                 # --- Reached a leaf node (or terminal state) ---
@@ -613,16 +651,24 @@ class AlphaZeroMCTS(MCTS):
                         # Cache Hit
                         policy_np, value = evaluation_cache[state_key]
                         logger.debug(
-                            f"  Cache Hit: StateKey={state_key}, Value={value:.3f}"
+                            f"{sim_log_prefix} Eval: Cache Hit for StateKey={state_key}, Value={value:.3f}"
                         )
                         if not leaf_node.is_expanded():
+                            logger.debug(
+                                f"{sim_log_prefix} Eval: Expanding node (cache hit)."
+                            )
                             self._expand(leaf_node, leaf_env_state, policy_np)
+                        logger.debug(
+                            f"{sim_log_prefix} Eval: Backpropagating value {value:.3f} (cache hit)."
+                        )
                         self._backpropagate(leaf_node, value)
                         resumed_yield: ResumedYield = ("resumed",)
                         yield resumed_yield
                     else:
                         # Cache Miss: Yield request and wait for result
-                        logger.debug(f"  Yield Request: StateKey={state_key}")
+                        logger.debug(
+                            f"{sim_log_prefix} Eval: Cache Miss. Yielding Request for StateKey={state_key}"
+                        )
                         # Yield only the info needed by the caller to get the prediction
                         predict_request_yield: PredictRequestYield = (
                             "predict_request",
@@ -664,14 +710,20 @@ class AlphaZeroMCTS(MCTS):
                         value = float(value)
 
                         logger.debug(
-                            f"  Received Result: StateKey={state_key}, Value={value:.3f}"
+                            f"{sim_log_prefix} Eval: Received Result for StateKey={state_key}, Value={value:.3f}"
                         )
                         # Cache the received result
                         evaluation_cache[state_key] = (policy_np, value)
                         # Expand node using the received policy if not already expanded
                         if not leaf_node.is_expanded():
+                            logger.debug(
+                                f"{sim_log_prefix} Eval: Expanding node (after predict)."
+                            )
                             self._expand(leaf_node, leaf_env_state, policy_np)
                         # Backpropagate the received value
+                        logger.debug(
+                            f"{sim_log_prefix} Eval: Backpropagating value {value:.3f} (after predict)."
+                        )
                         self._backpropagate(leaf_node, value)
                         # Instead of continue, signal resumption
                         resumed_yield: ResumedYield = ("resumed",)
@@ -680,16 +732,28 @@ class AlphaZeroMCTS(MCTS):
 
                 else:
                     # --- Networkless Evaluation (Expand + Rollout) ---
-                    logger.debug("  Networkless: Expanding and Rolling out.")
+                    logger.debug(
+                        f"{sim_log_prefix} Eval: Networkless - Expanding and Rolling out."
+                    )
                     # Expand using uniform priors
                     if not leaf_node.is_expanded():
+                        logger.debug(
+                            f"{sim_log_prefix} Eval: Expanding node (networkless)."
+                        )
                         self._expand(
                             leaf_node, leaf_env_state, policy_priors_np=None
                         )  # Pass None policy
 
                     # Perform random rollout using base class method
+                    logger.debug(f"{sim_log_prefix} Eval: Starting rollout.")
                     value = super()._rollout(leaf_env_state)  # Call MCTS._rollout
+                    logger.debug(
+                        f"{sim_log_prefix} Eval: Rollout finished, value={value:.3f}."
+                    )
                     # Backpropagate rollout result immediately
+                    logger.debug(
+                        f"{sim_log_prefix} Eval: Backpropagating value {value:.3f} (networkless)."
+                    )
                     self._backpropagate(leaf_node, value)
                     # Instead of continue, signal resumption
                     resumed_yield: ResumedYield = ("resumed",)
@@ -700,11 +764,25 @@ class AlphaZeroMCTS(MCTS):
 
             # --- End of Simulation Loop ---
 
+        # --- End of Simulation Loop ---
+        logger.debug(f"{log_prefix} All simulations finished.")
+
         if self.profiler and isinstance(search_timer, Timer):
             self.profiler.record_search_time(search_timer.elapsed_ms)
             # Log cache stats if network was used
             if self.network:
-                logger.debug(f"MCTS Search Gen End: Cache size={len(evaluation_cache)}")
+                logger.debug(f"{log_prefix} End: Cache size={len(evaluation_cache)}")
+
+        # Log final root node state
+        if self.root.children:
+            child_visits = {a: c.visit_count for a, c in self.root.children.items()}
+            logger.debug(
+                f"{log_prefix} End: Root VisitCount={self.root.visit_count}, Child Visits={child_visits}"
+            )
+        else:
+            logger.debug(
+                f"{log_prefix} End: Root VisitCount={self.root.visit_count}, No children expanded."
+            )
 
         # Signal completion and yield the final root node
         # Explicitly cast to satisfy type checker if needed, though structure matches
