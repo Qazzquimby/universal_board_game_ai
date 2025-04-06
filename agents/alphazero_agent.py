@@ -81,11 +81,10 @@ class AlphaZeroAgent(Agent):
                 hidden_layer_size=config.hidden_layer_size,
                 num_hidden_layers=config.num_hidden_layers,
             )
-            # TODO: Add device handling (CPU/GPU)
-            # self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            # self.network.to(self.device)
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         else:
             self.network = None
+            self.device = torch.device("cpu")
 
         # Pass the stored profiler instance to the MCTS constructor
         self.mcts = AlphaZeroMCTS(
@@ -460,7 +459,13 @@ class AlphaZeroAgent(Agent):
             for batch_data in batch_iterator:
                 states_batch, policy_targets_batch, value_targets_batch = batch_data
 
+                # Move batch data to the correct device
+                states_batch = states_batch.to(self.device)
+                policy_targets_batch = policy_targets_batch.to(self.device)
+                value_targets_batch = value_targets_batch.to(self.device)
+
                 self.optimizer.zero_grad()
+                # Network input (states_batch) is already on the device from DataLoader/Dataset
                 policy_logits, value_preds = self.network(states_batch)
                 total_loss, value_loss, policy_loss = self._calculate_loss(
                     policy_logits,
@@ -545,15 +550,17 @@ class AlphaZeroAgent(Agent):
         filepath = self._get_save_path()
         try:
             if filepath.exists():
-                # Load state dict, handling potential device mismatch
-                # map_location = self.device # Use if device handling is added
-                map_location = torch.device("cpu")  # Load to CPU first
+                # Load state dict using the agent's device
+                map_location = self.device
                 self.network.load_state_dict(
                     torch.load(filepath, map_location=map_location)
                 )
-                # self.network.to(self.device) # Move to target device if needed
+                # Ensure model is on the correct device after loading (should be redundant if map_location works)
+                self.network.to(self.device)
                 self.network.eval()  # Set to evaluation mode after loading
-                logger.info(f"AlphaZero network loaded from {filepath}")
+                logger.info(
+                    f"AlphaZero network loaded from {filepath} to {self.device}"
+                )
                 return True
             else:
                 logger.info(f"Network weights file not found: {filepath}")

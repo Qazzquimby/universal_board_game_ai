@@ -23,6 +23,9 @@ class AlphaZeroNet(nn.Module):
         num_hidden_layers: int = 2,
     ):
         super().__init__()
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.to(self.device)  # Move the model itself to the device
+
         self.env = env
 
         # Determine input size from environment observation space
@@ -55,7 +58,7 @@ class AlphaZeroNet(nn.Module):
             nn.Tanh(),  # Value prediction between -1 and 1
         )
 
-        print(f"Initialized AlphaZeroNet:")
+        print(f"Initialized AlphaZeroNet on device: {self.device}")
         print(f"  Input size: {input_size}")
         print(f"  Policy size: {policy_size}")
         print(f"  Hidden layers: {num_hidden_layers} x {hidden_layer_size}")
@@ -105,8 +108,8 @@ class AlphaZeroNet(nn.Module):
             raise ValueError(
                 "Could not extract numerical data from state for network input."
             )
-
-        return torch.cat(flat_tensors)
+        # Combine and ensure on correct device
+        return torch.cat(flat_tensors).to(self.device)
 
     def _calculate_input_size(self, env: BaseEnvironment) -> int:
         """Calculates the flattened input size based on a sample observation."""
@@ -282,9 +285,8 @@ class AlphaZeroNet(nn.Module):
             flat_state = self._flatten_state(state_dict)
             batch_tensors.append(flat_state)
 
-        # Stack tensors into a batch
-        batch = torch.stack(batch_tensors)
-        # TODO: Add device handling if needed: batch = batch.to(self.device)
+        # Stack tensors into a batch and move to device
+        batch = torch.stack(batch_tensors).to(self.device)
 
         with torch.no_grad():
             policy_logits, values = self.forward(batch)
