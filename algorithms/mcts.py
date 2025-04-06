@@ -549,28 +549,20 @@ class AlphaZeroMCTS(MCTS):
                         f"{sim_log_prefix} Selection Loop: Node expanded={node.is_expanded()}, Game Over={sim_env.is_game_over()}"
                     )
                     parent_visits = node.visit_count
-                    all_children = node.children
 
-                    # --- Filter children based on current legal actions in sim_env ---
-                    current_legal_actions = set(sim_env.get_legal_actions())
-                    selectable_children = {
-                        act: child
-                        for act, child in all_children.items()
-                        if act in current_legal_actions
-                    }
-                    # --- End Filter ---
-
-                    if not selectable_children:
-                        logger.debug(  # Use debug level, this can happen legitimately
-                            f"MCTS Select: Node expanded, but no children correspond to currently legal actions in sim_env. Legal: {current_legal_actions}, Children Actions: {list(all_children.keys())}. Treating node as leaf."
+                    if not node.children:
+                        # This should not happen if node.is_expanded() is true.
+                        # If it does, it indicates an issue during expansion or node state.
+                        logger.error(
+                            f"{sim_log_prefix} Select: Node is expanded but has no children!"
                         )
-                        # If no legal children can be selected, this node effectively becomes the leaf for this simulation path.
                         selection_active = False  # Exit loop
                         continue  # Skip rest of loop iteration
 
+                    # Calculate scores for all children determined during expansion
                     child_scores = {
                         act: self._score_child(child, parent_visits)
-                        for act, child in selectable_children.items()
+                        for act, child in node.children.items()
                     }
 
                     best_action = max(child_scores, key=child_scores.get)
@@ -588,9 +580,7 @@ class AlphaZeroMCTS(MCTS):
                         logger.debug(
                             f"{sim_log_prefix} Select: Moving to child node for action {best_action}"
                         )
-                        node = selectable_children[
-                            best_action
-                        ]  # Move to the chosen child node
+                        node = node.children[best_action]
                         search_path.append(node)
                     except (
                         ValueError,
