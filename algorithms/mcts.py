@@ -623,79 +623,15 @@ class AlphaZeroMCTS(MCTS):
             log_prefix = f"AZ MCTS Search Gen (NetType={type(self.network).__name__}, Sims={self.num_simulations})"
             logger.debug(f"--- {log_prefix} Start: State={initial_state_obs} ---")
 
-            # --- Ensure Root is Expanded and Apply Noise ---
-            root_expanded = False
-            if not self.root.is_expanded():
-                # Use the helper to evaluate/expand the root node first.
-                # This might yield a prediction request.
-                root_eval_generator = self._evaluate_and_expand_leaf(
-                    self.root, env.copy(), evaluation_cache # Use a copy of env at initial state
-                )
-                try:
-                    eval_result = next(root_eval_generator)
-                    if isinstance(eval_result, tuple) and eval_result[0] == "predict_request":
-                        # Yield the root prediction request
-                        predict_request_yield: PredictRequestYield = eval_result
-                        logger.debug(f"{log_prefix} Yielding root predict request: {predict_request_yield[1]}")
-                        received_result: Optional[PredictResult] = yield predict_request_yield
-                        logger.debug(f"{log_prefix} Sending received result back to root eval.")
-                        try:
-                            # Send result back; this call will complete the expansion/evaluation
-                            root_eval_generator.send(received_result)
-                        except StopIteration:
-                            pass # Expected completion after send
-                        except Exception as e_inner:
-                            logger.error(f"{log_prefix} Error sending result to root eval generator: {e_inner}", exc_info=True)
-                    elif isinstance(eval_result, float):
-                        # Completed without yielding (cache hit or terminal root)
-                        logger.debug(f"{log_prefix} Root evaluation completed directly (value={eval_result:.3f}). Yielding resume.")
-                        resumed_yield: ResumedYield = ("resumed",)
-                        yield resumed_yield # Signal completion of this initial step
-                    else:
-                        logger.error(f"{log_prefix} Unexpected result from root eval generator: {eval_result}")
-
-                except StopIteration as e:
-                     # This happens if root is terminal
-                     terminal_value = e.value
-                     logger.debug(f"{log_prefix} Root node is terminal (value={terminal_value:.3f}). Search ends.")
-                     if terminal_value is not None:
-                         self._backpropagate(self.root, terminal_value) # Backpropagate terminal value
-                     search_complete_yield: SearchCompleteYield = ("search_complete", self.root)
-                     yield search_complete_yield
-                     return # Exit generator
-
-                except Exception as e:
-                    logger.error(f"{log_prefix} Error during initial root evaluation/expansion: {e}", exc_info=True)
-                    # Yield potentially unvisited root and exit
-                    search_complete_yield: SearchCompleteYield = ("search_complete", self.root)
-                    yield search_complete_yield
-                    return # Exit generator
-
-            # Check if root is now expanded (it should be unless terminal or error)
-            root_expanded = self.root.is_expanded()
-
-            # Apply Dirichlet noise if root is expanded and noise is enabled
-            if root_expanded and self.dirichlet_epsilon > 0:
-                num_children = len(self.root.children)
-                if num_children > 0:
-                    noise = np.random.dirichlet([self.dirichlet_alpha] * num_children)
-                    noisy_priors = []
-                    child_items = list(self.root.children.items()) # Get fixed list
-                    for i, (action, child) in enumerate(child_items):
-                        child.prior = (1 - self.dirichlet_epsilon) * child.prior + self.dirichlet_epsilon * noise[i]
-                        noisy_priors.append((action, child.prior))
-                    # Log the noisy priors for debugging
-                    sorted_noisy_priors = sorted(noisy_priors, key=lambda item: item[1], reverse=True)
-                    logger.debug(f"{log_prefix} Applied Dirichlet noise (alpha={self.dirichlet_alpha}, eps={self.dirichlet_epsilon})")
-                    logger.debug(f"  Noisy Root Priors (Top 5): { {a: f'{p:.3f}' for a, p in sorted_noisy_priors[:5]} }")
-                else:
-                     logger.warning(f"{log_prefix} Root expanded but has no children? Cannot apply noise.")
-            elif not root_expanded:
-                 logger.warning(f"{log_prefix} Root not expanded after initial eval. Cannot apply noise.")
-
+            # --- Handle Zero Simulations ---
+            if self.num_simulations <= 0:
+                logger.warning(f"{log_prefix} num_simulations is {self.num_simulations}. Skipping search.")
+                search_complete_yield: SearchCompleteYield = ("search_complete", self.root)
+                yield search_complete_yield
+                return # Exit generator
 
             # --- Main Simulation Loop ---
-            # Run simulations as before
+            logger.debug(f"{log_prefix} Entering main simulation loop...") # Add logging here
             for sim_num in range(self.num_simulations):
                 sim_log_prefix = f"  Sim {sim_num+1}/{self.num_simulations}:"
                 logger.debug(f"{sim_log_prefix} Starting...")
@@ -779,11 +715,34 @@ class AlphaZeroMCTS(MCTS):
                         logger.debug(
                             f"{sim_log_prefix} Backpropagating value {final_value:.3f}."
                         )
-                        self._backpropagate(leaf_node, final_value)
+                        self._backpropagate(leaf_node, final_value) # Backpropagate first
                     else:
                         logger.error(
                             f"{sim_log_prefix} Skipping backpropagation due to evaluation error."
                         )
+
+                    # --- Apply Dirichlet Noise After First Simulation ---
+                    if sim_num == 0:
+                        # Check if root is expanded *after* the first simulation's backprop
+                        root_expanded = self.root.is_expanded()
+                        if root_expanded and self.dirichlet_epsilon > 0:
+                            num_children = len(self.root.children)
+                            if num_children > 0:
+                                noise = np.random.dirichlet([self.dirichlet_alpha] * num_children)
+                                noisy_priors = []
+                                child_items = list(self.root.children.items()) # Get fixed list
+                                for i, (action, child) in enumerate(child_items):
+                                    child.prior = (1 - self.dirichlet_epsilon) * child.prior + self.dirichlet_epsilon * noise[i]
+                                    noisy_priors.append((action, child.prior))
+                                # Log the noisy priors for debugging
+                                sorted_noisy_priors = sorted(noisy_priors, key=lambda item: item[1], reverse=True)
+                                logger.debug(f"{log_prefix} Applied Dirichlet noise (alpha={self.dirichlet_alpha}, eps={self.dirichlet_epsilon})")
+                                logger.debug(f"  Noisy Root Priors (Top 5): { {a: f'{p:.3f}' for a, p in sorted_noisy_priors[:5]} }")
+                            else:
+                                logger.warning(f"{log_prefix} Root expanded after sim 0 but has no children? Cannot apply noise.")
+                        elif not root_expanded:
+                            logger.warning(f"{log_prefix} Root not expanded after sim 0. Cannot apply noise.")
+                    # --- End Noise Application ---
 
                 except StopIteration as e:
                     # This happens if _evaluate_and_expand_leaf finishes without yielding (e.g. terminal node)
@@ -792,7 +751,7 @@ class AlphaZeroMCTS(MCTS):
                         logger.debug(
                             f"{sim_log_prefix} Evaluation finished (terminal/cached), backpropagating value {final_value:.3f}."
                         )
-                        self._backpropagate(leaf_node, final_value)
+                        self._backpropagate(leaf_node, final_value) # Backpropagate first
                         # Yield 'resumed' to signal completion without external prediction
                         resumed_yield: ResumedYield = ("resumed",)
                         yield resumed_yield
@@ -801,6 +760,29 @@ class AlphaZeroMCTS(MCTS):
                         logger.error(
                             f"{sim_log_prefix} Eval generator stopped with None value."
                         )
+
+                    # --- Apply Dirichlet Noise After First Simulation (if StopIteration occurred) ---
+                    if sim_num == 0:
+                        # Check if root is expanded *after* the first simulation's backprop
+                        root_expanded = self.root.is_expanded()
+                        if root_expanded and self.dirichlet_epsilon > 0:
+                            num_children = len(self.root.children)
+                            if num_children > 0:
+                                noise = np.random.dirichlet([self.dirichlet_alpha] * num_children)
+                                noisy_priors = []
+                                child_items = list(self.root.children.items()) # Get fixed list
+                                for i, (action, child) in enumerate(child_items):
+                                    child.prior = (1 - self.dirichlet_epsilon) * child.prior + self.dirichlet_epsilon * noise[i]
+                                    noisy_priors.append((action, child.prior))
+                                # Log the noisy priors for debugging
+                                sorted_noisy_priors = sorted(noisy_priors, key=lambda item: item[1], reverse=True)
+                                logger.debug(f"{log_prefix} Applied Dirichlet noise (alpha={self.dirichlet_alpha}, eps={self.dirichlet_epsilon})")
+                                logger.debug(f"  Noisy Root Priors (Top 5): { {a: f'{p:.3f}' for a, p in sorted_noisy_priors[:5]} }")
+                            else:
+                                logger.warning(f"{log_prefix} Root expanded after sim 0 (StopIteration) but no children? Cannot apply noise.")
+                        elif not root_expanded:
+                            logger.warning(f"{log_prefix} Root not expanded after sim 0 (StopIteration). Cannot apply noise.")
+                    # --- End Noise Application ---
 
                 except Exception as e:
                     logger.error(
