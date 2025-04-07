@@ -7,21 +7,18 @@ from typing import (
     Tuple,
     Optional,
     Dict,
-    Set,
     Generator,
     Union,
     Literal,
-    Any,
-)  # Added Generator, Union, Literal
+)
 
 import torch
 from loguru import logger
 import numpy as np
+import torch.nn as nn
 
 from core.config import MuZeroConfig
 from environments.base import ActionType, StateType, BaseEnvironment
-import torch.nn as nn
-
 from models.networks import AlphaZeroNet, MuZeroNet
 
 PredictResult = Tuple[np.ndarray, float]
@@ -164,6 +161,9 @@ SearchCompleteYield = Tuple[
 # Union of all possible yield types from search_generator
 GeneratorYield = Union[PredictRequestYield, ResumedYield, SearchCompleteYield]
 
+# Yield types specifically for sub-generators like _run_one_simulation
+SubGeneratorYield = Union[PredictRequestYield, ResumedYield]
+
 
 class Timer:
     """Context manager for timing code blocks."""
@@ -266,11 +266,30 @@ class MCTSNode:
         Args:
             action_priors: A dictionary mapping legal actions to their prior probabilities.
         """
+        children_added = 0
         for action, prior in action_priors.items():
             # Ensure action is hashable if it's not already (e.g., list)
             action_key = tuple(action) if isinstance(action, list) else action
             if action_key not in self.children:
+                # Add logging right before creating the child
+                logger.trace(
+                    f"  Node.expand: Creating child for action {action_key} with prior {prior:.4f}"
+                )
                 self.children[action_key] = MCTSNode(parent=self, prior=prior)
+                children_added += 1
+            else:
+                # This case should ideally not happen if expand is called only once
+                logger.warning(
+                    f"  Node.expand: Child for action {action_key} already exists."
+                )
+        # Add assertion after the loop
+        if action_priors and children_added == 0:
+            logger.error(
+                f"  Node.expand: action_priors provided but no children were added! Priors: {action_priors}"
+            )
+        assert (
+            not action_priors or self.children
+        ), "Node expansion failed: children dict is empty despite non-empty priors."
 
 
 class MCTS:
@@ -474,7 +493,6 @@ class AlphaZeroMCTS(MCTS):
         profiler: Optional[MCTSProfiler] = None,
         dirichlet_alpha: float = 0.3,  # Add noise params
         dirichlet_epsilon: float = 0.25,
-        # inference_batch_size removed, batching will be handled externally
     ):
         super().__init__(
             exploration_constant=exploration_constant,
@@ -517,9 +535,29 @@ class AlphaZeroMCTS(MCTS):
             action_key = tuple(action) if isinstance(action, list) else action
             action_index = self.network.get_action_index(action_key)
 
-            if action_index is not None and 0 <= action_index < len(policy_priors_np):
-                prior = policy_priors_np[action_index]
-                action_priors_dict[action_key] = prior
+            # --- Add Debug Logging ---
+            policy_len = len(policy_priors_np) if policy_priors_np is not None else -1
+            logger.trace(
+                f"  Expand Check: Action={action_key}, Index={action_index}, PolicyLen={policy_len}"
+            )
+            # --- End Debug Logging ---
+
+            if action_index is not None and 0 <= action_index < policy_len:
+                try:
+                    prior = policy_priors_np[action_index]
+                    action_priors_dict[action_key] = prior
+                except IndexError as e:
+                    logger.error(
+                        f"  Expand Error: IndexError accessing policy_priors_np[{action_index}] (len={policy_len}). Action={action_key}. Error: {e}",
+                        exc_info=True,
+                    )
+                    action_priors_dict[action_key] = 0.0  # Assign 0 prior on error
+                except Exception as e:
+                    logger.error(
+                        f"  Expand Error: Unexpected error accessing policy_priors_np[{action_index}]. Action={action_key}. Error: {e}",
+                        exc_info=True,
+                    )
+                    action_priors_dict[action_key] = 0.0  # Assign 0 prior on error
             else:
                 # Assign 0 prior if action is illegal according to network mapping or out of bounds
                 action_priors_dict[action_key] = 0.0
@@ -543,10 +581,16 @@ class AlphaZeroMCTS(MCTS):
         # Call the base node expansion method
         node.expand(action_priors_dict)
 
-    # Note: _rollout is effectively replaced by the batched network value prediction
-    # in the modified search loop when a network is present.
-    # We keep the base class _rollout for the networkless case.
-    # The AlphaZero-specific _rollout using network.predict is removed below.
+        # --- Add Check Immediately After Expansion ---
+        if action_priors_dict and not node.children:
+            logger.error(
+                f"  Expand Check FAIL: node.expand finished but node.children is empty! Node: {node}"
+            )
+        elif node.children:
+            logger.trace(
+                f"  Expand Check OK: node.children populated. Keys: {list(node.children.keys())}"
+            )
+        # --- End Check ---
 
     def _backpropagate(self, leaf_node: MCTSNode, value_from_leaf_perspective: float):
         """
@@ -597,7 +641,7 @@ class AlphaZeroMCTS(MCTS):
         initial_state_obs: StateType,
         evaluation_cache: Dict[str, PredictResult],
         sim_log_prefix: str,
-    ) -> Generator[GeneratorYield, Optional[PredictResult], bool]:
+    ) -> Generator[SubGeneratorYield, Optional[PredictResult], bool]:
         """
         Runs a single MCTS simulation path: Selection, Evaluation/Expansion, Backpropagation.
         Handles yielding for network predictions.
@@ -647,6 +691,11 @@ class AlphaZeroMCTS(MCTS):
                     received_result: Optional[
                         PredictResult
                     ] = yield predict_request_yield
+                    # --- Assert received_result is not None ---
+                    assert (
+                        received_result is not None
+                    ), f"{sim_log_prefix} _run_one_simulation received None from yield!"
+                    # --- End Assertion ---
                     logger.debug(
                         f"{sim_log_prefix} Sending received result back to eval generator."
                     )
@@ -708,136 +757,6 @@ class AlphaZeroMCTS(MCTS):
             )
             return False  # Indicate simulation failure
 
-    def _advance_simulation_generator(
-        self,
-        sim_generator: Generator[GeneratorYield, Optional[PredictResult], bool],
-        result_to_send: Optional[PredictResult] = None,
-        log_prefix: str = "AdvanceSim",
-    ) -> Dict[str, Any]:
-        """
-        Advances a simulation sub-generator (_run_one_simulation), handling yield/send/stop.
-
-        Args:
-            sim_generator: The generator instance to advance.
-            result_to_send: The prediction result to send (if resuming), otherwise None.
-            log_prefix: Prefix for logging messages.
-
-        Returns:
-            A dictionary indicating the outcome:
-            - {'status': 'yielded_predict', 'request': PredictRequestYield}
-            - {'status': 'resumed'}
-            - {'status': 'finished', 'success': bool}
-            - {'status': 'error', 'exception': Exception}
-        """
-        try:
-            if result_to_send is not None:
-                logger.debug(f"{log_prefix}: Sending result back to sim generator.")
-                yield_or_outcome = sim_generator.send(result_to_send)
-            else:
-                # Use next() for the very first call or subsequent calls after 'resumed'
-                logger.debug(f"{log_prefix}: Advancing sim generator with next().")
-                yield_or_outcome = next(sim_generator)
-
-            # Process the yield value
-            if isinstance(yield_or_outcome, tuple):
-                yield_type = yield_or_outcome[0]
-                if yield_type == "predict_request":
-                    predict_request_yield: PredictRequestYield = yield_or_outcome
-                    logger.debug(
-                        f"{log_prefix}: Yielded predict request: {predict_request_yield[1]}"
-                    )
-                    return {
-                        "status": "yielded_predict",
-                        "request": predict_request_yield,
-                    }
-                elif yield_type == "resumed":
-                    logger.debug(f"{log_prefix}: Resumed.")
-                    return {"status": "resumed"}
-                else:
-                    logger.error(
-                        f"{log_prefix}: Unexpected tuple yield: {yield_or_outcome}"
-                    )
-                    return {
-                        "status": "error",
-                        "exception": ValueError("Unexpected tuple yield"),
-                    }
-            elif isinstance(yield_or_outcome, bool):
-                # This case might happen if _run_one_simulation returns directly after next()
-                # without yielding 'resumed' first (e.g., immediate failure).
-                logger.debug(
-                    f"{log_prefix}: Finished immediately with outcome: {yield_or_outcome}"
-                )
-                return {"status": "finished", "success": yield_or_outcome}
-            else:
-                logger.error(
-                    f"{log_prefix}: Unexpected yield/return type: {type(yield_or_outcome)}"
-                )
-                return {
-                    "status": "error",
-                    "exception": TypeError("Unexpected yield/return type"),
-                }
-
-        except StopIteration as e:
-            # Generator finished
-            success = e.value if isinstance(e.value, bool) else False
-            logger.debug(f"{log_prefix}: Finished with outcome: {success}")
-            return {"status": "finished", "success": success}
-        except Exception as e:
-            logger.error(f"{log_prefix}: Error advancing generator: {e}", exc_info=True)
-            return {"status": "error", "exception": e}
-
-
-    def _manage_simulation_lifecycle(
-        self,
-        sim_generator: Generator[GeneratorYield, Optional[PredictResult], bool],
-        log_prefix: str,
-    ) -> Generator[PredictRequestYield, Optional[PredictResult], bool]:
-        """
-        Manages the execution of a simulation sub-generator, handling yields/sends.
-
-        Args:
-            sim_generator: The simulation generator (_run_one_simulation instance).
-            log_prefix: Logging prefix.
-
-        Yields:
-            PredictRequestYield when the sub-generator needs a prediction.
-
-        Receives:
-            Optional[PredictResult] via send() to resume after a prediction request.
-
-        Returns:
-            The final success status (bool) of the simulation.
-        """
-        received_result = None
-        while True:
-            advance_result = self._advance_simulation_generator(
-                sim_generator, result_to_send=received_result, log_prefix=log_prefix
-            )
-            received_result = None # Reset received result after using it
-
-            if advance_result["status"] == "yielded_predict":
-                # Yield the request outwards and wait for the result via send()
-                predict_request_yield: PredictRequestYield = advance_result["request"]
-                received_result = yield predict_request_yield # Yield request, receive result
-                # Loop continues, will call _advance_simulation_generator with received_result
-
-            elif advance_result["status"] == "resumed":
-                # Sub-generator completed an internal step, continue advancing
-                continue
-
-            elif advance_result["status"] == "finished":
-                # Simulation finished, return its success status
-                return advance_result["success"]
-
-            elif advance_result["status"] == "error":
-                logger.error(f"{log_prefix} Error during simulation lifecycle.")
-                return False # Simulation failed
-
-            else:
-                logger.error(f"{log_prefix} Unexpected status from _advance_simulation_generator: {advance_result['status']}")
-                return False # Simulation failed
-
-
     # Renamed from search to search_generator
     def search_generator(
         self, env: BaseEnvironment, state: StateType
@@ -879,76 +798,142 @@ class AlphaZeroMCTS(MCTS):
             # --- Simulation Loop ---
             logger.debug(f"{log_prefix} Entering simulation loop...")
             sim_success_count = 0
-            first_sim_success = False # Track outcome of first simulation
+            first_sim_success = False  # Track outcome of first simulation
 
             for sim_num in range(self.num_simulations):
                 sim_log_prefix = f"  Sim {sim_num+1}/{self.num_simulations}:"
                 logger.debug(f"{sim_log_prefix} Starting...")
 
-                # Create the generator for this simulation
+                # Create and run the simulation sub-generator directly
                 sim_runner = self._run_one_simulation(
                     env, initial_state_obs, evaluation_cache, sim_log_prefix
                 )
-                # Create the manager for this simulation's lifecycle
-                lifecycle_manager = self._manage_simulation_lifecycle(
-                    sim_runner, sim_log_prefix
-                )
+                # --- Cleaner Simulation Driving Logic ---
+                sim_outcome = False  # Default to failure
+                received_result_for_send = None  # Store result between yield and send
 
-                sim_finished = False
-                sim_outcome = False
-                received_result = None # Result to send back into lifecycle_manager
-
-                # Drive the lifecycle manager until the simulation finishes
-                while not sim_finished:
+                while True:  # Loop to advance the simulation generator
                     try:
-                        # Advance the lifecycle manager, sending result if available
-                        yielded_request = lifecycle_manager.send(received_result)
-                        received_result = None # Reset received result after sending
+                        # Advance the generator, sending result if available
+                        if received_result_for_send is not None:
+                            # Sending result back after yielding 'predict_request'
+                            logger.trace(
+                                f"{sim_log_prefix} Sending result back to sim_runner."
+                            )
+                            yield_or_outcome = sim_runner.send(received_result_for_send)
+                            received_result_for_send = None  # Consume the result
+                        else:
+                            # Advancing normally (first call or after 'resumed')
+                            logger.trace(
+                                f"{sim_log_prefix} Advancing sim_runner with next()."
+                            )
+                            yield_or_outcome = next(sim_runner)
 
-                        # If it yielded, it's a prediction request
-                        predict_request_yield: PredictRequestYield = yielded_request
-                        # Yield the request outwards and wait for the result
-                        received_result = yield predict_request_yield
+                        # Process the yield
+                        if isinstance(yield_or_outcome, tuple):
+                            yield_type = yield_or_outcome[0]
+                            if yield_type == "predict_request":
+                                # Yield request outwards, store result for next iteration's send()
+                                predict_request_yield: PredictRequestYield = (
+                                    yield_or_outcome
+                                )
+                                logger.trace(
+                                    f"{sim_log_prefix} Relaying 'predict_request'."
+                                )
+                                received_result_for_send = yield predict_request_yield
+                                assert (
+                                    received_result_for_send is not None
+                                ), f"{sim_log_prefix} search_generator received None after yield!"
+                                # Continue loop to send the result back
+                                continue
+                            elif yield_type == "resumed":
+                                # Simulation resumed internally, continue loop to advance again
+                                logger.trace(
+                                    f"{sim_log_prefix} Simulation resumed internally."
+                                )
+                                continue
+                            else:
+                                logger.error(
+                                    f"{sim_log_prefix} Unexpected tuple yield from _run_one_simulation: {yield_or_outcome}"
+                                )
+                                sim_outcome = False
+                                break  # Exit while loop on error
+                        else:
+                            logger.error(
+                                f"{sim_log_prefix} Unexpected non-tuple yield from _run_one_simulation: {yield_or_outcome}"
+                            )
+                            sim_outcome = False
+                            break  # Exit while loop on error
 
                     except StopIteration as e:
-                        # Lifecycle manager finished, simulation is done
+                        # Simulation finished successfully
                         sim_outcome = e.value if isinstance(e.value, bool) else False
-                        sim_finished = True
-                    except Exception as e:
-                         logger.error(f"{sim_log_prefix} Error driving lifecycle manager: {e}", exc_info=True)
-                         sim_outcome = False
-                         sim_finished = True # Treat error as finished
+                        logger.debug(
+                            f"{sim_log_prefix} Simulation finished via StopIteration, outcome: {sim_outcome}"
+                        )
+                        break  # Exit while loop
+                # --- End Simulation Driving Logic ---
 
-                # Simulation completed (or errored)
+                # Record simulation outcome
                 if sim_outcome:
                     sim_success_count += 1
                 else:
-                     logger.warning(f"{sim_log_prefix} Simulation failed or did not complete successfully.")
+                    logger.warning(
+                        f"{sim_log_prefix} Simulation failed or did not complete successfully."
+                    )
 
                 # --- Apply Dirichlet Noise After First Simulation ---
                 if sim_num == 0:
-                    first_sim_success = sim_outcome # Store outcome of first sim
+                    first_sim_success = sim_outcome  # Store outcome of first sim
                     if first_sim_success:
                         root_expanded = self.root.is_expanded()
                         if root_expanded and self.dirichlet_epsilon > 0:
                             num_children = len(self.root.children)
                             if num_children > 0:
-                                noise = np.random.dirichlet([self.dirichlet_alpha] * num_children)
+                                noise = np.random.dirichlet(
+                                    [self.dirichlet_alpha] * num_children
+                                )
                                 noisy_priors = []
-                                child_items = list(self.root.children.items()) # Get fixed list
+                                child_items = list(
+                                    self.root.children.items()
+                                )  # Get fixed list
                                 for i, (action, child) in enumerate(child_items):
-                                    child.prior = (1 - self.dirichlet_epsilon) * child.prior + self.dirichlet_epsilon * noise[i]
+                                    child.prior = (
+                                        (1 - self.dirichlet_epsilon) * child.prior
+                                        + self.dirichlet_epsilon * noise[i]
+                                    )
                                     noisy_priors.append((action, child.prior))
-                                sorted_noisy_priors = sorted(noisy_priors, key=lambda item: item[1], reverse=True)
-                                logger.debug(f"{log_prefix} Applied Dirichlet noise (alpha={self.dirichlet_alpha}, eps={self.dirichlet_epsilon})")
-                                logger.debug(f"  Noisy Root Priors (Top 5): { {a: f'{p:.3f}' for a, p in sorted_noisy_priors[:5]} }")
+                                sorted_noisy_priors = sorted(
+                                    noisy_priors, key=lambda item: item[1], reverse=True
+                                )
+                                logger.debug(
+                                    f"{log_prefix} Applied Dirichlet noise (alpha={self.dirichlet_alpha}, eps={self.dirichlet_epsilon})"
+                                )
+                                logger.debug(
+                                    f"  Noisy Root Priors (Top 5): { {a: f'{p:.3f}' for a, p in sorted_noisy_priors[:5]} }"
+                                )
                             else:
-                                logger.warning(f"{log_prefix} Root expanded after sim 1 but has no children? Cannot apply noise.")
+                                # If expanded but no children, something is wrong with expansion logic
+                                logger.error(
+                                    f"{log_prefix} Root expanded after sim 1 but has NO children. Expansion failed."
+                                )
+                                # Raise an error or assert? Assert seems appropriate here.
+                                assert (
+                                    self.root.children
+                                ), "Root expanded but has no children after sim 1."
                         elif not root_expanded:
-                            # This is the warning we are trying to debug
-                            logger.warning(f"{log_prefix} Root not expanded after sim 1. Cannot apply noise.")
+                            # This should not happen if the first simulation ran successfully without error
+                            logger.error(
+                                f"{log_prefix} Root NOT expanded after successful sim 1. This should not happen."
+                            )
+                            assert (
+                                root_expanded
+                            ), "Root not expanded after successful sim 1."
                     else:
-                        logger.warning(f"{log_prefix} First simulation failed or did not complete. Skipping noise application.")
+                        # Keep this as a warning, as a failed simulation is possible (though indicates other issues)
+                        logger.warning(
+                            f"{log_prefix} First simulation failed or did not complete. Skipping noise application."
+                        )
             # --- End Simulation Loop ---
             logger.debug(
                 f"{log_prefix} Simulation loop finished. Successful sims: {sim_success_count}/{self.num_simulations}"
@@ -975,7 +960,9 @@ class AlphaZeroMCTS(MCTS):
             )
 
         # Signal completion and yield the final root node
-        # Explicitly cast to satisfy type checker if needed, though structure matches
+        logger.debug(
+            f"{log_prefix} Yielding search_complete. Root ID: {id(self.root)}, Root Children: {bool(self.root.children)}"
+        )  # Add logging
         search_complete_yield: SearchCompleteYield = ("search_complete", self.root)
         yield search_complete_yield
 
@@ -1108,6 +1095,12 @@ class AlphaZeroMCTS(MCTS):
                 leaf_state_obs,
             )
             received_result: Optional[PredictResult] = yield predict_request_yield
+
+            # --- Add Assertion ---
+            assert (
+                received_result is not None
+            ), f"{sim_log_prefix} Assertion failed: _evaluate_and_expand_leaf received_result is None!"
+            # --- End Assertion ---
 
             # --- Handle Received Result ---
             if received_result is None:
