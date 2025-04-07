@@ -1,7 +1,6 @@
 import sys
 import json
 import datetime
-import random
 from typing import (
     Tuple,
     List,
@@ -20,17 +19,45 @@ from environments.base import BaseEnvironment, StateType, ActionType
 from agents.alphazero_agent import AlphaZeroAgent
 from factories import get_environment, get_agents
 from utils.plotting import plot_losses
-
 from algorithms.mcts import (
     Timer,
     PredictResult,
     GeneratorYield,
     PredictRequestYield,
-    ResumedYield,
-    SearchCompleteYield,
 )
 
 LOG_DIR = DATA_DIR / "game_logs"
+
+
+@dataclass
+class PredictRequest:
+    """Bundles information needed for a network prediction request."""
+
+    game_idx: int
+    state_key: str
+    state_obs: StateType
+
+
+def _handle_predict_request(
+    game_idx: int,
+    state_key: str,
+    state_obs: StateType,
+    pending_reqs: List[PredictRequest],
+    waiting_gens: Dict[str, List[int]],
+    gen_states: Dict[int, str],
+):
+    """Adds a new prediction request and updates tracking state."""
+    logger.debug(
+        f"Game {game_idx} yielded request for state {state_key}"
+    )  # Use consistent log format
+    pending_reqs.append(
+        PredictRequest(game_idx=game_idx, state_key=state_key, state_obs=state_obs)
+    )
+    if state_key not in waiting_gens:
+        waiting_gens[state_key] = []
+    if game_idx not in waiting_gens[state_key]:
+        waiting_gens[state_key].append(game_idx)
+    gen_states[game_idx] = "waiting_predict"
 
 
 def _default_serializer(obj):
@@ -167,15 +194,6 @@ def load_game_logs_into_buffer(agent: AlphaZeroAgent, env_name: str, buffer_limi
 
 
 @dataclass
-class PredictRequest:
-    """Bundles information needed for a network prediction request."""
-
-    game_idx: int
-    state_key: str
-    state_obs: StateType
-
-
-@dataclass
 class SelfPlayResult:
     """Holds the results of the self-play data collection phase."""
 
@@ -228,18 +246,16 @@ def _start_mcts_searches(
     states_before_action: Dict[int, StateType],
 ):
     """Starts MCTS search generators for games ready for an action."""
-    games_to_start = ready_list[:] # Copy the list
-    ready_list.clear() # Clear the original list
+    games_to_start = ready_list[:]  # Copy the list
+    ready_list.clear()  # Clear the original list
 
     for game_idx in games_to_start:
         if game_is_done[game_idx]:
             continue
 
         state = observations[game_idx]
-        states_before_action[game_idx] = state.copy() # Store state before search
-        mcts_generators[game_idx] = agent.mcts.search_generator(
-            envs[game_idx], state
-        )
+        states_before_action[game_idx] = state.copy()  # Store state before search
+        mcts_generators[game_idx] = agent.mcts.search_generator(envs[game_idx], state)
         generator_states[game_idx] = "running"
         logger.debug(f"Started MCTS search for game {game_idx}")
 
@@ -250,8 +266,8 @@ def _process_network_batch(
     waiting_generators: Dict[str, List[int]],
     mcts_generators: Dict[int, Generator],
     generator_states: Dict[int, str],
-    completed_searches: Dict[int, Tuple[Optional[ActionType], Optional[np.ndarray]]],
-    envs: List[BaseEnvironment], # For random action fallback on early completion
+    # completed_searches: Dict[int, Tuple[Optional[ActionType], Optional[np.ndarray]]], # Removed
+    # envs: List[BaseEnvironment], # Removed
     inference_batch_size: int,
 ) -> List[PredictRequest]:
     """
@@ -263,8 +279,6 @@ def _process_network_batch(
         waiting_generators: Maps state_key -> List[game_idx] waiting for that key.
         mcts_generators: Maps game_idx -> active MCTS generator instance.
         generator_states: Maps game_idx -> current state ('running', 'waiting_predict').
-        completed_searches: Stores results for generators that finish.
-        envs: List of environment instances.
         inference_batch_size: Maximum batch size for network inference.
 
     Returns:
@@ -277,7 +291,7 @@ def _process_network_batch(
     - completed_searches
     """
     if not agent.network or not pending_requests:
-        return pending_requests # Return unchanged list if no network or requests
+        return pending_requests  # Return unchanged list if no network or requests
 
     batch_size_to_process = min(len(pending_requests), inference_batch_size)
     logger.debug(f"Processing network batch. Size: {batch_size_to_process}")
@@ -285,7 +299,9 @@ def _process_network_batch(
     # --- Prepare Batch ---
     batch_dict: Dict[str, Tuple[StateType, List[int]]] = {}
     requests_in_batch = pending_requests[:batch_size_to_process]
-    remaining_requests = pending_requests[batch_size_to_process:] # Keep track of unprocessed requests
+    remaining_requests = pending_requests[
+        batch_size_to_process:
+    ]  # Keep track of unprocessed requests
 
     for request in requests_in_batch:
         if request.state_key not in batch_dict:
@@ -299,7 +315,9 @@ def _process_network_batch(
     # --- Call Network ---
     if agent.profiler:
         with Timer() as net_timer:
-            policy_list, value_list = agent.network.predict_batch(states_to_predict_batch)
+            policy_list, value_list = agent.network.predict_batch(
+                states_to_predict_batch
+            )
         agent.profiler.record_network_time(net_timer.elapsed_ms)
     else:
         policy_list, value_list = agent.network.predict_batch(states_to_predict_batch)
@@ -307,7 +325,7 @@ def _process_network_batch(
     # --- Distribute Results ---
     if len(policy_list) != len(state_keys_in_batch):
         logger.error("Network batch result size mismatch!")
-        return remaining_requests # Return unprocessed requests
+        return remaining_requests  # Return unprocessed requests
 
     for i, state_key in enumerate(state_keys_in_batch):
         policy_result, value_result = policy_list[i], value_list[i]
@@ -316,7 +334,7 @@ def _process_network_batch(
 
         waiting_game_indices = batch_dict[state_key][1]
         if state_key in waiting_generators:
-            del waiting_generators[state_key] # Clear from global waiting dict
+            del waiting_generators[state_key]  # Clear from global waiting dict
 
         for waiting_game_idx in waiting_game_indices:
             if waiting_game_idx in mcts_generators:
@@ -326,51 +344,78 @@ def _process_network_batch(
                     advance_result = agent.mcts._advance_simulation_generator(
                         generator_to_resume,
                         result_to_send=result_tuple,
-                        log_prefix=f"NetBatch Game {waiting_game_idx}:"
+                        log_prefix=f"NetBatch Game {waiting_game_idx}:",
                     )
 
                     # Process the outcome after sending the result
                     if advance_result["status"] == "finished":
-                        logger.debug(f"Generator {waiting_game_idx} finished immediately after receiving result.")
+                        logger.debug(
+                            f"Generator {waiting_game_idx} finished immediately after receiving result."
+                        )
                         # Clean up state and generator tracking
-                        if waiting_game_idx in mcts_generators: del mcts_generators[waiting_game_idx]
-                        if waiting_game_idx in generator_states: del generator_states[waiting_game_idx]
+                        if waiting_game_idx in mcts_generators:
+                            del mcts_generators[waiting_game_idx]
+                        if waiting_game_idx in generator_states:
+                            del generator_states[waiting_game_idx]
                         # Note: completed_searches should be handled by the main loop when generator finishes normally
 
                     elif advance_result["status"] == "error":
-                        logger.error(f"Generator {waiting_game_idx} errored after receiving result.")
-                        if waiting_game_idx in mcts_generators: del mcts_generators[waiting_game_idx]
-                        if waiting_game_idx in generator_states: del generator_states[waiting_game_idx]
+                        logger.error(
+                            f"Generator {waiting_game_idx} errored after receiving result."
+                        )
+                        if waiting_game_idx in mcts_generators:
+                            del mcts_generators[waiting_game_idx]
+                        if waiting_game_idx in generator_states:
+                            del generator_states[waiting_game_idx]
 
                     elif advance_result["status"] == "yielded_predict":
                         # Immediately yielded another request
                         predict_yield: PredictRequestYield = advance_result["request"]
                         _, new_state_key, new_state_obs = predict_yield
-                        logger.debug(f"Generator {waiting_game_idx} yielded new request immediately for {new_state_key}")
-                        # Add to *remaining* requests to be processed in next cycle
-                        remaining_requests.append(PredictRequest(game_idx=waiting_game_idx, state_key=new_state_key, state_obs=new_state_obs))
-                        if new_state_key not in waiting_generators: waiting_generators[new_state_key] = []
-                        if waiting_game_idx not in waiting_generators[new_state_key]: waiting_generators[new_state_key].append(waiting_game_idx)
-                        generator_states[waiting_game_idx] = "waiting_predict" # Still waiting
+                        # Use the helper function
+                        _handle_predict_request(
+                            game_idx=waiting_game_idx,
+                            state_key=new_state_key,
+                            state_obs=new_state_obs,
+                            pending_reqs=remaining_requests,  # Add to remaining requests
+                            waiting_gens=waiting_generators,
+                            gen_states=generator_states,
+                        )
 
                     elif advance_result["status"] == "resumed":
                         # Processed result, ready for next send(None) in main loop
-                        logger.debug(f"Generator {waiting_game_idx} resumed after receiving result.")
-                        generator_states[waiting_game_idx] = "running" # Mark as running
+                        logger.debug(
+                            f"Generator {waiting_game_idx} resumed after receiving result."
+                        )
+                        generator_states[
+                            waiting_game_idx
+                        ] = "running"  # Mark as running
 
                     else:
-                        logger.warning(f"Unexpected status from generator {waiting_game_idx} after sending result: {advance_result['status']}")
-                        generator_states[waiting_game_idx] = "running" # Assume running as fallback?
+                        logger.warning(
+                            f"Unexpected status from generator {waiting_game_idx} after sending result: {advance_result['status']}"
+                        )
+                        generator_states[
+                            waiting_game_idx
+                        ] = "running"  # Assume running as fallback?
 
-                except Exception as e: # Catch errors during send/advance
-                    logger.error(f"Error sending result/advancing generator for game {waiting_game_idx}: {e}", exc_info=True)
-                    if waiting_game_idx in mcts_generators: del mcts_generators[waiting_game_idx]
-                    if waiting_game_idx in generator_states: del generator_states[waiting_game_idx]
+                except Exception as e:  # Catch errors during send/advance
+                    logger.error(
+                        f"Error sending result/advancing generator for game {waiting_game_idx}: {e}",
+                        exc_info=True,
+                    )
+                    if waiting_game_idx in mcts_generators:
+                        del mcts_generators[waiting_game_idx]
+                    if waiting_game_idx in generator_states:
+                        del generator_states[waiting_game_idx]
             else:
-                logger.warning(f"Generator for game {waiting_game_idx} no longer active while distributing results for state {state_key}.")
-                if waiting_game_idx in generator_states: del generator_states[waiting_game_idx]
+                logger.warning(
+                    f"Generator for game {waiting_game_idx} no longer active while distributing results for state {state_key}."
+                )
+                if waiting_game_idx in generator_states:
+                    del generator_states[waiting_game_idx]
 
-    return remaining_requests # Return the list of requests not processed in this batch
+    return remaining_requests  # Return the list of requests not processed in this batch
 
 
 def _step_environments(
@@ -407,7 +452,9 @@ def _step_environments(
             continue
 
         if action is None:
-            logger.error(f"Game {game_idx} MCTS completed but action is None. Ending game.")
+            logger.error(
+                f"Game {game_idx} MCTS completed but action is None. Ending game."
+            )
             step_dones[game_idx] = True
             next_observations[game_idx] = observations[game_idx]
             rewards[game_idx] = 0.0
@@ -422,14 +469,22 @@ def _step_environments(
 
             state_before_action_val = states_before_action.get(game_idx)
             if policy_target is None:
-                logger.warning(f"Game {game_idx}, Step {len(parallel_histories[game_idx])}: Skipping history append - MCTS failed to produce policy target.")
+                logger.warning(
+                    f"Game {game_idx}, Step {len(parallel_histories[game_idx])}: Skipping history append - MCTS failed to produce policy target."
+                )
             elif state_before_action_val is None:
-                logger.error(f"Game {game_idx}: Skipping history append - Missing state_before_action")
+                logger.error(
+                    f"Game {game_idx}: Skipping history append - Missing state_before_action"
+                )
             else:
-                parallel_histories[game_idx].append((state_before_action_val, action, policy_target))
+                parallel_histories[game_idx].append(
+                    (state_before_action_val, action, policy_target)
+                )
 
         except ValueError as e:
-            logger.warning(f"Invalid action {action} in game {game_idx} step. Error: {e}. Ending game.")
+            logger.warning(
+                f"Invalid action {action} in game {game_idx} step. Error: {e}. Ending game."
+            )
             next_observations[game_idx] = observations[game_idx]
             rewards[game_idx] = 0.0
             step_dones[game_idx] = True
@@ -450,7 +505,7 @@ def _process_finished_games(
     all_experiences: List[Tuple[StateType, np.ndarray, float]],
     iteration: int,
     env_name: str,
-    finished_episodes_count_offset: int, # To get correct game index for logging
+    finished_episodes_count_offset: int,  # To get correct game index for logging
     pbar: Optional[tqdm] = None,
 ) -> int:
     """
@@ -472,23 +527,34 @@ def _process_finished_games(
             valid_history = [(s, a, p) for s, a, p in game_history if p is not None]
 
             if len(valid_history) != len(game_history):
-                logger.warning(f"Game {game_idx} history contained steps with None policy target.")
+                logger.warning(
+                    f"Game {game_idx} history contained steps with None policy target."
+                )
 
             if valid_history:
-                episode_result = agent.process_finished_episode(valid_history, final_outcome)
+                episode_result = agent.process_finished_episode(
+                    valid_history, final_outcome
+                )
                 all_experiences.extend(episode_result.buffer_experiences)
                 save_game_log(
                     episode_result.logged_history,
                     iteration,
-                    finished_episodes_count_offset + episodes_finished_this_cycle + 1, # Calculate unique game index
+                    finished_episodes_count_offset
+                    + episodes_finished_this_cycle
+                    + 1,  # Calculate unique game index
                     env_name,
                 )
             else:
-                logger.warning(f"Game {game_idx} finished with no valid history steps. No experiences added.")
+                logger.warning(
+                    f"Game {game_idx} finished with no valid history steps. No experiences added."
+                )
 
             episodes_finished_this_cycle += 1
-            if pbar: pbar.update(1)
-            logger.debug(f"Game {game_idx} finished. Total finished this cycle: {episodes_finished_this_cycle}")
+            if pbar:
+                pbar.update(1)
+            logger.debug(
+                f"Game {game_idx} finished. Total finished this cycle: {episodes_finished_this_cycle}"
+            )
 
             # Reset environment and history
             observations[game_idx] = envs[game_idx].reset()
@@ -511,7 +577,7 @@ def _advance_and_process_generators(
     pending_requests: List[PredictRequest],
     waiting_generators: Dict[str, List[int]],
     completed_searches: Dict[int, Tuple[Optional[ActionType], Optional[np.ndarray]]],
-    envs: List[BaseEnvironment], # Needed for random action fallback
+    # envs: List[BaseEnvironment], # Removed
 ):
     """
     Advances running MCTS generators and processes their yielded results.
@@ -528,7 +594,10 @@ def _advance_and_process_generators(
 
     for game_idx in active_generator_indices:
         # Skip if generator finished or is waiting for prediction
-        if game_idx not in mcts_generators or generator_states.get(game_idx) == "waiting_predict":
+        if (
+            game_idx not in mcts_generators
+            or generator_states.get(game_idx) == "waiting_predict"
+        ):
             continue
 
         generator = mcts_generators[game_idx]
@@ -539,128 +608,72 @@ def _advance_and_process_generators(
 
             if yield_type == "predict_request":
                 _, state_key, state_obs = yielded_value
-                logger.debug(f"Game {game_idx} yielded request for state {state_key}")
-                pending_requests.append(PredictRequest(game_idx=game_idx, state_key=state_key, state_obs=state_obs))
-                if state_key not in waiting_generators: waiting_generators[state_key] = []
-                if game_idx not in waiting_generators[state_key]: waiting_generators[state_key].append(game_idx)
-                generator_states[game_idx] = "waiting_predict"
-
+                # Use the helper function
+                _handle_predict_request(
+                    game_idx=game_idx,
+                    state_key=state_key,
+                    state_obs=state_obs,
+                    pending_reqs=pending_requests,
+                    waiting_gens=waiting_generators,
+                    gen_states=generator_states,
+                )
             elif yield_type == "search_complete":
                 _, root_node = yielded_value
                 logger.debug(f"MCTS search complete for game {game_idx}")
                 generators_finished_this_cycle.append(game_idx)
                 # Process completed search result
                 if not root_node.children:
-                    logger.warning(f"MCTS root for game {game_idx} has no children. Choosing random.")
-                    legal_actions = envs[game_idx].get_legal_actions()
-                    action = random.choice(legal_actions) if legal_actions else None
+                    # --- Error Handling: Root has no children after search ---
+                    # This indicates a problem, possibly the root state was terminal
+                    # or an error occurred during the very first simulation/expansion.
+                    logger.error(
+                        f"MCTS root for game {game_idx} has no children after search complete. Setting action=None."
+                    )
+                    action = None  # Signal error state
                     policy_target = None
                 else:
-                    visit_counts = np.array([child.visit_count for child in root_node.children.values()])
+                    # --- Standard processing ---
+                    visit_counts = np.array(
+                        [child.visit_count for child in root_node.children.values()]
+                    )
                     actions = list(root_node.children.keys())
                     chosen_action_index = np.argmax(visit_counts)
                     action = actions[chosen_action_index]
-                    policy_target = agent._calculate_policy_target(root_node, actions, visit_counts)
+                    policy_target = agent._calculate_policy_target(
+                        root_node, actions, visit_counts
+                    )
                 completed_searches[game_idx] = (action, policy_target)
 
             elif yield_type == "resumed":
                 logger.debug(f"Generator {game_idx} resumed, remains running.")
-                generator_states[game_idx] = "running" # Ensure state is correct
+                generator_states[game_idx] = "running"  # Ensure state is correct
 
             else:
-                logger.warning(f"Unexpected yield value from running generator {game_idx}: {yielded_value}")
+                logger.warning(
+                    f"Unexpected yield value from running generator {game_idx}: {yielded_value}"
+                )
 
         except StopIteration:
             logger.debug(f"MCTS generator for game {game_idx} stopped.")
             generators_finished_this_cycle.append(game_idx)
-            if game_idx not in completed_searches: completed_searches[game_idx] = (None, None) # Mark error
+            if game_idx not in completed_searches:
+                completed_searches[game_idx] = (None, None)  # Mark error
 
         except Exception as e:
-            logger.error(f"Error processing MCTS generator for game {game_idx}: {e}", exc_info=True)
+            logger.error(
+                f"Error processing MCTS generator for game {game_idx}: {e}",
+                exc_info=True,
+            )
             generators_finished_this_cycle.append(game_idx)
-            if game_idx not in completed_searches: completed_searches[game_idx] = (None, None) # Mark error
+            if game_idx not in completed_searches:
+                completed_searches[game_idx] = (None, None)  # Mark error
 
     # Clean up finished generators *after* the loop
     for game_idx in generators_finished_this_cycle:
-        if game_idx in mcts_generators: del mcts_generators[game_idx]
-        if game_idx in generator_states: del generator_states[game_idx]
-
-
-def _advance_mcts_generators(
-    agent: AlphaZeroAgent,
-    mcts_generators: Dict[int, Generator],
-    generator_states: Dict[int, str],
-    pending_requests: List[PredictRequest],
-    waiting_generators: Dict[str, List[int]],
-    completed_searches: Dict[int, Tuple[Optional[ActionType], Optional[np.ndarray]]],
-    envs: List[BaseEnvironment], # Needed for random action fallback
-):
-    """
-    Advances all active MCTS generators by one step (or until they yield/finish).
-    Collects prediction requests and handles completed searches.
-
-    Updates the following dictionaries/lists in place:
-    - mcts_generators
-    - generator_states
-    - pending_requests
-    - waiting_generators
-    - completed_searches
-    """
-    active_generator_indices = list(mcts_generators.keys())
-    generators_finished_this_cycle = []
-
-    for game_idx in active_generator_indices:
-        if game_idx not in mcts_generators: continue # Already finished
-
-        # Only advance generators that are not waiting for a prediction
-        if generator_states.get(game_idx) == "waiting_predict":
-            continue
-
-        generator = mcts_generators[game_idx]
-        sim_log_prefix = f"AdvMCTS Game {game_idx}:" # Simplified prefix
-
-        # Advance the generator until it yields predict, finishes, or errors
-        # We don't send results here; that happens after batch processing.
-        advance_result = agent.mcts._advance_simulation_generator(
-            generator, result_to_send=None, log_prefix=sim_log_prefix
-        )
-
-        if advance_result["status"] == "yielded_predict":
-            predict_request_yield: PredictRequestYield = advance_result["request"]
-            _, state_key, state_obs = predict_request_yield
-            logger.debug(f"{sim_log_prefix} Yielded request for state {state_key}")
-            pending_requests.append(
-                PredictRequest(
-                    game_idx=game_idx, state_key=state_key, state_obs=state_obs
-                )
-            )
-            if state_key not in waiting_generators:
-                waiting_generators[state_key] = []
-            if game_idx not in waiting_generators[state_key]:
-                waiting_generators[state_key].append(game_idx)
-            generator_states[game_idx] = "waiting_predict"
-
-        elif advance_result["status"] == "resumed":
-            # Generator completed an internal step, remains 'running'
-            logger.debug(f"{sim_log_prefix} Resumed, remains running.")
-            generator_states[game_idx] = "running" # Ensure state is correct
-
-        elif advance_result["status"] == "finished":
-            logger.debug(f"{sim_log_prefix} Search generator finished.")
-            generators_finished_this_cycle.append(game_idx)
-            # Process the completed search immediately
-            # Need the root node - how to get it? _advance doesn't return it.
-            # Let's modify _advance to return root on finish? No, MCTS search_generator yields it.
-            # This approach is flawed. We need to handle the 'search_complete' yield.
-
-            # --- Revert: Need to handle yields within the main loop ---
-            # This helper cannot fully encapsulate the advancement logic because
-            # the main loop needs to handle the 'search_complete' yield value.
-            # Let's simplify the main loop instead.
-
-            # --- Alternative Plan: Simplify the advancement loop directly ---
-            # We will keep the loop in the main function but make it cleaner.
-            pass # Placeholder - this function will be removed.
+        if game_idx in mcts_generators:
+            del mcts_generators[game_idx]
+        if game_idx in generator_states:
+            del generator_states[game_idx]
 
 
 def collect_parallel_self_play_data(
@@ -742,19 +755,32 @@ def collect_parallel_self_play_data(
             # Check if any generators are active before proceeding
             if not mcts_generators and not pending_requests:
                 # Logic to check if enough episodes collected or if stuck
-                if finished_episodes_count >= num_episodes_to_collect: break
-                if ready_for_action_search: continue
-                logger.warning("No active MCTS generators or pending requests, but not enough episodes collected. Checking game states.")
+                if finished_episodes_count >= num_episodes_to_collect:
+                    break
+                if ready_for_action_search:
+                    continue
+                logger.warning(
+                    "No active MCTS generators or pending requests, but not enough episodes collected. Checking game states."
+                )
                 all_done = all(game_is_done)
-                if all_done: break
+                if all_done:
+                    break
                 stuck = True
                 for i in range(num_parallel_games):
-                    if not game_is_done[i] and i not in mcts_generators and i not in ready_for_action_search:
-                        logger.warning(f"Game {i} is not done but has no MCTS generator. Marking ready.")
+                    if (
+                        not game_is_done[i]
+                        and i not in mcts_generators
+                        and i not in ready_for_action_search
+                    ):
+                        logger.warning(
+                            f"Game {i} is not done but has no MCTS generator. Marking ready."
+                        )
                         ready_for_action_search.append(i)
                         stuck = False
                 if stuck and not ready_for_action_search:
-                    logger.error("Stuck state: No active generators, no pending requests, but games not done. Breaking.")
+                    logger.error(
+                        "Stuck state: No active generators, no pending requests, but games not done. Breaking."
+                    )
                     break
                 else:
                     continue
@@ -767,26 +793,34 @@ def collect_parallel_self_play_data(
                 pending_requests=pending_requests,
                 waiting_generators=waiting_generators,
                 completed_searches=completed_searches,
-                envs=envs,
+                # envs=envs, # Removed
             )
 
             # --- Process Network Batch if Ready ---
-            if agent.network and (len(pending_requests) >= inference_batch_size or (not mcts_generators and pending_requests)):
+            if agent.network and (
+                len(pending_requests) >= inference_batch_size
+                or (not mcts_generators and pending_requests)
+            ):
                 pending_requests = _process_network_batch(
                     agent=agent,
                     pending_requests=pending_requests,
                     waiting_generators=waiting_generators,
                     mcts_generators=mcts_generators,
                     generator_states=generator_states,
-                    completed_searches=completed_searches,
-                    envs=envs,
+                    # completed_searches=completed_searches, # Removed
+                    # envs=envs, # Removed
                     inference_batch_size=inference_batch_size,
                 )
 
             # --- Step Environments for games where MCTS search completed ---
             games_ready_to_step = list(completed_searches.keys())
             if games_ready_to_step:
-                next_observations, rewards, step_dones, steps_this_cycle = _step_environments(
+                (
+                    next_observations,
+                    rewards,
+                    step_dones,
+                    steps_this_cycle,
+                ) = _step_environments(
                     completed_searches=completed_searches,
                     envs=envs,
                     observations=observations,
@@ -818,7 +852,8 @@ def collect_parallel_self_play_data(
                 # Clean up completed search data after processing
                 for game_idx in games_ready_to_step:
                     del completed_searches[game_idx]
-                    if game_idx in states_before_action: del states_before_action[game_idx]
+                    if game_idx in states_before_action:
+                        del states_before_action[game_idx]
                     # Generator state should already be cleaned up when generator finishes
 
             elif not mcts_generators and not pending_requests:
@@ -826,12 +861,14 @@ def collect_parallel_self_play_data(
                 if finished_episodes_count >= num_episodes_to_collect:
                     break
                 else:
-                    logger.warning("Stuck state: No games ready, no generators, no requests. Checking status.")
+                    logger.warning(
+                        "Stuck state: No games ready, no generators, no requests. Checking status."
+                    )
                     if not ready_for_action_search:
                         logger.error("Stuck: Breaking loop.")
                         break
                     else:
-                        continue # Go back to start searches for games marked ready
+                        continue  # Go back to start searches for games marked ready
 
     # --- End of Collection Loop ---
     if pbar:
