@@ -19,9 +19,135 @@ import numpy as np
 
 from core.config import MuZeroConfig
 from environments.base import ActionType, StateType, BaseEnvironment
+import torch.nn as nn
+
 from models.networks import AlphaZeroNet, MuZeroNet
 
 PredictResult = Tuple[np.ndarray, float]
+
+
+class DummyAlphaZeroNet(nn.Module):
+    """
+    A dummy network interface that mimics AlphaZeroNet but returns
+    uniform policy priors and zero value. Used when no real network is provided.
+    """
+
+    def __init__(self, env: BaseEnvironment):
+        super().__init__()
+        self.env = env
+        self._policy_size = self._calculate_policy_size(env)
+        # Store action mappings if available from env
+        self._action_to_index = {}
+        self._index_to_action = {}
+        if hasattr(env, "map_action_to_policy_index") and hasattr(
+            env, "map_policy_index_to_action"
+        ):
+            # Precompute mappings if possible
+            # Note: This assumes a fixed set of actions, might not work for all envs
+            try:
+                # This might fail if legal actions depend heavily on state
+                initial_state = env.reset()
+                legal_actions = env.get_legal_actions()
+                for action in legal_actions:
+                    idx = env.map_action_to_policy_index(action)
+                    if idx is not None:
+                        self._action_to_index[action] = idx
+                        self._index_to_action[idx] = action
+                # Reset env again to be safe
+                env.reset()
+            except Exception as e:
+                logger.warning(
+                    f"Could not precompute action mappings for DummyNet: {e}"
+                )
+                # Mappings will be attempted on-the-fly
+
+    def _flatten_state(self, state_dict: dict) -> torch.Tensor:
+        # Return a dummy tensor, as it won't be used for actual prediction
+        return torch.zeros(1)
+
+    def _calculate_input_size(self, env: BaseEnvironment) -> int:
+        # Return a dummy size
+        return 1
+
+    def _calculate_policy_size(self, env: BaseEnvironment) -> int:
+        # Use the environment's policy vector size
+        try:
+            return env.policy_vector_size
+        except AttributeError:
+            logger.error("DummyNet requires env to have policy_vector_size attribute.")
+            # Fallback, but likely indicates an issue
+            return env.num_actions if hasattr(env, "num_actions") else 1
+
+    def get_action_index(self, action: ActionType) -> Optional[int]:
+        """Maps an action to its policy index."""
+        action_key = tuple(action) if isinstance(action, list) else action
+        idx = self._action_to_index.get(action_key)
+        if idx is None and hasattr(self.env, "map_action_to_policy_index"):
+            # Try on-the-fly mapping if not precomputed
+            idx = self.env.map_action_to_policy_index(action_key)
+            if idx is not None:  # Cache if found
+                self._action_to_index[action_key] = idx
+                self._index_to_action[idx] = action_key  # Assume inverse mapping exists
+        return idx
+
+    def get_action_from_index(self, index: int) -> Optional[ActionType]:
+        """Maps a policy index back to an action."""
+        action = self._index_to_action.get(index)
+        if action is None and hasattr(self.env, "map_policy_index_to_action"):
+            # Try on-the-fly mapping if not precomputed
+            action = self.env.map_policy_index_to_action(index)
+            if action is not None:  # Cache if found
+                action_key = tuple(action) if isinstance(action, list) else action
+                self._index_to_action[index] = action_key
+                self._action_to_index[
+                    action_key
+                ] = index  # Assume inverse mapping exists
+        return action
+
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        # Not used directly, but required by nn.Module
+        batch_size = x.shape[0] if x.dim() > 0 else 1
+        # Return uniform policy logits (zeros -> uniform softmax) and zero value
+        policy_logits = torch.zeros(batch_size, self._policy_size)
+        value = torch.zeros(batch_size, 1)
+        return policy_logits, value
+
+    def predict(self, state_dict: dict) -> Tuple[np.ndarray, float]:
+        """Returns uniform policy probabilities and zero value."""
+        policy_probs = np.ones(self._policy_size, dtype=np.float32) / self._policy_size
+        value = 0.0
+        return policy_probs, value
+
+    def predict_batch(
+        self, state_dicts: List[dict]
+    ) -> Tuple[List[np.ndarray], List[float]]:
+        """Returns uniform policy probabilities and zero values for a batch."""
+        batch_size = len(state_dicts)
+        policy_probs = np.ones(self._policy_size, dtype=np.float32) / self._policy_size
+        policy_list = [policy_probs.copy() for _ in range(batch_size)]
+        value_list = [0.0] * batch_size
+        return policy_list, value_list
+
+
+# Helper function to get state key (moved outside class)
+def get_state_key(s: StateType) -> str:
+    """Creates a hashable key from a state dictionary."""
+    try:
+        items = []
+        # Sort items for consistency
+        for k, v in sorted(s.items()):
+            if isinstance(v, np.ndarray):
+                items.append((k, v.tobytes()))
+            elif isinstance(v, list):
+                items.append((k, tuple(v)))  # Convert lists to tuples
+            else:
+                items.append((k, v))
+        return str(tuple(items))
+    except TypeError as e:
+        logger.warning(
+            f"State not easily hashable: {s}. Error: {e}. Using simple str()."
+        )
+        return str(s)
 
 
 # --- Type Aliases for Generator Yield Values ---
@@ -339,6 +465,7 @@ class AlphaZeroMCTS(MCTS):
 
     def __init__(
         self,
+        env: BaseEnvironment,  # <<< Add env parameter
         exploration_constant: float = 1.0,  # c_puct in AlphaZero
         num_simulations: int = 100,
         network: Optional[AlphaZeroNet] = None,  # Type hint Optional
@@ -352,7 +479,7 @@ class AlphaZeroMCTS(MCTS):
             discount_factor=discount_factor,
             num_simulations=num_simulations,
         )
-        self.network = network
+        self.network = network if network is not None else DummyAlphaZeroNet(env)
         self.profiler = profiler
         # self.dirichlet_epsilon = dirichlet_epsilon
         # self.dirichlet_alpha = dirichlet_alpha
@@ -360,8 +487,10 @@ class AlphaZeroMCTS(MCTS):
     def _expand(
         self,
         node: MCTSNode,
-        env_state: BaseEnvironment,  # Pass env state for legal actions
-        policy_priors_np: Optional[np.ndarray] = None,  # Optional policy from network
+        env_state: BaseEnvironment,
+        policy_priors_np: Optional[
+            np.ndarray
+        ] = None,  # not actually optional, just matching type
     ) -> None:
         """
         Expand the leaf node. Uses network policy priors if provided, otherwise uniform.
@@ -371,6 +500,8 @@ class AlphaZeroMCTS(MCTS):
             env_state: The environment state at the node (used for legal actions).
             policy_priors_np: Optional numpy array of policy probabilities from the network.
         """
+        assert policy_priors_np is not None
+
         if node.is_expanded() or env_state.is_game_over():
             return
 
@@ -379,24 +510,20 @@ class AlphaZeroMCTS(MCTS):
             return  # Cannot expand if no legal actions
 
         action_priors_dict = {}
-        if self.network and policy_priors_np is not None:
-            # --- Use network priors ---
-            for action in legal_actions:
-                action_key = tuple(action) if isinstance(action, list) else action
-                # Use network's mapping function
-                action_index = self.network.get_action_index(action_key)
 
-                if action_index is not None and 0 <= action_index < len(
-                    policy_priors_np
-                ):
-                    prior = policy_priors_np[action_index]
-                    action_priors_dict[action_key] = prior
-                else:
-                    # Assign 0 prior if action is illegal according to network mapping or out of bounds
-                    action_priors_dict[action_key] = 0.0
-                    logger.warning(
-                        f"Action {action_key} (index {action_index}) not found in policy vector during expand."
-                    )
+        for action in legal_actions:
+            action_key = tuple(action) if isinstance(action, list) else action
+            action_index = self.network.get_action_index(action_key)
+
+            if action_index is not None and 0 <= action_index < len(policy_priors_np):
+                prior = policy_priors_np[action_index]
+                action_priors_dict[action_key] = prior
+            else:
+                # Assign 0 prior if action is illegal according to network mapping or out of bounds
+                action_priors_dict[action_key] = 0.0
+                logger.warning(
+                    f"Action {action_key} (index {action_index}) not found in policy vector during expand."
+                )
 
             # Log sorted priors for debugging
             sorted_priors = sorted(
@@ -408,18 +535,7 @@ class AlphaZeroMCTS(MCTS):
             )
             logger.debug(f"  Expand (Network): Legal Actions={legal_actions}")
             logger.debug(
-                f"  Expand (Network): Applied Priors (Top 5): { {a: f'{p:.3f}' for a, p in sorted_priors[:5]} }"
-            )
-        else:
-            # --- Fallback to uniform priors (networkless or policy not provided) ---
-            num_legal = len(legal_actions)
-            uniform_prior = 1.0 / num_legal if num_legal > 0 else 1.0
-            action_priors_dict = {
-                (tuple(action) if isinstance(action, list) else action): uniform_prior
-                for action in legal_actions
-            }
-            logger.debug(
-                f"  Expand (Uniform): Legal Actions={legal_actions}, Prior={uniform_prior:.3f}"
+                f"  Expand (Network={type(self.network).__name__}): Applied Priors (Top 5): { {a: f'{p:.3f}' for a, p in sorted_priors[:5]} }"
             )
 
         # Call the base node expansion method
@@ -499,31 +615,11 @@ class AlphaZeroMCTS(MCTS):
 
         # --- State for Generator-Based Batching ---
         # Cache for network results within this single search instance
-        # Maps unique_state_key to (policy_np, value)
-        evaluation_cache: Dict[str, Tuple[np.ndarray, float]] = {}
-
-        # Helper to create a unique key for a state (moved inside for encapsulation)
-        def get_state_key(s: StateType) -> str:
-            try:
-                items = []
-                # Sort items for consistency
-                for k, v in sorted(s.items()):
-                    if isinstance(v, np.ndarray):
-                        items.append((k, v.tobytes()))
-                    elif isinstance(v, list):
-                        items.append((k, tuple(v)))  # Convert lists to tuples
-                    else:
-                        items.append((k, v))
-                return str(tuple(items))
-            except TypeError as e:
-                logger.warning(
-                    f"State not easily hashable: {s}. Error: {e}. Using simple str()."
-                )
-                return str(s)
+        evaluation_cache: Dict[str, PredictResult] = {}
 
         search_timer = Timer() if self.profiler else contextlib.nullcontext()
         with search_timer:
-            log_prefix = f"AZ MCTS Search Gen (Network={self.network is not None}, Sims={self.num_simulations})"
+            log_prefix = f"AZ MCTS Search Gen (NetType={type(self.network).__name__}, Sims={self.num_simulations})"
             logger.debug(f"--- {log_prefix} Start: State={initial_state_obs} ---")
 
             # TODO: Add Dirichlet noise to root priors if training and network exists
@@ -533,224 +629,113 @@ class AlphaZeroMCTS(MCTS):
                 logger.debug(f"{sim_log_prefix} Starting...")
 
                 # --- Run one simulation path ---
-                node = self.root
-                sim_env = env.copy()
-                sim_env.set_state(initial_state_obs)  # Start from the root state
-                search_path = [node]
-
-                # 1. Selection: Find a leaf node using PUCT (_score_child).
-                selection_active = True
-                while (
-                    selection_active
-                    and node.is_expanded()
-                    and not sim_env.is_game_over()
-                ):
-                    logger.debug(
-                        f"{sim_log_prefix} Selection Loop: Node expanded={node.is_expanded()}, Game Over={sim_env.is_game_over()}"
-                    )
-                    parent_visits = node.visit_count
-
-                    if not node.children:
-                        # This should not happen if node.is_expanded() is true.
-                        # If it does, it indicates an issue during expansion or node state.
-                        logger.error(
-                            f"{sim_log_prefix} Select: Node is expanded but has no children!"
-                        )
-                        selection_active = False  # Exit loop
-                        continue  # Skip rest of loop iteration
-
-                    # Calculate scores for all children determined during expansion
-                    child_scores = {
-                        act: self._score_child(child, parent_visits)
-                        for act, child in node.children.items()
-                    }
-
-                    best_action = max(child_scores, key=child_scores.get)
-                    logger.debug(
-                        f"{sim_log_prefix} Select: ParentVisits={parent_visits}, LegalScores={ {a: f'{s:.3f}' for a, s in child_scores.items()} }, Chosen={best_action}"
-                    )
-
-                    try:
-                        # Step the environment with the chosen legal action
-                        logger.debug(
-                            f"{sim_log_prefix} Select: Stepping env with {best_action}"
-                        )
-                        sim_env.step(best_action)
-                        # Update node using the filtered dictionary
-                        logger.debug(
-                            f"{sim_log_prefix} Select: Moving to child node for action {best_action}"
-                        )
-                        node = node.children[best_action]
-                        search_path.append(node)
-                    except (
-                        ValueError,
-                        KeyError,
-                    ) as e:  # ValueError for invalid step, KeyError for dict lookup (shouldn't happen)
-                        logger.error(
-                            f"{sim_log_prefix} Select: Error stepping env or finding child for action {best_action}. Error: {e}"
-                        )
-                        node = None  # Signal error
-                        selection_active = False  # Exit loop
-                        # break # Replaced by selection_active = False
-
-                # --- End of Selection Loop ---
-                logger.debug(
-                    f"{sim_log_prefix} Selection loop finished. Final node in path: {node}"
+                sim_log_prefix = (
+                    f"  Sim {sim_num+1}/{self.num_simulations}:"  # Define here
                 )
 
-                if node is None:
+                # 1. Selection
+                leaf_node, leaf_env_state, search_path = self._select_leaf(
+                    self.root, env, initial_state_obs
+                )
+
+                if leaf_node is None or leaf_env_state is None:
                     logger.error(
-                        f"{sim_log_prefix} Skipping simulation due to error during selection."
+                        f"{sim_log_prefix} Selection failed. Skipping simulation."
                     )
-                    continue  # Skip to next simulation if error occurred
+                    continue
 
-                # --- Reached a leaf node (or terminal state) ---
-                leaf_node = node
-                leaf_env_state = sim_env  # Environment state at the leaf
+                # 2. Evaluate & Expand Leaf (potentially yields)
+                # This helper now handles terminal checks, cache, expansion, and returns value
+                # It yields PredictRequestYield if network call is needed.
+                eval_generator = self._evaluate_and_expand_leaf(
+                    leaf_node, leaf_env_state, evaluation_cache
+                )
 
-                value = 0.0  # Default value
-                policy_np = None  # Default policy
+                try:
+                    # Attempt to get the value directly or yield the request
+                    eval_result = next(eval_generator)
 
-                # 2. Evaluation: Determine value and potentially expand.
-                if leaf_env_state.is_game_over():
-                    # Game ended during selection. Determine the outcome.
-                    player_at_leaf = (
-                        leaf_env_state.get_current_player()
-                    )  # Whose turn it *would* be
-                    winner = leaf_env_state.get_winning_player()
-                    if winner is None:
-                        value = 0.0
-                    elif winner == player_at_leaf:
-                        value = 1.0  # Player at leaf wins
-                    else:
-                        value = -1.0  # Player at leaf loses
-                    logger.debug(
-                        f"  Terminal Found during Select: Winner={winner}, PlayerAtNode={player_at_leaf}, Value={value}"
-                    )
-                    # Backpropagate terminal value immediately
-                    self._backpropagate(leaf_node, value)
-                    continue  # Move to next simulation
-
-                # --- Non-Terminal Leaf Node ---
-                if self.network:
-                    # --- Network-Based Evaluation (Yielding Logic) ---
-                    leaf_state_obs = leaf_env_state.get_observation()
-                    state_key = get_state_key(leaf_state_obs)
-
-                    if state_key in evaluation_cache:
-                        # Cache Hit
-                        policy_np, value = evaluation_cache[state_key]
+                    if (
+                        isinstance(eval_result, tuple)
+                        and eval_result[0] == "predict_request"
+                    ):
+                        # --- Network Prediction Needed ---
+                        predict_request_yield: PredictRequestYield = eval_result
                         logger.debug(
-                            f"{sim_log_prefix} Eval: Cache Hit for StateKey={state_key}, Value={value:.3f}"
+                            f"{sim_log_prefix} Yielding predict request: {predict_request_yield[1]}"
                         )
-                        if not leaf_node.is_expanded():
-                            logger.debug(
-                                f"{sim_log_prefix} Eval: Expanding node (cache hit)."
-                            )
-                            self._expand(leaf_node, leaf_env_state, policy_np)
-                        logger.debug(
-                            f"{sim_log_prefix} Eval: Backpropagating value {value:.3f} (cache hit)."
-                        )
-                        self._backpropagate(leaf_node, value)
-                        resumed_yield: ResumedYield = ("resumed",)
-                        yield resumed_yield
-                    else:
-                        # Cache Miss: Yield request and wait for result
-                        logger.debug(
-                            f"{sim_log_prefix} Eval: Cache Miss. Yielding Request for StateKey={state_key}"
-                        )
-                        # Yield only the info needed by the caller to get the prediction
-                        predict_request_yield: PredictRequestYield = (
-                            "predict_request",
-                            state_key,
-                            leaf_state_obs,
-                        )
-                        # Add type hint for received value
+                        # Yield the request outwards
                         received_result: Optional[
                             PredictResult
                         ] = yield predict_request_yield
-                        # --- Resumed after yield ---
-                        # Expecting received_result to be a tuple (policy_np, value)
-                        # Check if None explicitly first
-                        if received_result is None:
-                            logger.error(
-                                f"Generator received None result for state {state_key}. Skipping backprop."
-                            )
-                            continue
-                        # Check tuple structure and types more carefully
-                        if (
-                            not isinstance(received_result, tuple)
-                            or len(received_result) != 2
-                        ):
-                            logger.error(
-                                f"Generator received invalid result structure for state {state_key}. Type: {type(received_result)}, Value: {received_result}. Skipping backprop."
-                            )
-                            continue
 
-                        policy_np, value = received_result  # Unpack the received tuple
-                        # Add extra check for types inside the tuple
-                        if not isinstance(policy_np, np.ndarray) or not isinstance(
-                            value, (float, int)
-                        ):  # Allow int just in case
+                        # Send the received result back into the eval generator
+                        logger.debug(
+                            f"{sim_log_prefix} Sending received result back to eval generator."
+                        )
+                        try:
+                            # The eval_generator expects the result via send() to complete its logic
+                            final_value = eval_generator.send(received_result)
+                        except StopIteration as e:
+                            # If send causes StopIteration, the value is in e.value
+                            final_value = e.value
+                        except Exception as e_inner:
                             logger.error(
-                                f"Generator received tuple with unexpected types for state {state_key}: ({type(policy_np)}, {type(value)}). Skipping backprop."
+                                f"{sim_log_prefix} Error sending result to eval generator: {e_inner}",
+                                exc_info=True,
                             )
-                            continue
-                        # Convert value to float if it was int
-                        value = float(value)
+                            final_value = None  # Error case
 
+                    elif isinstance(eval_result, float):
+                        # --- Evaluation completed without yielding (cache hit or terminal) ---
+                        final_value = eval_result
                         logger.debug(
-                            f"{sim_log_prefix} Eval: Received Result for StateKey={state_key}, Value={value:.3f}"
+                            f"{sim_log_prefix} Evaluation completed directly (value={final_value:.3f}). Yielding resume."
                         )
-                        # Cache the received result
-                        evaluation_cache[state_key] = (policy_np, value)
-                        # Expand node using the received policy if not already expanded
-                        if not leaf_node.is_expanded():
-                            logger.debug(
-                                f"{sim_log_prefix} Eval: Expanding node (after predict)."
-                            )
-                            self._expand(leaf_node, leaf_env_state, policy_np)
-                        # Backpropagate the received value
-                        logger.debug(
-                            f"{sim_log_prefix} Eval: Backpropagating value {value:.3f} (after predict)."
-                        )
-                        self._backpropagate(leaf_node, value)
-                        # Instead of continue, signal resumption
+                        # Yield 'resumed' to signal completion without external prediction
                         resumed_yield: ResumedYield = ("resumed",)
                         yield resumed_yield
-                        # continue # REMOVED
-
-                else:
-                    # --- Networkless Evaluation (Expand + Rollout) ---
-                    logger.debug(
-                        f"{sim_log_prefix} Eval: Networkless - Expanding and Rolling out."
-                    )
-                    # Expand using uniform priors
-                    if not leaf_node.is_expanded():
-                        logger.debug(
-                            f"{sim_log_prefix} Eval: Expanding node (networkless)."
+                    else:
+                        # Should not happen if _evaluate_and_expand_leaf is correct
+                        logger.error(
+                            f"{sim_log_prefix} Unexpected result from eval generator: {eval_result}"
                         )
-                        self._expand(
-                            leaf_node, leaf_env_state, policy_priors_np=None
-                        )  # Pass None policy
+                        final_value = None
 
-                    # Perform random rollout using base class method
-                    logger.debug(f"{sim_log_prefix} Eval: Starting rollout.")
-                    value = super()._rollout(leaf_env_state)  # Call MCTS._rollout
-                    logger.debug(
-                        f"{sim_log_prefix} Eval: Rollout finished, value={value:.3f}."
-                    )
-                    # Backpropagate rollout result immediately
-                    logger.debug(
-                        f"{sim_log_prefix} Eval: Backpropagating value {value:.3f} (networkless)."
-                    )
-                    self._backpropagate(leaf_node, value)
-                    # Instead of continue, signal resumption
-                    resumed_yield: ResumedYield = ("resumed",)
-                    yield resumed_yield
-                    # continue # REMOVED
+                    # 3. Backpropagation (if evaluation was successful)
+                    if final_value is not None:
+                        logger.debug(
+                            f"{sim_log_prefix} Backpropagating value {final_value:.3f}."
+                        )
+                        self._backpropagate(leaf_node, final_value)
+                    else:
+                        logger.error(
+                            f"{sim_log_prefix} Skipping backpropagation due to evaluation error."
+                        )
 
-                # --- Internal batch processing block removed ---
+                except StopIteration as e:
+                    # This happens if _evaluate_and_expand_leaf finishes without yielding (e.g. terminal node)
+                    final_value = e.value
+                    if final_value is not None:
+                        logger.debug(
+                            f"{sim_log_prefix} Evaluation finished (terminal/cached), backpropagating value {final_value:.3f}."
+                        )
+                        self._backpropagate(leaf_node, final_value)
+                        # Yield 'resumed' to signal completion without external prediction
+                        resumed_yield: ResumedYield = ("resumed",)
+                        yield resumed_yield
+                    else:
+                        # Should not happen if terminal value is always float
+                        logger.error(
+                            f"{sim_log_prefix} Eval generator stopped with None value."
+                        )
+
+                except Exception as e:
+                    logger.error(
+                        f"{sim_log_prefix} Error during simulation {sim_num+1}: {e}",
+                        exc_info=True,
+                    )
+                    # Continue to next simulation
 
             # --- End of Simulation Loop ---
 
@@ -779,7 +764,171 @@ class AlphaZeroMCTS(MCTS):
         search_complete_yield: SearchCompleteYield = ("search_complete", self.root)
         yield search_complete_yield
 
-    # Removed duplicated search method - search_generator is the active one
+    def _select_leaf(
+        self, root_node: MCTSNode, env: BaseEnvironment, initial_state: StateType
+    ) -> Tuple[Optional[MCTSNode], Optional[BaseEnvironment], List[MCTSNode]]:
+        """
+        Selects a leaf node starting from the root using PUCT scores.
+
+        Args:
+            root_node: The starting node for selection.
+            env: The base environment instance (used for copying).
+            initial_state: The state corresponding to the root node.
+
+        Returns:
+            A tuple containing:
+            - The selected leaf node (or None if an error occurs).
+            - The environment state at the leaf node (or None if error).
+            - The list of nodes in the search path.
+        """
+        node = root_node
+        sim_env = env.copy()
+        sim_env.set_state(initial_state)
+        search_path = [node]
+        sim_log_prefix = "  Sim Select:"  # Simplified prefix for helper
+
+        selection_active = True
+        while selection_active and node.is_expanded() and not sim_env.is_game_over():
+            parent_visits = node.visit_count
+
+            if not node.children:
+                logger.error(f"{sim_log_prefix} Node is expanded but has no children!")
+                return None, None, search_path  # Error case
+
+            # Calculate scores for all children determined during expansion
+            child_scores = {
+                act: self._score_child(child, parent_visits)
+                for act, child in node.children.items()
+            }
+
+            best_action = max(child_scores, key=child_scores.get)
+            logger.debug(
+                f"{sim_log_prefix} ParentVisits={parent_visits}, LegalScores={ {a: f'{s:.3f}' for a, s in child_scores.items()} }, Chosen={best_action}"
+            )
+
+            try:
+                logger.debug(f"{sim_log_prefix} Stepping env with {best_action}")
+                sim_env.step(best_action)
+                logger.debug(
+                    f"{sim_log_prefix} Moving to child node for action {best_action}"
+                )
+                node = node.children[best_action]
+                search_path.append(node)
+            except (ValueError, KeyError) as e:
+                logger.error(
+                    f"{sim_log_prefix} Error stepping env or finding child for action {best_action}. Error: {e}"
+                )
+                return None, None, search_path  # Error case
+
+        logger.debug(f"{sim_log_prefix} Selection finished. Leaf node: {node}")
+        return node, sim_env, search_path
+
+    def _evaluate_and_expand_leaf(
+        self,
+        leaf_node: MCTSNode,
+        leaf_env_state: BaseEnvironment,
+        evaluation_cache: Dict[str, PredictResult],
+    ) -> Generator[GeneratorYield, Optional[PredictResult], Optional[float]]:
+        """
+        Evaluates a leaf node. Handles terminal states, cache lookups,
+        network prediction requests (yielding), expansion, and returns the value
+        from the perspective of the player at the leaf node.
+
+        Args:
+            leaf_node: The leaf node reached during selection.
+            leaf_env_state: The environment state corresponding to the leaf node.
+            evaluation_cache: The cache for network results for the current search.
+
+        Yields:
+            PredictRequestYield if a network prediction is needed.
+
+        Receives:
+            PredictResult via send() if a prediction was requested.
+
+        Returns:
+            The evaluated value (float) from the perspective of the player at the leaf node,
+            or None if an error occurred during prediction/handling.
+        """
+        sim_log_prefix = "  Sim Eval/Expand:"  # Simplified prefix
+
+        # --- Handle Terminal State ---
+        if leaf_env_state.is_game_over():
+            player_at_leaf = leaf_env_state.get_current_player()
+            winner = leaf_env_state.get_winning_player()
+            if winner is None:
+                value = 0.0
+            elif winner == player_at_leaf:
+                value = 1.0
+            else:
+                value = -1.0
+            logger.debug(
+                f"{sim_log_prefix} Terminal state found. Winner={winner}, PlayerAtNode={player_at_leaf}, Value={value}"
+            )
+            return value  # Return value directly
+
+        # --- Non-Terminal Leaf Node ---
+        leaf_state_obs = leaf_env_state.get_observation()
+        state_key = get_state_key(leaf_state_obs)
+
+        if state_key in evaluation_cache:
+            # --- Cache Hit ---
+            policy_np, value = evaluation_cache[state_key]
+            logger.debug(
+                f"{sim_log_prefix} Cache Hit for StateKey={state_key}, Value={value:.3f}"
+            )
+            if not leaf_node.is_expanded():
+                logger.debug(f"{sim_log_prefix} Expanding node (cache hit).")
+                # Use self.network which is guaranteed to exist
+                self._expand(leaf_node, leaf_env_state, policy_np)
+            # Return cached value
+            return value
+        else:
+            # --- Cache Miss: Request Prediction ---
+            logger.debug(
+                f"{sim_log_prefix} Cache Miss. Yielding Request for StateKey={state_key}"
+            )
+            predict_request_yield: PredictRequestYield = (
+                "predict_request",
+                state_key,
+                leaf_state_obs,
+            )
+            received_result: Optional[PredictResult] = yield predict_request_yield
+
+            # --- Handle Received Result ---
+            if received_result is None:
+                logger.error(
+                    f"{sim_log_prefix} Received None result for state {state_key}. Cannot proceed."
+                )
+                return None  # Signal error
+
+            if not isinstance(received_result, tuple) or len(received_result) != 2:
+                logger.error(
+                    f"{sim_log_prefix} Received invalid result structure for state {state_key}. Type: {type(received_result)}, Value: {received_result}."
+                )
+                return None  # Signal error
+
+            policy_np, value = received_result
+            if not isinstance(policy_np, np.ndarray) or not isinstance(
+                value, (float, int)
+            ):
+                logger.error(
+                    f"{sim_log_prefix} Received tuple with unexpected types for state {state_key}: ({type(policy_np)}, {type(value)})."
+                )
+                return None  # Signal error
+
+            value = float(value)
+            logger.debug(
+                f"{sim_log_prefix} Received Result for StateKey={state_key}, Value={value:.3f}"
+            )
+
+            evaluation_cache[state_key] = (policy_np, value)
+
+            if not leaf_node.is_expanded():
+                logger.debug(f"{sim_log_prefix} Expanding node (after predict).")
+                self._expand(leaf_node, leaf_env_state, policy_np)
+
+            # Return the received value
+            return value
 
 
 # --- MuZero MCTS ---

@@ -86,8 +86,9 @@ class AlphaZeroAgent(Agent):
             self.network = None
             self.device = torch.device("cpu")
 
-        # Pass the stored profiler instance to the MCTS constructor
+        # Pass the stored profiler instance and env to the MCTS constructor
         self.mcts = AlphaZeroMCTS(
+            env=self.env,
             exploration_constant=config.cpuct,
             num_simulations=config.num_simulations,
             network=self.network,
