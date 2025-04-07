@@ -373,6 +373,137 @@ def _process_network_batch(
     return remaining_requests # Return the list of requests not processed in this batch
 
 
+def _step_environments(
+    completed_searches: Dict[int, Tuple[Optional[ActionType], Optional[np.ndarray]]],
+    envs: List[BaseEnvironment],
+    observations: List[StateType],
+    game_is_done: List[bool],
+    parallel_histories: Dict[int, List[Tuple[StateType, ActionType, np.ndarray]]],
+    states_before_action: Dict[int, StateType],
+) -> Tuple[Dict, Dict, Dict, int]:
+    """
+    Steps the environments for games where MCTS search has completed.
+
+    Returns:
+        A tuple containing:
+        - next_observations: Dict mapping game_idx to the new observation.
+        - rewards: Dict mapping game_idx to the reward received.
+        - step_dones: Dict mapping game_idx to the done status after the step.
+        - steps_taken_this_cycle: Count of successful steps taken.
+    """
+    games_ready_to_step = list(completed_searches.keys())
+    next_observations = {}
+    rewards = {}
+    step_dones = {}
+    steps_taken_this_cycle = 0
+
+    for game_idx in games_ready_to_step:
+        action, policy_target = completed_searches[game_idx]
+
+        if game_is_done[game_idx]:
+            step_dones[game_idx] = True
+            next_observations[game_idx] = observations[game_idx]
+            rewards[game_idx] = 0.0
+            continue
+
+        if action is None:
+            logger.error(f"Game {game_idx} MCTS completed but action is None. Ending game.")
+            step_dones[game_idx] = True
+            next_observations[game_idx] = observations[game_idx]
+            rewards[game_idx] = 0.0
+            continue
+
+        try:
+            obs, reward, done = envs[game_idx].step(action)
+            next_observations[game_idx] = obs
+            rewards[game_idx] = reward
+            step_dones[game_idx] = done
+            steps_taken_this_cycle += 1
+
+            state_before_action_val = states_before_action.get(game_idx)
+            if policy_target is None:
+                logger.warning(f"Game {game_idx}, Step {len(parallel_histories[game_idx])}: Skipping history append - MCTS failed to produce policy target.")
+            elif state_before_action_val is None:
+                logger.error(f"Game {game_idx}: Skipping history append - Missing state_before_action")
+            else:
+                parallel_histories[game_idx].append((state_before_action_val, action, policy_target))
+
+        except ValueError as e:
+            logger.warning(f"Invalid action {action} in game {game_idx} step. Error: {e}. Ending game.")
+            next_observations[game_idx] = observations[game_idx]
+            rewards[game_idx] = 0.0
+            step_dones[game_idx] = True
+
+    return next_observations, rewards, step_dones, steps_taken_this_cycle
+
+
+def _process_finished_games(
+    games_stepped_indices: List[int],
+    agent: AlphaZeroAgent,
+    envs: List[BaseEnvironment],
+    observations: List[StateType],
+    game_is_done: List[bool],
+    parallel_histories: Dict[int, List[Tuple[StateType, ActionType, np.ndarray]]],
+    ready_for_action_search: List[int],
+    next_observations: Dict,
+    step_dones: Dict,
+    all_experiences: List[Tuple[StateType, np.ndarray, float]],
+    iteration: int,
+    env_name: str,
+    finished_episodes_count_offset: int, # To get correct game index for logging
+    pbar: Optional[tqdm] = None,
+) -> int:
+    """
+    Updates game states after stepping, processes finished games, resets environments,
+    and updates tracking lists.
+
+    Returns:
+        The number of episodes finished in this cycle.
+    """
+    episodes_finished_this_cycle = 0
+    for game_idx in games_stepped_indices:
+        observations[game_idx] = next_observations[game_idx]
+        game_is_done[game_idx] = step_dones[game_idx]
+
+        if game_is_done[game_idx]:
+            winner = envs[game_idx].get_winning_player()
+            final_outcome = 1.0 if winner == 0 else -1.0 if winner == 1 else 0.0
+            game_history = parallel_histories[game_idx]
+            valid_history = [(s, a, p) for s, a, p in game_history if p is not None]
+
+            if len(valid_history) != len(game_history):
+                logger.warning(f"Game {game_idx} history contained steps with None policy target.")
+
+            if valid_history:
+                episode_result = agent.process_finished_episode(valid_history, final_outcome)
+                all_experiences.extend(episode_result.buffer_experiences)
+                save_game_log(
+                    episode_result.logged_history,
+                    iteration,
+                    finished_episodes_count_offset + episodes_finished_this_cycle + 1, # Calculate unique game index
+                    env_name,
+                )
+            else:
+                logger.warning(f"Game {game_idx} finished with no valid history steps. No experiences added.")
+
+            episodes_finished_this_cycle += 1
+            if pbar: pbar.update(1)
+            logger.debug(f"Game {game_idx} finished. Total finished this cycle: {episodes_finished_this_cycle}")
+
+            # Reset environment and history
+            observations[game_idx] = envs[game_idx].reset()
+            game_is_done[game_idx] = False
+            parallel_histories[game_idx] = []
+            if game_idx not in ready_for_action_search:
+                ready_for_action_search.append(game_idx)
+        else:
+            # Game not done, mark ready for next action search
+            if game_idx not in ready_for_action_search:
+                ready_for_action_search.append(game_idx)
+
+    return episodes_finished_this_cycle
+
+
 def _advance_mcts_generators(
     agent: AlphaZeroAgent,
     mcts_generators: Dict[int, Generator],
@@ -624,151 +755,53 @@ def collect_parallel_self_play_data(
 
             # --- Step Environments for games where MCTS search completed ---
             games_ready_to_step = list(completed_searches.keys())
-            if not games_ready_to_step:
-                # If no games ready to step, and no generators running, and requests pending, continue to process requests
-                if not mcts_generators and pending_requests:
-                    continue
-                # If no games ready, no generators, no requests, check termination condition
-                elif not mcts_generators and not pending_requests:
-                    if finished_episodes_count >= num_episodes_to_collect:
+            if games_ready_to_step:
+                next_observations, rewards, step_dones, steps_this_cycle = _step_environments(
+                    completed_searches=completed_searches,
+                    envs=envs,
+                    observations=observations,
+                    game_is_done=game_is_done,
+                    parallel_histories=parallel_histories,
+                    states_before_action=states_before_action,
+                )
+                total_steps_taken += steps_this_cycle
+
+                # --- Update Game States and Handle Finished Games ---
+                episodes_finished_this_cycle = _process_finished_games(
+                    games_stepped_indices=games_ready_to_step,
+                    agent=agent,
+                    envs=envs,
+                    observations=observations,
+                    game_is_done=game_is_done,
+                    parallel_histories=parallel_histories,
+                    ready_for_action_search=ready_for_action_search,
+                    next_observations=next_observations,
+                    step_dones=step_dones,
+                    all_experiences=all_experiences,
+                    iteration=iteration,
+                    env_name=env_name,
+                    finished_episodes_count_offset=finished_episodes_count,
+                    pbar=pbar,
+                )
+                finished_episodes_count += episodes_finished_this_cycle
+
+                # Clean up completed search data after processing
+                for game_idx in games_ready_to_step:
+                    del completed_searches[game_idx]
+                    if game_idx in states_before_action: del states_before_action[game_idx]
+                    # Generator state should already be cleaned up when generator finishes
+
+            elif not mcts_generators and not pending_requests:
+                # If no games ready to step, no generators running, and no requests pending, check termination
+                if finished_episodes_count >= num_episodes_to_collect:
+                    break
+                else:
+                    logger.warning("Stuck state: No games ready, no generators, no requests. Checking status.")
+                    if not ready_for_action_search:
+                        logger.error("Stuck: Breaking loop.")
                         break
                     else:
-                        # This state should ideally be caught earlier
-                        logger.warning(
-                            "No games ready to step, no generators running, no pending requests. Checking status."
-                        )
-                        if (
-                            not ready_for_action_search
-                        ):  # If no games need action search either, break
-                            logger.error(
-                                "Stuck: No games ready to step and none need action search. Breaking."
-                            )
-                            break
-                        else:
-                            continue  # Go back to start searches
-
-            next_observations = {}
-            rewards = {}
-            step_dones = {}
-
-            for game_idx in games_ready_to_step:
-                action, policy_target = completed_searches[game_idx]
-
-                if game_is_done[
-                    game_idx
-                ]:  # If game ended previously (e.g., MCTS error)
-                    step_dones[game_idx] = True
-                    next_observations[game_idx] = observations[game_idx]
-                    rewards[game_idx] = 0.0
-                    continue
-
-                if action is None:
-                    logger.error(
-                        f"Game {game_idx} MCTS completed but action is None. Ending game."
-                    )
-                    game_is_done[game_idx] = True
-                    step_dones[game_idx] = True
-                    next_observations[game_idx] = observations[game_idx]
-                    rewards[game_idx] = 0.0
-                    continue
-
-                try:
-                    obs, reward, done = envs[game_idx].step(action)
-                    next_observations[game_idx] = obs
-                    rewards[game_idx] = reward
-                    step_dones[game_idx] = done
-                    total_steps_taken += 1
-
-                    # Store history step using state saved *before* MCTS search
-                    state_before_action = states_before_action.get(game_idx)
-
-                    # --- Check if policy_target is valid before adding to history ---
-                    if policy_target is None:
-                        logger.warning(
-                            f"Game {game_idx}, Step {len(parallel_histories[game_idx])}: Skipping history append - MCTS failed to produce policy target (likely 0 visits)."
-                        )
-                    elif state_before_action is None:
-                         logger.error(
-                            f"Game {game_idx}: Skipping history append - Missing state_before_action"
-                        )
-                    else:
-                        # Both state and policy are valid, add to history
-                        parallel_histories[game_idx].append(
-                            (state_before_action, action, policy_target)
-                        )
-                    # --- End Check ---
-
-                except ValueError as e: # Catches errors from env.step()
-                    logger.warning(
-                        f"Invalid action {action} in game {game_idx} step. Error: {e}. Ending game."
-                    )
-                    next_observations[game_idx] = observations[game_idx]
-                    rewards[game_idx] = 0.0
-                    step_dones[game_idx] = True  # Mark done
-
-            # --- Update Game States and Handle Finished Games ---
-            for game_idx in games_ready_to_step:  # Only update games we tried to step
-                observations[game_idx] = next_observations[game_idx]
-                game_is_done[game_idx] = step_dones[game_idx]
-
-                if game_is_done[game_idx]:
-                    # Game finished, process history
-                    winner = envs[game_idx].get_winning_player()
-                    final_outcome = 1.0 if winner == 0 else -1.0 if winner == 1 else 0.0
-
-                    game_history = parallel_histories[game_idx]
-                    # Ensure policy target is valid if last step had None
-                    valid_history = [
-                        (s, a, p) for s, a, p in game_history if p is not None
-                    ]
-                    if len(valid_history) != len(game_history):
-                        logger.warning(
-                            f"Game {game_idx} history contained steps with None policy target."
-                        )
-
-                    if valid_history:  # Only process if there's valid history
-                        episode_result = agent.process_finished_episode(
-                            valid_history, final_outcome
-                        )
-                        all_experiences.extend(episode_result.buffer_experiences)
-                        save_game_log(
-                            episode_result.logged_history,
-                            iteration,
-                            finished_episodes_count + 1,
-                            env_name,
-                        )
-                    else:
-                        logger.warning(
-                            f"Game {game_idx} finished with no valid history steps. No experiences added."
-                        )
-
-                    finished_episodes_count += 1
-                    if pbar:
-                        pbar.update(1)
-                    logger.debug(
-                        f"Game {game_idx} finished. Total finished: {finished_episodes_count}/{num_episodes_to_collect}"
-                    )
-
-                    # Reset environment and history for this index
-                    observations[game_idx] = envs[game_idx].reset()
-                    game_is_done[game_idx] = False
-                    parallel_histories[game_idx] = []
-                    # Mark ready for next action search
-                    if game_idx not in ready_for_action_search:
-                        ready_for_action_search.append(game_idx)
-                else:
-                    # Game not done, mark ready for next action search
-                    if game_idx not in ready_for_action_search:
-                        ready_for_action_search.append(game_idx)
-
-                # Clean up completed search data and generator state
-                del completed_searches[game_idx]
-                if game_idx in states_before_action:
-                    del states_before_action[game_idx]
-                if game_idx in generator_states:
-                    del generator_states[
-                        game_idx
-                    ]  # Should have been deleted already, but safety
+                        continue # Go back to start searches for games marked ready
 
     # --- End of Collection Loop ---
     if pbar:
