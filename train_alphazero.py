@@ -504,6 +504,88 @@ def _process_finished_games(
     return episodes_finished_this_cycle
 
 
+def _advance_and_process_generators(
+    agent: AlphaZeroAgent,
+    mcts_generators: Dict[int, Generator],
+    generator_states: Dict[int, str],
+    pending_requests: List[PredictRequest],
+    waiting_generators: Dict[str, List[int]],
+    completed_searches: Dict[int, Tuple[Optional[ActionType], Optional[np.ndarray]]],
+    envs: List[BaseEnvironment], # Needed for random action fallback
+):
+    """
+    Advances running MCTS generators and processes their yielded results.
+
+    Updates the following dictionaries/lists in place:
+    - mcts_generators
+    - generator_states
+    - pending_requests
+    - waiting_generators
+    - completed_searches
+    """
+    active_generator_indices = list(mcts_generators.keys())
+    generators_finished_this_cycle = []
+
+    for game_idx in active_generator_indices:
+        # Skip if generator finished or is waiting for prediction
+        if game_idx not in mcts_generators or generator_states.get(game_idx) == "waiting_predict":
+            continue
+
+        generator = mcts_generators[game_idx]
+        try:
+            # Advance the generator (send None as we are not resuming from prediction here)
+            yielded_value: GeneratorYield = generator.send(None)
+            yield_type = yielded_value[0]
+
+            if yield_type == "predict_request":
+                _, state_key, state_obs = yielded_value
+                logger.debug(f"Game {game_idx} yielded request for state {state_key}")
+                pending_requests.append(PredictRequest(game_idx=game_idx, state_key=state_key, state_obs=state_obs))
+                if state_key not in waiting_generators: waiting_generators[state_key] = []
+                if game_idx not in waiting_generators[state_key]: waiting_generators[state_key].append(game_idx)
+                generator_states[game_idx] = "waiting_predict"
+
+            elif yield_type == "search_complete":
+                _, root_node = yielded_value
+                logger.debug(f"MCTS search complete for game {game_idx}")
+                generators_finished_this_cycle.append(game_idx)
+                # Process completed search result
+                if not root_node.children:
+                    logger.warning(f"MCTS root for game {game_idx} has no children. Choosing random.")
+                    legal_actions = envs[game_idx].get_legal_actions()
+                    action = random.choice(legal_actions) if legal_actions else None
+                    policy_target = None
+                else:
+                    visit_counts = np.array([child.visit_count for child in root_node.children.values()])
+                    actions = list(root_node.children.keys())
+                    chosen_action_index = np.argmax(visit_counts)
+                    action = actions[chosen_action_index]
+                    policy_target = agent._calculate_policy_target(root_node, actions, visit_counts)
+                completed_searches[game_idx] = (action, policy_target)
+
+            elif yield_type == "resumed":
+                logger.debug(f"Generator {game_idx} resumed, remains running.")
+                generator_states[game_idx] = "running" # Ensure state is correct
+
+            else:
+                logger.warning(f"Unexpected yield value from running generator {game_idx}: {yielded_value}")
+
+        except StopIteration:
+            logger.debug(f"MCTS generator for game {game_idx} stopped.")
+            generators_finished_this_cycle.append(game_idx)
+            if game_idx not in completed_searches: completed_searches[game_idx] = (None, None) # Mark error
+
+        except Exception as e:
+            logger.error(f"Error processing MCTS generator for game {game_idx}: {e}", exc_info=True)
+            generators_finished_this_cycle.append(game_idx)
+            if game_idx not in completed_searches: completed_searches[game_idx] = (None, None) # Mark error
+
+    # Clean up finished generators *after* the loop
+    for game_idx in generators_finished_this_cycle:
+        if game_idx in mcts_generators: del mcts_generators[game_idx]
+        if game_idx in generator_states: del generator_states[game_idx]
+
+
 def _advance_mcts_generators(
     agent: AlphaZeroAgent,
     mcts_generators: Dict[int, Generator],
@@ -657,12 +739,9 @@ def collect_parallel_self_play_data(
             )
 
             # --- Advance MCTS Generators and Collect Network Requests ---
-            active_generator_indices = list(mcts_generators.keys())
-            generators_finished_this_cycle = []
-
             # Check if any generators are active before proceeding
-            if not active_generator_indices and not pending_requests:
-                # Logic to check if enough episodes collected or if stuck (remains the same)
+            if not mcts_generators and not pending_requests:
+                # Logic to check if enough episodes collected or if stuck
                 if finished_episodes_count >= num_episodes_to_collect: break
                 if ready_for_action_search: continue
                 logger.warning("No active MCTS generators or pending requests, but not enough episodes collected. Checking game states.")
@@ -680,65 +759,16 @@ def collect_parallel_self_play_data(
                 else:
                     continue
 
-            # Iterate through active generators
-            for game_idx in active_generator_indices:
-                # Skip if generator finished or is waiting for prediction
-                if game_idx not in mcts_generators or generator_states.get(game_idx) == "waiting_predict":
-                    continue
-
-                generator = mcts_generators[game_idx]
-                try:
-                    # Advance the generator (send None as we are not resuming from prediction here)
-                    yielded_value: GeneratorYield = generator.send(None)
-                    yield_type = yielded_value[0]
-
-                    if yield_type == "predict_request":
-                        _, state_key, state_obs = yielded_value
-                        logger.debug(f"Game {game_idx} yielded request for state {state_key}")
-                        pending_requests.append(PredictRequest(game_idx=game_idx, state_key=state_key, state_obs=state_obs))
-                        if state_key not in waiting_generators: waiting_generators[state_key] = []
-                        if game_idx not in waiting_generators[state_key]: waiting_generators[state_key].append(game_idx)
-                        generator_states[game_idx] = "waiting_predict"
-
-                    elif yield_type == "search_complete":
-                        _, root_node = yielded_value
-                        logger.debug(f"MCTS search complete for game {game_idx}")
-                        generators_finished_this_cycle.append(game_idx)
-                        # Process completed search result
-                        if not root_node.children:
-                            logger.warning(f"MCTS root for game {game_idx} has no children. Choosing random.")
-                            legal_actions = envs[game_idx].get_legal_actions()
-                            action = random.choice(legal_actions) if legal_actions else None
-                            policy_target = None
-                        else:
-                            visit_counts = np.array([child.visit_count for child in root_node.children.values()])
-                            actions = list(root_node.children.keys())
-                            chosen_action_index = np.argmax(visit_counts)
-                            action = actions[chosen_action_index]
-                            policy_target = agent._calculate_policy_target(root_node, actions, visit_counts)
-                        completed_searches[game_idx] = (action, policy_target)
-
-                    elif yield_type == "resumed":
-                        logger.debug(f"Generator {game_idx} resumed, remains running.")
-                        generator_states[game_idx] = "running" # Ensure state is correct
-
-                    else:
-                        logger.warning(f"Unexpected yield value from running generator {game_idx}: {yielded_value}")
-
-                except StopIteration:
-                    logger.debug(f"MCTS generator for game {game_idx} stopped.")
-                    generators_finished_this_cycle.append(game_idx)
-                    if game_idx not in completed_searches: completed_searches[game_idx] = (None, None) # Mark error
-
-                except Exception as e:
-                    logger.error(f"Error processing MCTS generator for game {game_idx}: {e}", exc_info=True)
-                    generators_finished_this_cycle.append(game_idx)
-                    if game_idx not in completed_searches: completed_searches[game_idx] = (None, None) # Mark error
-
-            # Clean up finished generators *after* the loop
-            for game_idx in generators_finished_this_cycle:
-                if game_idx in mcts_generators: del mcts_generators[game_idx]
-                if game_idx in generator_states: del generator_states[game_idx]
+            # Advance running generators
+            _advance_and_process_generators(
+                agent=agent,
+                mcts_generators=mcts_generators,
+                generator_states=generator_states,
+                pending_requests=pending_requests,
+                waiting_generators=waiting_generators,
+                completed_searches=completed_searches,
+                envs=envs,
+            )
 
             # --- Process Network Batch if Ready ---
             if agent.network and (len(pending_requests) >= inference_batch_size or (not mcts_generators and pending_requests)):
