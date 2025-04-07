@@ -319,10 +319,8 @@ class AlphaZeroAgent(Agent):
                     )
 
         else:
-            # Handle case with no visits (should be rare if search runs)
-            logger.warning(
-                "No visits recorded in MCTS root. Policy target will be zeros."
-            )
+            # Handle case with no visits - should not be used as training data.
+            raise ValueError("No visits recorded in MCTS root.")
         # Ensure policy target sums to 1 (handle potential float issues)
         current_sum = policy_target.sum()
         if current_sum > 1e-6:  # Avoid division by zero
