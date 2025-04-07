@@ -184,6 +184,66 @@ class SelfPlayResult:
     network_time_ms: float
 
 
+def _initialize_parallel_games(num_parallel_games: int, env_factory: callable) -> Dict:
+    """Initializes environments, observations, and tracking structures for parallel games."""
+    envs = [env_factory() for _ in range(num_parallel_games)]
+    observations = [env.reset() for env in envs]
+    parallel_histories: Dict[int, List[Tuple[StateType, ActionType, np.ndarray]]] = {
+        i: [] for i in range(num_parallel_games)
+    }
+    game_is_done = [False] * num_parallel_games
+    ready_for_action_search: List[int] = list(range(num_parallel_games))
+    mcts_generators: Dict[int, Generator] = {}
+    generator_states: Dict[int, str] = {}
+    pending_requests: List[PredictRequest] = []
+    waiting_generators: Dict[str, List[int]] = {}
+    completed_searches: Dict[
+        int, Tuple[Optional[ActionType], Optional[np.ndarray]]
+    ] = {}
+    states_before_action: Dict[int, StateType] = {}
+
+    return {
+        "envs": envs,
+        "observations": observations,
+        "parallel_histories": parallel_histories,
+        "game_is_done": game_is_done,
+        "ready_for_action_search": ready_for_action_search,
+        "mcts_generators": mcts_generators,
+        "generator_states": generator_states,
+        "pending_requests": pending_requests,
+        "waiting_generators": waiting_generators,
+        "completed_searches": completed_searches,
+        "states_before_action": states_before_action,
+    }
+
+
+def _start_mcts_searches(
+    ready_list: List[int],
+    game_is_done: List[bool],
+    observations: List[StateType],
+    envs: List[BaseEnvironment],
+    agent: AlphaZeroAgent,
+    mcts_generators: Dict[int, Generator],
+    generator_states: Dict[int, str],
+    states_before_action: Dict[int, StateType],
+):
+    """Starts MCTS search generators for games ready for an action."""
+    games_to_start = ready_list[:] # Copy the list
+    ready_list.clear() # Clear the original list
+
+    for game_idx in games_to_start:
+        if game_is_done[game_idx]:
+            continue
+
+        state = observations[game_idx]
+        states_before_action[game_idx] = state.copy() # Store state before search
+        mcts_generators[game_idx] = agent.mcts.search_generator(
+            envs[game_idx], state
+        )
+        generator_states[game_idx] = "running"
+        logger.debug(f"Started MCTS search for game {game_idx}")
+
+
 def collect_parallel_self_play_data(
     env_factory: callable,  # Function to create a new env instance
     agent: AlphaZeroAgent,
@@ -215,34 +275,19 @@ def collect_parallel_self_play_data(
     finished_episodes_count = 0
     total_steps_taken = 0
 
-    # --- Initialize Parallel Environments and States ---
-    envs = [env_factory() for _ in range(num_parallel_games)]
-    observations = [env.reset() for env in envs]
-    # Track temporary history for each parallel game
-    parallel_histories: Dict[int, List[Tuple[StateType, ActionType, np.ndarray]]] = {
-        i: [] for i in range(num_parallel_games)
-    }
-    game_is_done = [False] * num_parallel_games
-    # Track MCTS search generators for games waiting for an action
-    # Maps game_idx -> generator instance
-    mcts_generators: Dict[int, Generator] = {}
-    # Track which games are ready for the next environment step (need an action)
-    ready_for_action_search: List[int] = list(range(num_parallel_games))
-
-    # --- State for External Batching ---
-    # Stores requests yielded by generators
-    pending_requests: List[PredictRequest] = []
-    # Maps state_key -> List[game_idx] for generators waiting on that state
-    waiting_generators: Dict[str, List[int]] = {}
-    # Store chosen actions/policies when search completes, before stepping env
-    # Maps game_idx -> (action, policy_target)
-    completed_searches: Dict[
-        int, Tuple[Optional[ActionType], Optional[np.ndarray]]
-    ] = {}
-    # Store state before action for history
-    states_before_action: Dict[int, StateType] = {}
-    # Track generator states ('running', 'waiting_predict')
-    generator_states: Dict[int, str] = {}
+    # --- Initialize Parallel Game States ---
+    game_states = _initialize_parallel_games(num_parallel_games, env_factory)
+    envs = game_states["envs"]
+    observations = game_states["observations"]
+    parallel_histories = game_states["parallel_histories"]
+    game_is_done = game_states["game_is_done"]
+    ready_for_action_search = game_states["ready_for_action_search"]
+    mcts_generators = game_states["mcts_generators"]
+    generator_states = game_states["generator_states"]
+    pending_requests = game_states["pending_requests"]
+    waiting_generators = game_states["waiting_generators"]
+    completed_searches = game_states["completed_searches"]
+    states_before_action = game_states["states_before_action"]
 
     # Get network time *before* self-play if profiling
     net_time_before_self_play = 0.0
@@ -263,19 +308,16 @@ def collect_parallel_self_play_data(
         while finished_episodes_count < num_episodes_to_collect:
 
             # --- Start MCTS searches for games needing an action ---
-            games_to_start_search = ready_for_action_search[:]
-            ready_for_action_search.clear()
-            for game_idx in games_to_start_search:
-                if game_is_done[game_idx]:
-                    continue
-
-                state = observations[game_idx]
-                states_before_action[game_idx] = state.copy()
-                mcts_generators[game_idx] = agent.mcts.search_generator(
-                    envs[game_idx], state
-                )
-                generator_states[game_idx] = "running"
-                logger.debug(f"Started MCTS search for game {game_idx}")
+            _start_mcts_searches(
+                ready_list=ready_for_action_search,
+                game_is_done=game_is_done,
+                observations=observations,
+                envs=envs,
+                agent=agent,
+                mcts_generators=mcts_generators,
+                generator_states=generator_states,
+                states_before_action=states_before_action,
+            )
 
             # --- Advance MCTS Generators and Collect Network Requests ---
             active_generator_indices = list(mcts_generators.keys())
