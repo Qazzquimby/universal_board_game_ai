@@ -93,8 +93,8 @@ class AlphaZeroAgent(Agent):
             num_simulations=config.num_simulations,
             network=self.network,
             profiler=self.profiler,
-            # inference_batch_size is not needed by MCTS itself anymore
-            # TODO: Add dirichlet noise parameters from config if/when implemented
+            dirichlet_alpha=config.dirichlet_alpha,  # Pass noise params
+            dirichlet_epsilon=config.dirichlet_epsilon,
         )
 
         # Learning:

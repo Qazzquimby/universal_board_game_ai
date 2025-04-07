@@ -471,8 +471,9 @@ class AlphaZeroMCTS(MCTS):
         network: Optional[AlphaZeroNet] = None,  # Type hint Optional
         discount_factor: float = 1.0,
         profiler: Optional[MCTSProfiler] = None,
+        dirichlet_alpha: float = 0.3, # Add noise params
+        dirichlet_epsilon: float = 0.25,
         # inference_batch_size removed, batching will be handled externally
-        # TODO: Add dirichlet_epsilon and dirichlet_alpha for root noise
     ):
         super().__init__(
             exploration_constant=exploration_constant,
@@ -481,8 +482,8 @@ class AlphaZeroMCTS(MCTS):
         )
         self.network = network if network is not None else DummyAlphaZeroNet(env)
         self.profiler = profiler
-        # self.dirichlet_epsilon = dirichlet_epsilon
-        # self.dirichlet_alpha = dirichlet_alpha
+        self.dirichlet_alpha = dirichlet_alpha
+        self.dirichlet_epsilon = dirichlet_epsilon
 
     def _expand(
         self,
@@ -622,8 +623,80 @@ class AlphaZeroMCTS(MCTS):
             log_prefix = f"AZ MCTS Search Gen (NetType={type(self.network).__name__}, Sims={self.num_simulations})"
             logger.debug(f"--- {log_prefix} Start: State={initial_state_obs} ---")
 
-            # TODO: Add Dirichlet noise to root priors if training and network exists
+            # --- Initial Root Evaluation & Expansion (Implicit) ---
+            # The first simulation's call to _evaluate_and_expand_leaf will handle
+            # the initial network prediction and expansion of the root node.
+            # We need to apply noise *after* this potentially happens.
+            # Let's run one initial evaluation step outside the main loop to ensure expansion.
 
+            root_eval_generator = self._evaluate_and_expand_leaf(
+                self.root, env.copy(), evaluation_cache # Use a copy of env at initial state
+            )
+            initial_root_value = None
+            try:
+                initial_eval_result = next(root_eval_generator)
+                if isinstance(initial_eval_result, tuple) and initial_eval_result[0] == "predict_request":
+                    # Yield the initial prediction request
+                    predict_request_yield: PredictRequestYield = initial_eval_result
+                    logger.debug(f"{log_prefix} Yielding initial root predict request: {predict_request_yield[1]}")
+                    received_result: Optional[PredictResult] = yield predict_request_yield
+                    logger.debug(f"{log_prefix} Sending received result back to initial root eval.")
+                    try:
+                        initial_root_value = root_eval_generator.send(received_result)
+                    except StopIteration as e:
+                        initial_root_value = e.value
+                    except Exception as e_inner:
+                         logger.error(f"{log_prefix} Error sending result to initial root eval generator: {e_inner}", exc_info=True)
+                elif isinstance(initial_eval_result, float):
+                    # Completed without yielding (cache hit or terminal)
+                    initial_root_value = initial_eval_result
+                    logger.debug(f"{log_prefix} Initial root evaluation completed directly (value={initial_root_value:.3f}). Yielding resume.")
+                    resumed_yield: ResumedYield = ("resumed",)
+                    yield resumed_yield # Signal completion of this initial step
+                else:
+                    logger.error(f"{log_prefix} Unexpected result from initial root eval generator: {initial_eval_result}")
+
+            except StopIteration as e:
+                initial_root_value = e.value # Terminal root state
+                logger.debug(f"{log_prefix} Initial root evaluation finished (terminal), value={initial_root_value:.3f}.")
+                # If root is terminal, MCTS search is effectively over, but we need to yield complete.
+                # Backpropagate the terminal value to the root itself.
+                if initial_root_value is not None:
+                     self._backpropagate(self.root, initial_root_value)
+                # Skip the rest of the search loop and yield complete immediately.
+                search_complete_yield: SearchCompleteYield = ("search_complete", self.root)
+                yield search_complete_yield
+                return # Exit the generator
+
+            except Exception as e:
+                 logger.error(f"{log_prefix} Error during initial root evaluation: {e}", exc_info=True)
+                 # Cannot proceed with search if initial evaluation fails catastrophically
+                 search_complete_yield: SearchCompleteYield = ("search_complete", self.root) # Yield potentially unvisited root
+                 yield search_complete_yield
+                 return # Exit the generator
+
+
+            # --- Apply Dirichlet Noise to Root Priors ---
+            # Apply noise *after* the root has potentially been expanded by the initial evaluation.
+            # This noise is typically only added during training self-play.
+            # Since search_generator is primarily used for that, we apply it here.
+            if self.root.is_expanded() and self.dirichlet_epsilon > 0:
+                num_children = len(self.root.children)
+                if num_children > 0:
+                    noise = np.random.dirichlet([self.dirichlet_alpha] * num_children)
+                    noisy_priors = []
+                    child_items = list(self.root.children.items()) # Get fixed list of items
+                    for i, (action, child) in enumerate(child_items):
+                        child.prior = (1 - self.dirichlet_epsilon) * child.prior + self.dirichlet_epsilon * noise[i]
+                        noisy_priors.append((action, child.prior))
+                    # Log the noisy priors for debugging
+                    sorted_noisy_priors = sorted(noisy_priors, key=lambda item: item[1], reverse=True)
+                    logger.debug(f"{log_prefix} Applied Dirichlet noise (alpha={self.dirichlet_alpha}, eps={self.dirichlet_epsilon})")
+                    logger.debug(f"  Noisy Root Priors (Top 5): { {a: f'{p:.3f}' for a, p in sorted_noisy_priors[:5]} }")
+
+
+            # --- Main Simulation Loop ---
+            # Start from sim 0 because the initial eval doesn't count as a full sim path & backprop
             for sim_num in range(self.num_simulations):
                 sim_log_prefix = f"  Sim {sim_num+1}/{self.num_simulations}:"
                 logger.debug(f"{sim_log_prefix} Starting...")

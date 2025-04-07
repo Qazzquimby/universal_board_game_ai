@@ -49,8 +49,13 @@ class AlphaZeroConfig:
     # Number of game steps before reducing temperature
     temperature_decay_steps: int = 30
     # Parallel Self-Play & Batching
-    num_parallel_games: int = 64 # Number of games to run in parallel during self-play
-    inference_batch_size: int = 32 # Max batch size for network inference (managed externally)
+    num_parallel_games: int = 64  # Number of games to run in parallel during self-play
+    inference_batch_size: int = (
+        32  # Max batch size for network inference (managed externally)
+    )
+    # --- Dirichlet Noise for Exploration during Self-Play ---
+    dirichlet_alpha: float = 0.3  # Shape parameter for noise (typical value 0.3)
+    dirichlet_epsilon: float = 0.25  # Weight of noise vs. priors (typical value 0.25)
     # --- Learning Rate ---
     lr_scheduler_step_size: int = 100  # Decay LR every N training iterations
     lr_scheduler_gamma: float = 0.9  # Multiplicative factor for LR decay
