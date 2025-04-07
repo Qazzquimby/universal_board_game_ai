@@ -471,7 +471,7 @@ class AlphaZeroMCTS(MCTS):
         network: Optional[AlphaZeroNet] = None,  # Type hint Optional
         discount_factor: float = 1.0,
         profiler: Optional[MCTSProfiler] = None,
-        dirichlet_alpha: float = 0.3, # Add noise params
+        dirichlet_alpha: float = 0.3,  # Add noise params
         dirichlet_epsilon: float = 0.25,
         # inference_batch_size removed, batching will be handled externally
     ):
@@ -590,6 +590,99 @@ class AlphaZeroMCTS(MCTS):
             )
         return q_value_for_parent + u_score
 
+
+    def _run_one_simulation(
+        self,
+        env: BaseEnvironment,
+        initial_state_obs: StateType,
+        evaluation_cache: Dict[str, PredictResult],
+        sim_log_prefix: str,
+    ) -> Generator[GeneratorYield, Optional[PredictResult], bool]:
+        """
+        Runs a single MCTS simulation path: Selection, Evaluation/Expansion, Backpropagation.
+        Handles yielding for network predictions.
+
+        Args:
+            env: Base environment instance (used for copying).
+            initial_state_obs: The root state observation for this search.
+            evaluation_cache: Cache for network results for the current search.
+            sim_log_prefix: Logging prefix for this simulation.
+
+        Yields:
+            PredictRequestYield if a network prediction is needed.
+            ResumedYield if evaluation completes internally.
+
+        Receives:
+            PredictResult via send() if a prediction was requested.
+
+        Returns:
+            True if the simulation completed successfully (including backprop), False otherwise.
+        """
+        try:
+            # 1. Selection
+            leaf_node, leaf_env_state, search_path = self._select_leaf(
+                self.root, env, initial_state_obs
+            )
+
+            if leaf_node is None or leaf_env_state is None:
+                logger.error(f"{sim_log_prefix} Selection failed.")
+                return False # Indicate simulation failure
+
+            # 2. Evaluate & Expand Leaf
+            eval_generator = self._evaluate_and_expand_leaf(
+                leaf_node, leaf_env_state, evaluation_cache
+            )
+
+            # Handle eval generator (yield/send/stopiteration)
+            try:
+                eval_result = next(eval_generator)
+                if isinstance(eval_result, tuple) and eval_result[0] == "predict_request":
+                    predict_request_yield: PredictRequestYield = eval_result
+                    logger.debug(f"{sim_log_prefix} Yielding predict request: {predict_request_yield[1]}")
+                    received_result: Optional[PredictResult] = yield predict_request_yield
+                    logger.debug(f"{sim_log_prefix} Sending received result back to eval generator.")
+                    try:
+                        final_value = eval_generator.send(received_result)
+                    except StopIteration as e:
+                        final_value = e.value
+                    except Exception as e_inner:
+                        logger.error(f"{sim_log_prefix} Error sending result to eval generator: {e_inner}", exc_info=True)
+                        final_value = None
+                elif isinstance(eval_result, float):
+                    final_value = eval_result
+                    logger.debug(f"{sim_log_prefix} Evaluation completed directly (value={final_value:.3f}). Yielding resume.")
+                    resumed_yield: ResumedYield = ("resumed",)
+                    yield resumed_yield
+                else:
+                    logger.error(f"{sim_log_prefix} Unexpected result from eval generator: {eval_result}")
+                    final_value = None
+
+                # 3. Backpropagation
+                if final_value is not None:
+                    logger.debug(f"{sim_log_prefix} Backpropagating value {final_value:.3f}.")
+                    self._backpropagate(leaf_node, final_value)
+                    return True # Success
+                else:
+                    logger.error(f"{sim_log_prefix} Skipping backpropagation due to evaluation error.")
+                    return False # Indicate simulation failure
+
+            except StopIteration as e:
+                final_value = e.value
+                if final_value is not None:
+                    logger.debug(f"{sim_log_prefix} Evaluation finished (terminal/cached), backpropagating value {final_value:.3f}.")
+                    self._backpropagate(leaf_node, final_value)
+                    resumed_yield: ResumedYield = ("resumed",)
+                    yield resumed_yield # Yield resume even if StopIteration occurred
+                    return True # Success
+                else:
+                    logger.error(f"{sim_log_prefix} Eval generator stopped with None value.")
+                    return False # Indicate simulation failure
+
+        except Exception as e:
+            logger.error(f"{sim_log_prefix} Error during simulation: {e}", exc_info=True)
+            return False # Indicate simulation failure
+
+
     # Renamed from search to search_generator
     def search_generator(
         self, env: BaseEnvironment, state: StateType
@@ -625,176 +718,146 @@ class AlphaZeroMCTS(MCTS):
 
             # --- Handle Zero Simulations ---
             if self.num_simulations <= 0:
-                logger.warning(f"{log_prefix} num_simulations is {self.num_simulations}. Skipping search.")
-                search_complete_yield: SearchCompleteYield = ("search_complete", self.root)
+                logger.warning(
+                    f"{log_prefix} num_simulations is {self.num_simulations}. Skipping search."
+                )
+                search_complete_yield: SearchCompleteYield = (
+                    "search_complete",
+                    self.root,
+                )
                 yield search_complete_yield
-                return # Exit generator
+                return  # Exit generator
 
-            # --- Main Simulation Loop ---
-            logger.debug(f"{log_prefix} Entering main simulation loop...") # Add logging here
-            for sim_num in range(self.num_simulations):
-                sim_log_prefix = f"  Sim {sim_num+1}/{self.num_simulations}:"
-                logger.debug(f"{sim_log_prefix} Starting...")
+            # --- Run First Simulation (sim_num = 0) ---
+            logger.debug(f"{log_prefix} Running first simulation (for root expansion)...")
+            sim_log_prefix = f"  Sim 1/{self.num_simulations}:"
+            first_sim_generator = self._run_one_simulation(
+                env, initial_state_obs, evaluation_cache, sim_log_prefix
+            )
+            first_sim_success = False
+            try:
+                # Advance the first simulation generator, handling potential yields
+                yield_or_outcome = next(first_sim_generator)
 
-                # --- Run one simulation path ---
-                sim_log_prefix = (
-                    f"  Sim {sim_num+1}/{self.num_simulations}:"  # Define here
-                )
+                if isinstance(yield_or_outcome, tuple) and yield_or_outcome[0] == "predict_request":
+                    # Yield the prediction request outwards
+                    predict_request_yield: PredictRequestYield = yield_or_outcome
+                    logger.debug(f"{log_prefix} Yielding predict request from first sim: {predict_request_yield[1]}")
+                    received_result: Optional[PredictResult] = yield predict_request_yield
+                    logger.debug(f"{log_prefix} Sending received result back to first sim generator.")
+                    try:
+                        # Send result back and check final outcome
+                        first_sim_success = first_sim_generator.send(received_result)
+                    except StopIteration as e:
+                         # Generator finished after send, outcome is in e.value
+                         first_sim_success = e.value if isinstance(e.value, bool) else False
+                    except Exception as e_inner:
+                        logger.error(f"{log_prefix} Error sending result to first sim generator: {e_inner}", exc_info=True)
+                        first_sim_success = False # Treat as failure
+                elif isinstance(yield_or_outcome, tuple) and yield_or_outcome[0] == "resumed":
+                     # First sim completed internally (cache/terminal), need final outcome
+                     try:
+                         first_sim_success = next(first_sim_generator) # Should raise StopIteration with outcome
+                     except StopIteration as e:
+                         first_sim_success = e.value if isinstance(e.value, bool) else False
+                     except Exception as e_inner:
+                         logger.error(f"{log_prefix} Error getting outcome after resume from first sim: {e_inner}", exc_info=True)
+                         first_sim_success = False
+                elif isinstance(yield_or_outcome, bool):
+                     # Generator finished immediately (e.g., selection failed, terminal root)
+                     first_sim_success = yield_or_outcome
+                else:
+                     logger.error(f"{log_prefix} Unexpected yield/return from first sim generator: {yield_or_outcome}")
+                     first_sim_success = False
 
-                # 1. Selection
-                leaf_node, leaf_env_state, search_path = self._select_leaf(
-                    self.root, env, initial_state_obs
-                )
+            except StopIteration as e:
+                 # Generator finished immediately (e.g., selection failed, terminal root)
+                 first_sim_success = e.value if isinstance(e.value, bool) else False
+            except Exception as e:
+                logger.error(f"{log_prefix} Error running first simulation: {e}", exc_info=True)
+                first_sim_success = False # Treat as failure
 
-                if leaf_node is None or leaf_env_state is None:
-                    logger.error(
-                        f"{sim_log_prefix} Selection failed. Skipping simulation."
+            # --- Apply Dirichlet Noise After First Simulation ---
+            if first_sim_success:
+                root_expanded = self.root.is_expanded()
+                if root_expanded and self.dirichlet_epsilon > 0:
+                    num_children = len(self.root.children)
+                    if num_children > 0:
+                        noise = np.random.dirichlet([self.dirichlet_alpha] * num_children)
+                        noisy_priors = []
+                        child_items = list(self.root.children.items()) # Get fixed list
+                        for i, (action, child) in enumerate(child_items):
+                            child.prior = (1 - self.dirichlet_epsilon) * child.prior + self.dirichlet_epsilon * noise[i]
+                            noisy_priors.append((action, child.prior))
+                        sorted_noisy_priors = sorted(noisy_priors, key=lambda item: item[1], reverse=True)
+                        logger.debug(f"{log_prefix} Applied Dirichlet noise (alpha={self.dirichlet_alpha}, eps={self.dirichlet_epsilon})")
+                        logger.debug(f"  Noisy Root Priors (Top 5): { {a: f'{p:.3f}' for a, p in sorted_noisy_priors[:5]} }")
+                    else:
+                        logger.warning(f"{log_prefix} Root expanded after sim 1 but has no children? Cannot apply noise.")
+                elif not root_expanded:
+                    logger.warning(f"{log_prefix} Root not expanded after sim 1. Cannot apply noise.")
+            else:
+                logger.warning(f"{log_prefix} First simulation failed or did not complete. Skipping noise application.")
+
+
+            # --- Main Simulation Loop (Remaining Sims) ---
+            if self.num_simulations > 1:
+                logger.debug(f"{log_prefix} Entering main simulation loop (sims 2 to {self.num_simulations})...")
+                for sim_num in range(1, self.num_simulations):
+                    sim_log_prefix = f"  Sim {sim_num+1}/{self.num_simulations}:"
+                    logger.debug(f"{sim_log_prefix} Starting...")
+
+                    # --- Run simulation using the helper ---
+                    sim_generator = self._run_one_simulation(
+                        env, initial_state_obs, evaluation_cache, sim_log_prefix
                     )
-                    continue
+                    sim_success = False
+                    try:
+                        # Advance the simulation generator, handling potential yields
+                        yield_or_outcome = next(sim_generator)
 
-                # 2. Evaluate & Expand Leaf (potentially yields)
-                # This helper now handles terminal checks, cache, expansion, and returns value
-                # It yields PredictRequestYield if network call is needed.
-                eval_generator = self._evaluate_and_expand_leaf(
-                    leaf_node, leaf_env_state, evaluation_cache
-                )
+                        if isinstance(yield_or_outcome, tuple) and yield_or_outcome[0] == "predict_request":
+                            # Yield the prediction request outwards
+                            predict_request_yield: PredictRequestYield = yield_or_outcome
+                            logger.debug(f"{sim_log_prefix} Yielding predict request: {predict_request_yield[1]}")
+                            received_result: Optional[PredictResult] = yield predict_request_yield
+                            logger.debug(f"{sim_log_prefix} Sending received result back to sim generator.")
+                            try:
+                                sim_success = sim_generator.send(received_result)
+                            except StopIteration as e:
+                                sim_success = e.value if isinstance(e.value, bool) else False
+                            except Exception as e_inner:
+                                logger.error(f"{sim_log_prefix} Error sending result to sim generator: {e_inner}", exc_info=True)
+                                sim_success = False
+                        elif isinstance(yield_or_outcome, tuple) and yield_or_outcome[0] == "resumed":
+                             try:
+                                 sim_success = next(sim_generator) # Should raise StopIteration
+                             except StopIteration as e:
+                                 sim_success = e.value if isinstance(e.value, bool) else False
+                             except Exception as e_inner:
+                                 logger.error(f"{sim_log_prefix} Error getting outcome after resume: {e_inner}", exc_info=True)
+                                 sim_success = False
+                        elif isinstance(yield_or_outcome, bool):
+                             sim_success = yield_or_outcome
+                        else:
+                             logger.error(f"{sim_log_prefix} Unexpected yield/return from sim generator: {yield_or_outcome}")
+                             sim_success = False
 
-                try:
-                    # Attempt to get the value directly or yield the request
-                    eval_result = next(eval_generator)
+                    except StopIteration as e:
+                         sim_success = e.value if isinstance(e.value, bool) else False
+                    except Exception as e:
+                        logger.error(f"{sim_log_prefix} Error running simulation {sim_num+1}: {e}", exc_info=True)
+                        sim_success = False
 
-                    if (
-                        isinstance(eval_result, tuple)
-                        and eval_result[0] == "predict_request"
-                    ):
-                        # --- Network Prediction Needed ---
-                        predict_request_yield: PredictRequestYield = eval_result
-                        logger.debug(
-                            f"{sim_log_prefix} Yielding predict request: {predict_request_yield[1]}"
-                        )
-                        # Yield the request outwards
-                        received_result: Optional[
-                            PredictResult
-                        ] = yield predict_request_yield
+                    if not sim_success:
+                         logger.warning(f"{sim_log_prefix} Simulation {sim_num+1} failed or did not complete successfully.")
+                         # Optionally continue to next simulation or break? For now, continue.
 
-                        # Send the received result back into the eval generator
-                        logger.debug(
-                            f"{sim_log_prefix} Sending received result back to eval generator."
-                        )
-                        try:
-                            # The eval_generator expects the result via send() to complete its logic
-                            final_value = eval_generator.send(received_result)
-                        except StopIteration as e:
-                            # If send causes StopIteration, the value is in e.value
-                            final_value = e.value
-                        except Exception as e_inner:
-                            logger.error(
-                                f"{sim_log_prefix} Error sending result to eval generator: {e_inner}",
-                                exc_info=True,
-                            )
-                            final_value = None  # Error case
+            else: # num_simulations == 1
+                logger.debug(f"{log_prefix} Only 1 simulation requested. Main loop skipped.")
 
-                    elif isinstance(eval_result, float):
-                        # --- Evaluation completed without yielding (cache hit or terminal) ---
-                        final_value = eval_result
-                        logger.debug(
-                            f"{sim_log_prefix} Evaluation completed directly (value={final_value:.3f}). Yielding resume."
-                        )
-                        # Yield 'resumed' to signal completion without external prediction
-                        resumed_yield: ResumedYield = ("resumed",)
-                        yield resumed_yield
-                    else:
-                        # Should not happen if _evaluate_and_expand_leaf is correct
-                        logger.error(
-                            f"{sim_log_prefix} Unexpected result from eval generator: {eval_result}"
-                        )
-                        final_value = None
-
-                    # 3. Backpropagation (if evaluation was successful)
-                    if final_value is not None:
-                        logger.debug(
-                            f"{sim_log_prefix} Backpropagating value {final_value:.3f}."
-                        )
-                        self._backpropagate(leaf_node, final_value) # Backpropagate first
-                    else:
-                        logger.error(
-                            f"{sim_log_prefix} Skipping backpropagation due to evaluation error."
-                        )
-
-                    # --- Apply Dirichlet Noise After First Simulation ---
-                    if sim_num == 0:
-                        # Check if root is expanded *after* the first simulation's backprop
-                        root_expanded = self.root.is_expanded()
-                        if root_expanded and self.dirichlet_epsilon > 0:
-                            num_children = len(self.root.children)
-                            if num_children > 0:
-                                noise = np.random.dirichlet([self.dirichlet_alpha] * num_children)
-                                noisy_priors = []
-                                child_items = list(self.root.children.items()) # Get fixed list
-                                for i, (action, child) in enumerate(child_items):
-                                    child.prior = (1 - self.dirichlet_epsilon) * child.prior + self.dirichlet_epsilon * noise[i]
-                                    noisy_priors.append((action, child.prior))
-                                # Log the noisy priors for debugging
-                                sorted_noisy_priors = sorted(noisy_priors, key=lambda item: item[1], reverse=True)
-                                logger.debug(f"{log_prefix} Applied Dirichlet noise (alpha={self.dirichlet_alpha}, eps={self.dirichlet_epsilon})")
-                                logger.debug(f"  Noisy Root Priors (Top 5): { {a: f'{p:.3f}' for a, p in sorted_noisy_priors[:5]} }")
-                            else:
-                                logger.warning(f"{log_prefix} Root expanded after sim 0 but has no children? Cannot apply noise.")
-                        elif not root_expanded:
-                            logger.warning(f"{log_prefix} Root not expanded after sim 0. Cannot apply noise.")
-                    # --- End Noise Application ---
-
-                except StopIteration as e:
-                    # This happens if _evaluate_and_expand_leaf finishes without yielding (e.g. terminal node)
-                    final_value = e.value
-                    if final_value is not None:
-                        logger.debug(
-                            f"{sim_log_prefix} Evaluation finished (terminal/cached), backpropagating value {final_value:.3f}."
-                        )
-                        self._backpropagate(leaf_node, final_value) # Backpropagate first
-                        # Yield 'resumed' to signal completion without external prediction
-                        resumed_yield: ResumedYield = ("resumed",)
-                        yield resumed_yield
-                    else:
-                        # Should not happen if terminal value is always float
-                        logger.error(
-                            f"{sim_log_prefix} Eval generator stopped with None value."
-                        )
-
-                    # --- Apply Dirichlet Noise After First Simulation (if StopIteration occurred) ---
-                    if sim_num == 0:
-                        # Check if root is expanded *after* the first simulation's backprop
-                        root_expanded = self.root.is_expanded()
-                        if root_expanded and self.dirichlet_epsilon > 0:
-                            num_children = len(self.root.children)
-                            if num_children > 0:
-                                noise = np.random.dirichlet([self.dirichlet_alpha] * num_children)
-                                noisy_priors = []
-                                child_items = list(self.root.children.items()) # Get fixed list
-                                for i, (action, child) in enumerate(child_items):
-                                    child.prior = (1 - self.dirichlet_epsilon) * child.prior + self.dirichlet_epsilon * noise[i]
-                                    noisy_priors.append((action, child.prior))
-                                # Log the noisy priors for debugging
-                                sorted_noisy_priors = sorted(noisy_priors, key=lambda item: item[1], reverse=True)
-                                logger.debug(f"{log_prefix} Applied Dirichlet noise (alpha={self.dirichlet_alpha}, eps={self.dirichlet_epsilon})")
-                                logger.debug(f"  Noisy Root Priors (Top 5): { {a: f'{p:.3f}' for a, p in sorted_noisy_priors[:5]} }")
-                            else:
-                                logger.warning(f"{log_prefix} Root expanded after sim 0 (StopIteration) but no children? Cannot apply noise.")
-                        elif not root_expanded:
-                            logger.warning(f"{log_prefix} Root not expanded after sim 0 (StopIteration). Cannot apply noise.")
-                    # --- End Noise Application ---
-
-                except Exception as e:
-                    logger.error(
-                        f"{sim_log_prefix} Error during simulation {sim_num+1}: {e}",
-                        exc_info=True,
-                    )
-                    # Continue to next simulation
-
-            # --- End of Simulation Loop ---
-
-        # --- End of Simulation Loop ---
-        logger.debug(f"{log_prefix} All simulations finished.")
+        # --- Post-Search Logging & Completion ---
+        logger.debug(f"{log_prefix} All requested simulations finished.")
 
         if self.profiler and isinstance(search_timer, Timer):
             self.profiler.record_search_time(search_timer.elapsed_ms)
