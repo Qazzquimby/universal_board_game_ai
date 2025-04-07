@@ -406,8 +406,9 @@ def collect_parallel_self_play_data(
                             policy_target = agent._calculate_policy_target(
                                 root_node, actions, visit_counts
                             )
+                            # policy_target can be None if root_node had no visits
 
-                        # Store the result, ready for env step
+                        # Store the result, ready for env step (policy_target might be None)
                         completed_searches[game_idx] = (action, policy_target)
 
                     elif yield_type == "resumed":
@@ -632,9 +633,10 @@ def collect_parallel_self_play_data(
                                                     root_node, actions, visit_counts
                                                 )
                                             )
+                                            # policy_target can be None if root_node had no visits
                                         completed_searches[waiting_game_idx] = (
                                             action,
-                                            policy_target,
+                                            policy_target, # Store potentially None policy
                                         )
                                         # --- End Copied ---
                                         # Clean up state and generator tracking
@@ -739,24 +741,24 @@ def collect_parallel_self_play_data(
 
                     # Store history step using state saved *before* MCTS search
                     state_before_action = states_before_action.get(game_idx)
-                    is_valid_policy = (
-                        isinstance(policy_target, np.ndarray) and policy_target.size > 0
-                    )
 
-                    if state_before_action and is_valid_policy:
+                    # --- Check if policy_target is valid before adding to history ---
+                    if policy_target is None:
+                        logger.warning(
+                            f"Game {game_idx}, Step {len(parallel_histories[game_idx])}: Skipping history append - MCTS failed to produce policy target (likely 0 visits)."
+                        )
+                    elif state_before_action is None:
+                         logger.error(
+                            f"Game {game_idx}: Skipping history append - Missing state_before_action"
+                        )
+                    else:
+                        # Both state and policy are valid, add to history
                         parallel_histories[game_idx].append(
                             (state_before_action, action, policy_target)
                         )
-                    elif not state_before_action:
-                        logger.error(
-                            f"Game {game_idx}: Skipping history append - Missing state_before_action"
-                        )
-                    elif not is_valid_policy:
-                        logger.warning(
-                            f"Game {game_idx}: Skipping history append - policy_target is None or empty array (type: {type(policy_target)})."
-                        )
+                    # --- End Check ---
 
-                except ValueError as e:
+                except ValueError as e: # Catches errors from env.step()
                     logger.warning(
                         f"Invalid action {action} in game {game_idx} step. Error: {e}. Ending game."
                     )

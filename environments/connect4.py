@@ -108,6 +108,11 @@ class Connect4(BaseEnvironment):
             reward: The reward received by the player who just acted.
             done: Boolean indicating if the game has ended.
         """
+        current_legal_actions = self.get_legal_actions()
+        assert (
+            action in current_legal_actions
+        ), f"Connect4.step received illegal action {action}. Legal actions: {current_legal_actions}. Board:\n{self.board}"
+
         if self.is_game_over():
             # Return current state, 0 reward for current player, and done=True
             return (

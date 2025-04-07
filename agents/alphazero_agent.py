@@ -231,26 +231,12 @@ class AlphaZeroAgent(Agent):
             logger.debug(f"[DEBUG Act] Chosen Action (Train={train}): {chosen_action}")
 
         policy_target = None
-        # --- Store data for training if in training mode ---
         if train:
-            # Calculate policy target based on visit counts
             policy_target = self._calculate_policy_target(
                 root_node, actions, visit_counts
             )
-            # NOTE: History is no longer stored internally in the agent for parallel execution.
-            # The caller (training loop) is responsible for storing state, action, policy_target.
 
-        # Return action, and policy_target if training
         if train:
-            # Ensure policy_target is not None before returning
-            if policy_target is None:
-                raise ValueError(
-                    "Policy target is None during training act(). This should not happen."
-                )
-                # Handle error case: maybe return a default policy or raise exception?
-                # For now, let's create a zero policy as a fallback, though this indicates a deeper issue.
-                # policy_size = self.network._calculate_policy_size(self.env) if self.network else self.env.policy_vector_size
-                # policy_target = np.zeros(policy_size, dtype=np.float32)
             return chosen_action, policy_target
         else:
             return chosen_action
@@ -260,9 +246,6 @@ class AlphaZeroAgent(Agent):
         if self.network:
             policy_size = self.network._calculate_policy_size(self.env)
         else:
-            # Estimate policy size based on max possible actions if no network
-            # This is less ideal, but needed for the fallback case
-            # A better approach might be to require the network or pass policy size explicitly
             try:
                 policy_size = self.env.policy_vector_size
             except AttributeError:
@@ -319,8 +302,12 @@ class AlphaZeroAgent(Agent):
                     )
 
         else:
-            # Handle case with no visits - should not be used as training data.
-            raise ValueError("No visits recorded in MCTS root.")
+            # Handle case with no visits - return None to signal failure.
+            logger.warning(
+                "No visits recorded in MCTS root. Cannot calculate policy target."
+            )
+            return None  # Return None to indicate failure
+
         # Ensure policy target sums to 1 (handle potential float issues)
         current_sum = policy_target.sum()
         if current_sum > 1e-6:  # Avoid division by zero
