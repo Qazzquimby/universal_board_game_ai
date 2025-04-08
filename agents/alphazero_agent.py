@@ -14,7 +14,7 @@ from loguru import logger
 
 from core.agent_interface import Agent
 from environments.base import BaseEnvironment, StateType, ActionType
-from algorithms.mcts import AlphaZeroMCTS, MCTSProfiler, DummyAlphaZeroNet
+from algorithms.mcts import AlphaZeroMCTS, DummyAlphaZeroNet
 from models.networks import AlphaZeroNet
 from core.config import AlphaZeroConfig, DATA_DIR, TrainingConfig
 
@@ -145,9 +145,12 @@ class AlphaZeroAgent(Agent):
 
         # --- Perform Synchronous MCTS Search for Evaluation ---
         # 1. Prepare simulations and get requests
-        requests, pending_sims, completed_sims, root_state_key = self.mcts.prepare_simulations(
-            self.env, state, train=False # Pass train=False for evaluation
-        )
+        (
+            requests,
+            pending_sims,
+            completed_sims,
+            root_state_key,
+        ) = self.mcts.prepare_simulations(self.env, state, train=False)
 
         # 2. Perform immediate predictions (not batched for single 'act' call)
         network_results = {}
@@ -166,17 +169,13 @@ class AlphaZeroAgent(Agent):
         chosen_action, _ = self.mcts.process_results_and_select_action(
             network_results=network_results,
             pending_sims=pending_sims,
-            # completed_sims=completed_sims, # No longer passed
-            root_state_key=root_state_key, # Pass root key
-            train=False,  # Not training during evaluation act()
+            root_state_key=root_state_key,
+            train=False,
             current_step=state.get("step_count", 0),
-            env=self.env, # Pass env for policy target calculation
+            env=self.env,
         )
 
-        if chosen_action is None:
-            logger.warning("MCTS completed but returned no action. Choosing random.")
-            # Again, need env access for random choice.
-            return None
+        assert chosen_action is not None
 
         # --- Optional Debug Print: MCTS Results ---
         if self.config.debug_mode:

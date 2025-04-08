@@ -76,8 +76,7 @@ class MuZeroConfig:
     value_loss_weight: float = 0.25  # Weight for value loss component
     reward_loss_weight: float = 1.0  # Weight for reward loss component (often 1.0)
     policy_loss_weight: float = 1.0  # Weight for policy loss component (often 1.0)
-    # TODO: Add support size for categorical value/reward if used later
-    debug_mode: bool = True
+    debug_mode: bool = False
 
 
 # --- Training Configuration ---

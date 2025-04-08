@@ -802,12 +802,10 @@ class AlphaZeroMCTS(MCTS):
         self,
         network_results: Dict[str, PredictResult],
         pending_sims: Dict[str, List[Tuple[MCTSNode, BaseEnvironment, List[MCTSNode]]]],
-        # completed_sims is no longer needed here as they are processed in prepare
-        # completed_sims: List[Tuple[float, Optional[np.ndarray], List[MCTSNode]]], # Removed completed_sims argument
-        root_state_key: str,  # Add root state key
+        root_state_key: str,
         train: bool,
         current_step: int,
-        env: BaseEnvironment,  # Pass env for policy target calculation
+        env: BaseEnvironment,
     ) -> Tuple[Optional[ActionType], Optional[np.ndarray]]:
         """
         Processes network results and completed simulations, performs expansion
@@ -816,7 +814,6 @@ class AlphaZeroMCTS(MCTS):
         Args:
             network_results: Results from batched network inference.
             pending_sims: Simulations waiting for network results.
-            completed_sims: Simulations finished due to terminal state or cache hit.
             train: Whether this is a training step (for noise/temperature).
             current_step: Current step count (for temperature decay).
             env: The environment instance (needed for policy target size/mapping).
@@ -905,7 +902,7 @@ class AlphaZeroMCTS(MCTS):
 
             # --- Handling for non-root results ---
             # Process remaining pending simulations (keys other than root_state_key)
-            elif state_key in pending_sims:  # This condition remains for non-root keys
+            elif state_key in pending_sims:
                 sims_for_key = pending_sims[state_key]
                 logger.debug(
                     f"  Processing {len(sims_for_key)} pending sims for key {state_key}"
@@ -949,7 +946,6 @@ class AlphaZeroMCTS(MCTS):
             )
             # Choose randomly among legal actions if visits are zero
             chosen_action = random.choice(actions) if actions else None
-            # Restore assertion: This should not happen with the fix below.
             assert (
                 np.sum(visit_counts) > 0
             ), "All child visit counts are zero after MCTS search!"

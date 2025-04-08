@@ -188,7 +188,7 @@ def _initialize_parallel_games(num_parallel_games: int, env_factory: callable) -
     # mcts_completed_sims: Dict[
     #     int, List[Tuple[float, Optional[np.ndarray], List[MCTSNode]]]
     # ] = {} # Removed completed_sims tracking
-    mcts_root_keys: Dict[int, str] = {} # Store root key per game
+    mcts_root_keys: Dict[int, str] = {}  # Store root key per game
     # Store pending network requests aggregated across all games, mapping key to list of game_idx
     pending_requests: Dict[str, Tuple[StateType, List[int]]] = {}
     # Store completed actions and policy targets after phase 2
@@ -203,8 +203,7 @@ def _initialize_parallel_games(num_parallel_games: int, env_factory: callable) -
         "game_is_done": game_is_done,
         "games_needing_action": games_needing_action,
         "mcts_pending_sims": mcts_pending_sims,
-        # "mcts_completed_sims": mcts_completed_sims, # Removed
-        "mcts_root_keys": mcts_root_keys, # Added
+        "mcts_root_keys": mcts_root_keys,
         "pending_requests": pending_requests,
         "completed_actions": completed_actions,
         "states_before_action": states_before_action,
@@ -458,9 +457,8 @@ def collect_parallel_self_play_data(
     game_is_done = game_states["game_is_done"]
     games_needing_action = game_states["games_needing_action"]
     mcts_pending_sims = game_states["mcts_pending_sims"]
-    # mcts_completed_sims = game_states["mcts_completed_sims"] # Removed
-    mcts_root_keys = game_states["mcts_root_keys"] # Added
-    pending_requests = game_states["pending_requests"]  # Now a Dict
+    mcts_root_keys = game_states["mcts_root_keys"]
+    pending_requests = game_states["pending_requests"]
     completed_actions = game_states["completed_actions"]
     states_before_action = game_states["states_before_action"]
 
@@ -507,16 +505,14 @@ def collect_parallel_self_play_data(
                     (
                         requests_dict,
                         pending_sim_dict,
-                        completed_sim_list, # This is now always empty
+                        completed_sim_list,  # This is always empty, remove?
                         root_key,
                     ) = agent.mcts.prepare_simulations(
                         envs[game_idx], state, train=True
-                    )  # Pass train=True
+                    )
 
-                    # Store results for this game
                     mcts_pending_sims[game_idx] = pending_sim_dict
-                    # mcts_completed_sims[game_idx] = completed_sim_list # No longer needed
-                    mcts_root_keys[game_idx] = root_key # Store root key
+                    mcts_root_keys[game_idx] = root_key
                     games_prepared_this_cycle.append(game_idx)
 
                     # Aggregate requests into the global pending_requests dict
@@ -536,8 +532,10 @@ def collect_parallel_self_play_data(
                     if game_idx not in completed_actions:
                         completed_actions[game_idx] = (None, None)
                     # Clean up any partial state after error during prepare_simulations
-                    if game_idx in mcts_pending_sims: del mcts_pending_sims[game_idx]
-                    if game_idx in mcts_root_keys: del mcts_root_keys[game_idx]
+                    if game_idx in mcts_pending_sims:
+                        del mcts_pending_sims[game_idx]
+                    if game_idx in mcts_root_keys:
+                        del mcts_root_keys[game_idx]
 
             # --- Phase 2: Batch Network Inference ---
             network_results: Dict[str, PredictResult] = {}
@@ -573,7 +571,7 @@ def collect_parallel_self_play_data(
                 # Check for pending sims and root key
                 if (
                     game_idx not in mcts_pending_sims
-                    or game_idx not in mcts_root_keys # Check root key exists
+                    or game_idx not in mcts_root_keys  # Check root key exists
                 ):
                     logger.warning(
                         f"Missing MCTS intermediate state for game {game_idx}. Skipping."
@@ -598,20 +596,13 @@ def collect_parallel_self_play_data(
                     ) = agent.mcts.process_results_and_select_action(
                         network_results=results_for_game,
                         pending_sims=mcts_pending_sims[game_idx],
-                        # completed_sims argument removed
-                        root_state_key=mcts_root_keys[game_idx], # Pass root key
+                        root_state_key=mcts_root_keys[game_idx],
                         train=True,
                         current_step=observations[game_idx].get("step_count", 0),
-                        env=envs[game_idx],  # Pass the specific env instance
+                        env=envs[game_idx],
                     )
                     completed_actions[game_idx] = (action, policy_target)
                     logger.debug(f"Game {game_idx} completed search. Action: {action}")
-                    # except Exception as e:
-                    #     logger.error(
-                    #         f"Error during MCTS process_results for game {game_idx}: {e}",
-                    #         exc_info=True,
-                    #     )
-                    #     completed_actions[game_idx] = (None, None)  # Mark error
                 else:
                     logger.warning(
                         f"Game {game_idx}: Missing some network results ({len(results_for_game)}/{len(required_keys)}). Will retry next cycle."
@@ -621,10 +612,13 @@ def collect_parallel_self_play_data(
                         games_needing_action.append(game_idx)
 
                 # Clean up stored MCTS intermediate data for this game regardless of success/failure
-                if game_idx in mcts_pending_sims: del mcts_pending_sims[game_idx]
+                if game_idx in mcts_pending_sims:
+                    del mcts_pending_sims[game_idx]
                 # completed_sims cleanup removed
-                if game_idx in mcts_root_keys: del mcts_root_keys[game_idx] # Cleanup root key
-                if game_idx in games_awaiting_results: del games_awaiting_results[game_idx]
+                if game_idx in mcts_root_keys:
+                    del mcts_root_keys[game_idx]
+                if game_idx in games_awaiting_results:
+                    del games_awaiting_results[game_idx]
 
             # --- Step Environments ---
             games_ready_to_step = list(completed_actions.keys())
@@ -932,8 +926,8 @@ if __name__ == "__main__":
 
     # --- Loguru Configuration ---
     # Remove the default handler to prevent duplicate messages if re-adding stderr
-    # logger.remove()
-    # logger.add(sys.stderr, level="INFO")
+    logger.remove()
+    logger.add(sys.stderr, level="INFO")
     # You could also add file logging here if needed:
     # logger.add("file_{time}.log", level="INFO")
     # --- End Loguru Configuration ---
