@@ -181,13 +181,8 @@ def _initialize_parallel_games(num_parallel_games: int, env_factory: callable) -
     # Track games needing an action search
     games_needing_action: List[int] = list(range(num_parallel_games))
     # Store MCTS intermediate results between phases
-    mcts_pending_sims: Dict[
-        int, Dict[str, List[Tuple[MCTSNode, BaseEnvironment, List[MCTSNode]]]]
-    ] = {}
-    # mcts_completed_sims no longer needed here
-    # mcts_completed_sims: Dict[
-    #     int, List[Tuple[float, Optional[np.ndarray], List[MCTSNode]]]
-    # ] = {} # Removed completed_sims tracking
+    # Updated mcts_pending_sims structure
+    mcts_pending_sims: Dict[int, Dict[str, List[MCTSNode]]] = {}
     mcts_root_keys: Dict[int, str] = {}  # Store root key per game
     # Store pending network requests aggregated across all games, mapping key to list of game_idx
     pending_requests: Dict[str, Tuple[StateType, List[int]]] = {}
@@ -502,10 +497,10 @@ def collect_parallel_self_play_data(
                 states_before_action[game_idx] = state.copy()
 
                 try:
+                    # Updated return signature for prepare_simulations
                     (
                         requests_dict,
-                        pending_sim_dict,
-                        completed_sim_list,  # This is always empty, remove?
+                        pending_sim_dict, # Now Dict[str, List[MCTSNode]]
                         root_key,
                     ) = agent.mcts.prepare_simulations(
                         envs[game_idx], state, train=True
