@@ -969,8 +969,14 @@ class AlphaZeroMCTS(MCTS):
         sim_log_prefix = "  Sim Select:"  # Simplified prefix for helper
 
         selection_active = True
+        loop_count = 0  # Add loop counter for debugging deep selections
+
         while selection_active and node.is_expanded() and not sim_env.is_game_over():
+            loop_count += 1
             parent_visits = node.visit_count
+            logger.trace(
+                f"{sim_log_prefix} Loop {loop_count}: Node={node}, ParentVisits={parent_visits}"
+            )  # Log node and visits
 
             if not node.children:
                 logger.error(f"{sim_log_prefix} Node is expanded but has no children!")
@@ -981,27 +987,39 @@ class AlphaZeroMCTS(MCTS):
                 act: self._score_child(child, parent_visits)
                 for act, child in node.children.items()
             }
+            # --- Add detailed score logging ---
+            log_scores = {str(a): f"{s:.3f}" for a, s in child_scores.items()}
+            logger.trace(
+                f"{sim_log_prefix} Loop {loop_count}: ChildScores={log_scores}"
+            )
+            # --- End detailed score logging ---
 
             best_action = max(child_scores, key=child_scores.get)
             logger.debug(
-                f"{sim_log_prefix} ParentVisits={parent_visits}, LegalScores={ {a: f'{s:.3f}' for a, s in child_scores.items()} }, Chosen={best_action}"
+                f"{sim_log_prefix} Loop {loop_count}: ChosenAction={best_action} (Score={child_scores[best_action]:.3f})"
             )
 
             try:
                 logger.debug(f"{sim_log_prefix} Stepping env with {best_action}")
                 sim_env.step(best_action)
-                logger.debug(
-                    f"{sim_log_prefix} Moving to child node for action {best_action}"
+                logger.trace(
+                    f"{sim_log_prefix} Loop {loop_count}: Moving to child node for action {best_action}"
                 )
-                node = node.children[best_action]
+                selected_child_node = node.children[best_action]
+                node = selected_child_node  # Update node for next loop iteration
                 search_path.append(node)
+                logger.trace(
+                    f"{sim_log_prefix} Loop {loop_count}: New Node={node}, PathLen={len(search_path)}"
+                )
             except (ValueError, KeyError) as e:
                 logger.error(
                     f"{sim_log_prefix} Error stepping env or finding child for action {best_action}. Error: {e}"
                 )
-                return None, None, search_path  # Error case
+                return None, None, search_path
 
-        logger.debug(f"{sim_log_prefix} Selection finished. Leaf node: {node}")
+        logger.debug(
+            f"{sim_log_prefix} Selection finished. Leaf node: {node}, PathLen: {len(search_path)}"
+        )
         return node, sim_env, search_path
 
     def _calculate_policy_target(

@@ -403,6 +403,8 @@ def _process_finished_games(
             if game_idx not in games_needing_action:
                 games_needing_action.append(game_idx)
 
+    return episodes_finished_this_cycle
+
 
 # Removed _advance_and_process_generators function
 
@@ -517,7 +519,7 @@ def collect_parallel_self_play_data(
                         if game_idx not in completed_actions:
                             completed_actions[game_idx] = (None, None)
 
-                except Exception as e:
+                except IOError as e:
                     logger.error(
                         f"Error during MCTS Phase 1 for game {game_idx}: {e}",
                         exc_info=True,
