@@ -145,8 +145,8 @@ class AlphaZeroAgent(Agent):
 
         # --- Perform Synchronous MCTS Search for Evaluation ---
         # 1. Prepare simulations and get requests
-        requests, pending_sims, completed_sims = self.mcts.prepare_simulations(
-            self.env, state, train=False  # Pass train=False for evaluation
+        requests, pending_sims, completed_sims, root_state_key = self.mcts.prepare_simulations(
+            self.env, state, train=False # Pass train=False for evaluation
         )
 
         # 2. Perform immediate predictions (not batched for single 'act' call)
@@ -166,10 +166,11 @@ class AlphaZeroAgent(Agent):
         chosen_action, _ = self.mcts.process_results_and_select_action(
             network_results=network_results,
             pending_sims=pending_sims,
-            completed_sims=completed_sims,
+            # completed_sims=completed_sims, # No longer passed
+            root_state_key=root_state_key, # Pass root key
             train=False,  # Not training during evaluation act()
             current_step=state.get("step_count", 0),
-            env=self.env,  # Pass env for policy target calculation
+            env=self.env, # Pass env for policy target calculation
         )
 
         if chosen_action is None:
