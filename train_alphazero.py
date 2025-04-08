@@ -503,7 +503,9 @@ def collect_parallel_self_play_data(
                         requests_dict,
                         pending_sim_dict,
                         completed_sim_list,
-                    ) = agent.mcts.prepare_simulations(envs[game_idx], state)
+                    ) = agent.mcts.prepare_simulations(
+                        envs[game_idx], state, train=True
+                    )  # Pass train=True
 
                     # Store results for this game
                     mcts_pending_sims[game_idx] = pending_sim_dict

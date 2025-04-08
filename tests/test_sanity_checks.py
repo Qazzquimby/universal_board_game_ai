@@ -322,11 +322,8 @@ class TestSanityChecks:
     ):
         """Runs AlphaZero MCTS action selection sanity checks (with and without loading weights)."""
         config = self._get_config(env_name)
-        config.alpha_zero.should_use_network = (
-            load_weights  # Configure agent based on parameter
-        )
+        config.alpha_zero.should_use_network = load_weights
         env = get_environment(config.env)
-        # Need training_config for agent init, even if not used in this check
         agent = AlphaZeroAgent(env, config.alpha_zero, config.training)
         self._run_single_alphazero_mcts_check(agent, env, check_case)
 

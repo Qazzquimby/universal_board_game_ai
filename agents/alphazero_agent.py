@@ -14,7 +14,7 @@ from loguru import logger
 
 from core.agent_interface import Agent
 from environments.base import BaseEnvironment, StateType, ActionType
-from algorithms.mcts import AlphaZeroMCTS, MCTSProfiler
+from algorithms.mcts import AlphaZeroMCTS, MCTSProfiler, DummyAlphaZeroNet
 from models.networks import AlphaZeroNet
 from core.config import AlphaZeroConfig, DATA_DIR, TrainingConfig
 
@@ -138,10 +138,7 @@ class AlphaZeroAgent(Agent):
             The chosen action.
         """
         if not self.network:
-            logger.error("Cannot act: Network not initialized.")
-            # Fallback to random action? Requires env access.
-            # For now, return None or raise error. Let's return None.
-            return None
+            self.network = DummyAlphaZeroNet(env=self.env)
 
         # Ensure network is in evaluation mode for inference
         self.network.eval()
@@ -149,7 +146,7 @@ class AlphaZeroAgent(Agent):
         # --- Perform Synchronous MCTS Search for Evaluation ---
         # 1. Prepare simulations and get requests
         requests, pending_sims, completed_sims = self.mcts.prepare_simulations(
-            self.env, state
+            self.env, state, train=False  # Pass train=False for evaluation
         )
 
         # 2. Perform immediate predictions (not batched for single 'act' call)
@@ -158,9 +155,7 @@ class AlphaZeroAgent(Agent):
             state_keys = list(requests.keys())
             states_to_predict = [requests[key] for key in state_keys]
             try:
-                policy_list, value_list = self.network.predict_batch(
-                    states_to_predict
-                )
+                policy_list, value_list = self.network.predict_batch(states_to_predict)
                 for i, key in enumerate(state_keys):
                     network_results[key] = (policy_list[i], value_list[i])
             except Exception as e:
@@ -174,7 +169,7 @@ class AlphaZeroAgent(Agent):
             completed_sims=completed_sims,
             train=False,  # Not training during evaluation act()
             current_step=state.get("step_count", 0),
-            env=self.env, # Pass env for policy target calculation
+            env=self.env,  # Pass env for policy target calculation
         )
 
         if chosen_action is None:

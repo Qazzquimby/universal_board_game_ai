@@ -36,7 +36,7 @@ class MCTSConfig:
 
 @dataclass
 class AlphaZeroConfig:
-    num_simulations: int = 2  # MCTS simulations per move
+    num_simulations: int = 400  # MCTS simulations per move
     cpuct: float = 1.0  # Exploration constant in PUCT formula
     learning_rate: float = 0.001
     weight_decay: float = 0.0001
@@ -49,7 +49,7 @@ class AlphaZeroConfig:
     # Number of game steps before reducing temperature
     temperature_decay_steps: int = 30
     # Parallel Self-Play & Batching
-    num_parallel_games: int = 1  # Number of games to run in parallel during self-play
+    num_parallel_games: int = 64  # Number of games to run in parallel during self-play
     inference_batch_size: int = 32  # Max batch size for network inference
     # --- Dirichlet Noise for Exploration during Self-Play ---
     dirichlet_alpha: float = 0.3  # Shape parameter for noise (typical value 0.3)
