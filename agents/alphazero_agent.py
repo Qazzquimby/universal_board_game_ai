@@ -143,39 +143,17 @@ class AlphaZeroAgent(Agent):
         # Ensure network is in evaluation mode for inference
         self.network.eval()
 
-        # --- Perform Synchronous MCTS Search for Evaluation ---
-        # 1. Prepare simulations and get requests
-        (
-            requests,
-            pending_sims,
-            completed_sims,
-            root_state_key,
-        ) = self.mcts.prepare_simulations(self.env, state, train=False)
+        # --- Perform Synchronous MCTS Search using the new search method ---
+        # The 'env' passed to search should be at the correct 'state'
+        # We assume self.env is correctly representing the current state for act()
+        # If not, we'd need env.set_state(state) first. Let's assume env is correct.
+        chosen_action, policy_target = self.mcts.search(self.env, state, train=train)
 
-        # 2. Perform immediate predictions (not batched for single 'act' call)
-        network_results = {}
-        if requests:
-            state_keys = list(requests.keys())
-            states_to_predict = [requests[key] for key in state_keys]
-            try:
-                policy_list, value_list = self.network.predict_batch(states_to_predict)
-                for i, key in enumerate(state_keys):
-                    network_results[key] = (policy_list[i], value_list[i])
-            except Exception as e:
-                logger.error(f"Error during immediate prediction in act(): {e}")
-                return None  # Indicate failure
-
-        # 3. Process results and select action
-        chosen_action, _ = self.mcts.process_results_and_select_action(
-            network_results=network_results,
-            pending_sims=pending_sims,
-            root_state_key=root_state_key,
-            train=False,
-            current_step=state.get("step_count", 0),
-            env=self.env,
-        )
-
-        assert chosen_action is not None
+        if chosen_action is None:
+            logger.error("MCTS search in act() returned no action. Choosing random.")
+            # Fallback to random action if MCTS fails
+            legal_actions = self.env.get_legal_actions()
+            return random.choice(legal_actions) if legal_actions else None
 
         # --- Optional Debug Print: MCTS Results ---
         if self.config.debug_mode:

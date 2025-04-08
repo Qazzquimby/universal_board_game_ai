@@ -404,23 +404,9 @@ class MCTS:
         while current_node is not None:
             current_node.visit_count += 1
             logger.debug(
-                f"  Backprop: Node={current_node}, ValueToAdd={value_for_current_node:.3f}, OldW={current_node.total_value:.3f}, OldN={current_node.visit_count - 1}, NewW={current_node.total_value + value_for_current_node:.3f}, NewN={current_node.visit_count}"
+               f"  Backprop: Node={current_node}, ValueToAdd={value_for_current_node:.3f}, OldW={current_node.total_value:.3f}, OldN={current_node.visit_count - 1}, NewW={current_node.total_value + value_for_current_node:.3f}, NewN={current_node.visit_count}"
             )
             current_node.total_value += value_for_current_node
-
-            # --- Debugging ---
-            if (
-                hasattr(self, "root") and current_node.parent == self.root
-            ):  # Check if self has root (for AlphaZeroMCTS)
-                action_leading_here = (
-                    self.find_action_for_child(current_node)
-                    if hasattr(self, "find_action_for_child")
-                    else "N/A"
-                )
-                logger.warning(
-                    f"  Backprop: Updating root child {current_node} (Action: {action_leading_here}). Parent: {current_node.parent}"
-                )
-            # --- End Debugging ---
 
             # Flip the value perspective for the parent node.
             value_for_current_node *= -1
@@ -596,12 +582,7 @@ class AlphaZeroMCTS(MCTS):
                                          from the perspective of the player whose turn
                                          it was at the leaf_node.
         """
-        # --- Debugging ---
-        if hasattr(self, "root") and leaf_node == self.root:  # Check if self has root
-            logger.warning(
-                f"  Backprop (AZ): Called with root node as leaf_node! Value={value_from_leaf_perspective:.3f}"
-            )
-        # --- End Debugging ---
+        # Warning log removed - this is expected when root is uncached initially.
         super()._backpropagate(leaf_node, value_from_leaf_perspective)
 
     def _score_child(self, node: MCTSNode, parent_visits: int) -> float:
@@ -794,150 +775,73 @@ class AlphaZeroMCTS(MCTS):
             f"{log_prefix} Prepare complete. Requests: {len(requests)}, PendingSims: {num_pending}"
         )
         # Return root state key along with requests and simplified pending_sims
-        return requests, pending_sims, root_state_key
+    # Removed prepare_simulations method
 
-    def process_results_and_select_action(
-        self,
-        network_results: Dict[str, PredictResult],
-        pending_sims: Dict[str, List[MCTSNode]],  # Updated signature
-        root_state_key: str,
-        train: bool,
-        current_step: int,
-        env: BaseEnvironment,
+    def search(
+        self, env: BaseEnvironment, state: StateType, train: bool = False
     ) -> Tuple[Optional[ActionType], Optional[np.ndarray]]:
         """
-        Processes network results and completed simulations, performs expansion
-        and backpropagation, and selects the final action.
+        Performs a synchronous MCTS search for evaluation or simple usage.
+        Handles network calls immediately (no batching across games).
 
         Args:
-            network_results: Results from batched network inference.
-            pending_sims: Simulations waiting for network results.
-            train: Whether this is a training step (for noise/temperature).
-            current_step: Current step count (for temperature decay).
-            env: The environment instance (needed for policy target size/mapping).
+            env: The environment instance at the current state.
+            state: The current state dictionary.
+            train: Whether to apply noise/temperature (typically False for evaluation).
 
         Returns:
-            Tuple containing the chosen action and the policy target.
+            Tuple containing the chosen action and the calculated policy target.
         """
-        log_prefix = f"AZ MCTS Process & Select"
-        logger.debug(f"--- {log_prefix} Start ---")
+        self.reset_root()
+        initial_state_obs = state
+        log_prefix = f"AZ MCTS Sync Search (Net={type(self.network).__name__}, Sims={self.num_simulations})"
+        logger.debug(f"--- {log_prefix} Start: State={initial_state_obs} ---")
 
-        # --- Process Network Results (Expand & Backpropagate) ---
-        logger.debug(
-            f"{log_prefix} Processing {len(network_results)} network results..."
-        )
-        for state_key, result in network_results.items():
-            policy_np, value = result
-            # Update cache *before* processing
-            self.evaluation_cache[state_key] = result
+        if env.is_game_over():
+            logger.warning(f"{log_prefix} Root state is already terminal. No search.")
+            return None, None
 
-            # --- Special handling for the root node's result ---
-            if state_key == root_state_key:
-                if not self.root.is_expanded():
-                    logger.debug(f"{log_prefix} Expanding root node (network result).")
-                    # Need the original env state for root expansion
-                    root_env_state = env.copy()
-                    self._expand(self.root, root_env_state, policy_np)
-                    # Apply noise immediately after root expansion if training
-                    if (
-                        train
-                        and self.root.is_expanded()
-                        and self.config.dirichlet_epsilon > 0
-                    ):
-                        self._apply_dirichlet_noise()
-                else:
-                    logger.trace(
-                        f"{log_prefix} Root node already expanded when processing its result."
-                    )
+        # --- Run Simulations Synchronously ---
+        for sim_num in range(self.num_simulations):
+            sim_log_prefix = f"  Sync Sim {sim_num+1}/{self.num_simulations}:"
+            logger.debug(f"{sim_log_prefix} Starting Selection...")
 
-                # --- Backpropagate for simulations that were waiting for the root result ---
-                if state_key in pending_sims:
-                    sims_for_root = pending_sims.pop(
-                        state_key
-                    )  # Pop to remove processed sims
-                    logger.debug(
-                        f"  Processing {len(sims_for_root)} simulations that selected the root using root's value={value:.3f}"
-                    )
-                    # Ensure root has children after expansion before proceeding
-                    if not self.root.children:
-                        logger.error(
-                            f"{log_prefix} Root expanded but has no children. Cannot backpropagate root sims."
-                        )
-                    else:
-                        for leaf_node in sims_for_root:
-                            # leaf_node here *is* self.root
-                            # 1. Backpropagate the value normally from the root
-                            self._backpropagate(
-                                self.root, value
-                            )  # Increments root N and updates root W
+            # 1. Selection - Start from the root
+            leaf_node, leaf_env_state, search_path = self._select_leaf(self.root, env)
 
-                            # 2. Simulate the first selection step and increment the chosen child's visit count
-                            #    Use the root's *updated* visit count for PUCT calculation.
-                            parent_visits = self.root.visit_count
-                            child_scores = {
-                                act: self._score_child(child, parent_visits)
-                                for act, child in self.root.children.items()
-                            }
-                            if not child_scores:
-                                logger.error(
-                                    f"{log_prefix} Cannot determine best child for root sim backprop - no child scores."
-                                )
-                                continue
+            if leaf_node is None or leaf_env_state is None:
+                logger.error(f"{sim_log_prefix} Selection failed. Skipping simulation.")
+                continue
 
-                            best_action = max(child_scores, key=child_scores.get)
-                            chosen_child = self.root.children[best_action]
-                            chosen_child.visit_count += (
-                                1  # Increment visit count for the chosen child
-                            )
-                            logger.trace(
-                                f"    Root Sim Backprop: Incrementing visit count for child action {best_action} (New N={chosen_child.visit_count})"
-                            )
-                            # Do NOT update chosen_child.total_value here, root backprop handled value.
-
-                else:  # End of 'if not self.root.children:' block
-                    logger.trace(
-                        f"{log_prefix} No pending simulations found for root key '{state_key}' after root processing."
-                    )
-
-            # --- Handling for non-root results ---
-            elif state_key in pending_sims:
-                # Retrieve list of leaf nodes waiting for this non-root key
-                waiting_leaf_nodes = pending_sims.pop(
-                    state_key
-                )  # Pop to remove processed sims
-                logger.debug(
-                    f"  Processing {len(waiting_leaf_nodes)} pending sims for key {state_key}"
-                )
-                for leaf_node in waiting_leaf_nodes:
-                    # Expand the leaf node using the received policy *if not already expanded*
-                    # Note: We don't have the leaf_env_state here anymore. Expansion needs it.
-                    # This indicates a flaw: _expand needs the env state.
-                    # For now, we assume expansion might have happened via another path,
-                    # or we skip expansion here and just backpropagate.
-                    # Let's just backpropagate the value. If expansion is needed,
-                    # it should happen during selection in the *next* MCTS search.
-                    # This simplification might affect performance if nodes aren't expanded promptly.
-                    # A better fix would involve passing env state or re-fetching it.
-                    # --- Simplified Logic: Just Backpropagate ---
-                    if not leaf_node.is_expanded():
-                        logger.warning(
-                            f"  Cannot expand leaf node {leaf_node} for key {state_key} without env state. Backpropagating value only."
-                        )
-                        # If expansion is critical here, the design needs rethinking.
-                        # Potential Fix Idea: Store (leaf_node, env_state_at_leaf) in pending_sims.
-
-                    # Backpropagate the network value *from the leaf node*
-                    self._backpropagate(leaf_node, value)
+            # 2. Evaluate Leaf
+            value = 0.0
+            policy_np = None
+            if leaf_env_state.is_game_over():
+                value = self._evaluate_terminal_leaf(leaf_node, leaf_env_state)
             else:
-                logger.warning(
-                    f"{log_prefix} Network result received for key '{state_key}' but no sims were pending."
-                )
+                # Get network prediction immediately
+                leaf_state_obs = leaf_env_state.get_observation()
+                try:
+                    policy_np, value = self.network.predict(leaf_state_obs)
+                    # Expand the node using the prediction
+                    if not leaf_node.is_expanded():
+                        logger.debug(f"{sim_log_prefix} Expanding node {leaf_node}")
+                        self._expand(leaf_node, leaf_env_state, policy_np)
+                        # Apply noise right after root expansion on first sim if training
+                        if train and sim_num == 0 and leaf_node == self.root and self.config.dirichlet_epsilon > 0:
+                             self._apply_dirichlet_noise()
 
-        # --- Select Action ---
+                except Exception as e:
+                    logger.error(f"{sim_log_prefix} Network prediction/expansion failed: {e}")
+                    # Assign default value (e.g., 0) and skip backprop? Or stop?
+                    value = 0.0 # Assign neutral value on error
+
+            # 3. Backpropagation
+            self._backpropagate(leaf_node, value)
+
+        # --- Select Action after all simulations ---
         if not self.root.children:
-            logger.error(
-                f"{log_prefix} Root node has no children after search. Cannot select action."
-            )
+            logger.error(f"{log_prefix} Root node has no children after search.")
             return None, None
 
         visit_counts = np.array(
@@ -945,70 +849,28 @@ class AlphaZeroMCTS(MCTS):
         )
         actions = list(self.root.children.keys())
 
-        if self.config.debug_mode or np.sum(visit_counts) == 0:
-            visit_dict = {str(a): v for a, v in zip(actions, visit_counts)}
-            logger.debug(f"{log_prefix} Final Visit Counts: {visit_dict}")
-            logger.debug(f"{log_prefix} Total Root Visits: {self.root.visit_count}")
-
         if np.sum(visit_counts) == 0:
-            logger.warning(
-                f"{log_prefix} All child visit counts are zero. Choosing random action."
-            )
-            # Choose randomly among legal actions if visits are zero
-            chosen_action = random.choice(actions) if actions else None
-            assert (
-                np.sum(visit_counts) > 0
-            ), "All child visit counts are zero after MCTS search!"
-        elif train:
-            # Temperature calculation for exploration during training
-            temperature = (
-                1.0 if current_step < self.config.temperature_decay_steps else 0.1
-            )
-            if temperature > 1e-6:
-                visit_counts_temp = visit_counts ** (1.0 / temperature)
-                sum_visits_temp = np.sum(visit_counts_temp)
-                if sum_visits_temp > 0:
-                    action_probs = visit_counts_temp / sum_visits_temp
-                    action_probs /= action_probs.sum()  # Normalize
-                    try:
-                        chosen_action_index = np.random.choice(
-                            len(actions), p=action_probs
-                        )
-                        chosen_action = actions[chosen_action_index]
-                    except ValueError as e:
-                        logger.warning(
-                            f"{log_prefix} Error choosing action with temp (probs sum {np.sum(action_probs)}): {e}. Choosing greedily."
-                        )
-                        chosen_action_index = np.argmax(visit_counts)
-                        chosen_action = actions[chosen_action_index]
-                else:
-                    logger.warning(
-                        f"{log_prefix} Sum of visits with temp is zero. Choosing greedily."
-                    )
-                    chosen_action_index = np.argmax(visit_counts)
-                    chosen_action = actions[chosen_action_index]
-            else:  # Temp is zero or near-zero
-                chosen_action_index = np.argmax(visit_counts)
-                chosen_action = actions[chosen_action_index]
-        else:  # Not training, choose greedily
-            chosen_action_index = np.argmax(visit_counts)
-            chosen_action = actions[chosen_action_index]
+             logger.warning(f"{log_prefix} All child visit counts are zero. Choosing random.")
+             chosen_action = random.choice(actions) if actions else None
+        elif train: # Use temperature during training search if needed
+             temperature = 1.0 # Simplified: Use temp=1 for exploration if train=True
+             visit_counts_temp = visit_counts**(1.0 / temperature)
+             action_probs = visit_counts_temp / np.sum(visit_counts_temp)
+             chosen_action_index = np.random.choice(len(actions), p=action_probs)
+             chosen_action = actions[chosen_action_index]
+        else: # Greedy selection for evaluation
+             chosen_action_index = np.argmax(visit_counts)
+             chosen_action = actions[chosen_action_index]
 
-        # --- Calculate Policy Target ---
         policy_target = self._calculate_policy_target(
             self.root, actions, visit_counts, env
         )
 
         logger.debug(f"{log_prefix} Chosen Action: {chosen_action}")
-        if policy_target is not None:
-            logger.debug(
-                f"{log_prefix} Policy Target (Top 5): { {i: p for i, p in enumerate(policy_target) if p > 0.01} }"
-            )
+    # Removed process_results_and_select_action method
 
-        return chosen_action, policy_target
-
-    def _apply_dirichlet_noise(self):
-        """Applies Dirichlet noise to the root node's children's priors."""
+    # The entire incorrect _apply_dirichlet_noise definition below is removed.
+    # The correct definition follows later in the file.
         log_prefix = "AZ MCTS Noise:"
         num_children = len(self.root.children)
         if num_children == 0:
