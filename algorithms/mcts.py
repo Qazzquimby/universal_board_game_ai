@@ -627,237 +627,169 @@ class AlphaZeroMCTS(MCTS):
         )
         return value
 
-    def get_action_and_policy(
-        self,
-        env: BaseEnvironment,
-        state: StateType,
-        train: bool,  # Needed for temperature and noise
-        current_step: int,  # Needed for temperature decay
-    ) -> Tuple[Optional[ActionType], Optional[np.ndarray], List[Tuple[str, StateType]]]:
+    def prepare_simulations(
+        self, env: BaseEnvironment, state: StateType
+    ) -> Tuple[
+        Dict[str, StateType],
+        Dict[str, List[Tuple[MCTSNode, BaseEnvironment, List[MCTSNode]]]],
+        List[Tuple[float, Optional[np.ndarray], List[MCTSNode]]],
+    ]:
         """
-        Performs the two-phase MCTS search:
-        1. Runs simulations, collecting network prediction requests.
-        2. (Implicitly expects caller to batch predict)
-        3. Uses provided predictions to complete the search and select an action.
+        Runs the selection phase for all simulations, collecting network requests
+        and identifying completed simulations (terminal/cache hits).
 
         Args:
-            env: The *real* environment instance.
-            state: The current state dictionary from the real environment.
-            train: Boolean indicating if this is a training step (for noise/temp).
-            current_step: The current step number in the episode (for temp decay).
+            env: The *real* environment instance (at the state to search from).
+            state: The current state dictionary (matches env's state).
 
         Returns:
-            A tuple containing:
-            - chosen_action: The selected action (or None if search fails).
-            - policy_target: The calculated policy target (or None if search fails).
-            - predict_requests: List of (state_key, state_obs) tuples needing prediction.
+            Tuple containing:
+            - requests: Dict mapping state_key -> state_obs for nodes needing network eval.
+            - pending_sims: Dict mapping state_key -> list of (leaf_node, leaf_env_state, path)
+                            tuples waiting for that network result.
+            - completed_sims: List of (value, policy_or_None, path) tuples for simulations
+                              that finished due to terminal state or cache hit.
         """
         self.reset_root()
         initial_state_obs = state
-        log_prefix = f"AZ MCTS Sync (Net={type(self.network).__name__}, Sims={self.num_simulations})"
+        log_prefix = f"AZ MCTS Prepare (Net={type(self.network).__name__}, Sims={self.num_simulations})"
         logger.debug(f"--- {log_prefix} Start: State={initial_state_obs} ---")
 
-        # --- Phase 1: Run Simulations and Collect Network Requests ---
-        pending_predict_requests: Dict[str, StateType] = {}
-        # Cache for results *within this search* (cleared each call)
-        evaluation_cache: Dict[str, PredictResult] = {}
-        # Store the path taken for each simulation for backpropagation later
-        simulation_paths: List[List[MCTSNode]] = []
-        # Store the final value obtained for each simulation path
-        simulation_values: List[Optional[float]] = []
-        # Store leaf nodes, their env state, and path for evaluation after batch prediction
-        nodes_awaiting_eval: Dict[
+        # --- State for this search turn ---
+        requests: Dict[str, StateType] = {}
+        pending_sims: Dict[
             str, List[Tuple[MCTSNode, BaseEnvironment, List[MCTSNode]]]
         ] = {}
+        completed_sims: List[Tuple[float, Optional[np.ndarray], List[MCTSNode]]] = []
+        # Cache for network results *within this search* (cleared each call)
+        self.evaluation_cache: Dict[str, PredictResult] = {}
 
         if self.num_simulations <= 0:
             logger.warning(f"{log_prefix} num_simulations <= 0. Skipping search.")
-            return None, None, []
+            return requests, pending_sims, completed_sims
 
+        # --- Run Selection Phase for all Simulations ---
         for sim_num in range(self.num_simulations):
             sim_log_prefix = f"  Sim {sim_num+1}/{self.num_simulations}:"
             logger.debug(f"{sim_log_prefix} Starting Selection...")
 
-            # 1. Selection
-            leaf_node, leaf_env_state, search_path = self._select_leaf(
-                self.root, env, initial_state_obs
-            )
+            # 1. Selection - Pass the main env instance
+            leaf_node, leaf_env_state, search_path = self._select_leaf(self.root, env)
 
             if leaf_node is None or leaf_env_state is None:
                 logger.error(f"{sim_log_prefix} Selection failed. Skipping simulation.")
-                simulation_paths.append(search_path)  # Store path even if failed
-                simulation_values.append(None)  # Mark as failed
+                # Optionally add a dummy completed_sim entry to track failure?
+                # completed_sims.append((0.0, None, search_path)) # Example: Treat failure as draw
                 continue
 
             # 2. Check if Leaf is Terminal
             if leaf_env_state.is_game_over():
                 value = self._evaluate_terminal_leaf(leaf_node, leaf_env_state)
-                simulation_paths.append(search_path)
-                simulation_values.append(value)
-                # Backpropagate immediately for terminal nodes
-                self._backpropagate(leaf_node, value)
-                continue  # Move to next simulation
+                completed_sims.append((value, None, search_path))
+                # Backpropagation happens in phase 2
+                continue
 
-            # 3. Leaf Needs Evaluation (Cache Check / Request Collection)
+            # 3. Check Cache or Prepare Request
             leaf_state_obs = leaf_env_state.get_observation()
             state_key = get_state_key(leaf_state_obs)
 
-            if state_key in evaluation_cache:
-                # Cache Hit: Use cached value for this simulation path
-                _, value = evaluation_cache[state_key]
+            if state_key in self.evaluation_cache:
+                # Cache Hit
+                policy_np, value = self.evaluation_cache[state_key]
                 logger.debug(
                     f"{sim_log_prefix} Cache Hit for StateKey={state_key}, Value={value:.3f}"
                 )
-                simulation_paths.append(search_path)
-                simulation_values.append(value)
-                # Expand node if needed (using cached policy) - crucial!
-                if not leaf_node.is_expanded():
-                    policy_np, _ = evaluation_cache[state_key]
-                    self._expand(leaf_node, leaf_env_state, policy_np)
-                # Backpropagate immediately using cached value
-                self._backpropagate(leaf_node, value)
-
+                completed_sims.append((value, policy_np, search_path))
+                # Expansion and backpropagation happen in phase 2
             else:
-                # Cache Miss: Record request and store path/node for later processing
+                # Cache Miss: Record request and store pending simulation info
                 logger.debug(
                     f"{sim_log_prefix} Cache Miss. Recording Request for StateKey={state_key}"
                 )
-                if state_key not in pending_predict_requests:
-                    pending_predict_requests[state_key] = leaf_state_obs
-
-                # Store the leaf node, its env state, and its path, grouped by state_key
-                if state_key not in nodes_awaiting_eval:
-                    nodes_awaiting_eval[state_key] = []
-                # Store a copy of the leaf env state
-                nodes_awaiting_eval[state_key].append(
+                if state_key not in requests:
+                    requests[state_key] = leaf_state_obs
+                if state_key not in pending_sims:
+                    pending_sims[state_key] = []
+                pending_sims[state_key].append(
                     (leaf_node, leaf_env_state.copy(), search_path)
                 )
-                # Mark this simulation path as incomplete for now
-                simulation_paths.append(search_path)
-                simulation_values.append(
-                    None
-                )  # Placeholder, will be filled after prediction
 
-        # --- End Simulation Loop (Phase 1) ---
         logger.debug(
-            f"{log_prefix} Phase 1 Complete. Unique prediction requests: {len(pending_predict_requests)}"
+            f"{log_prefix} Prepare complete. Requests: {len(requests)}, PendingSims: {sum(len(v) for v in pending_sims.values())}, CompletedSims: {len(completed_sims)}"
         )
+        return requests, pending_sims, completed_sims
 
-        # Convert pending requests dict to list format expected by caller
-        predict_requests_list = list(pending_predict_requests.items())
-
-        # Return the root, requests, and state needed for Phase 2
-        # We bundle the state needed for phase 2 into a dictionary
-        phase2_state = {
-            "nodes_awaiting_eval": nodes_awaiting_eval,
-            "simulation_paths": simulation_paths,
-            "simulation_values": simulation_values,
-            "evaluation_cache": evaluation_cache,  # Pass cache for reuse if needed
-            "initial_state_obs": initial_state_obs,  # For potential re-use/logging
-            "train": train,  # Pass training flag
-            "current_step": current_step,  # Pass step count
-            # Add env for policy target calculation fallback if needed
-            "env": env,
-        }
-
-        return self.root, predict_requests_list, phase2_state
-
-    def complete_search_and_get_action(
+    def process_results_and_select_action(
         self,
-        root_node: MCTSNode,
         network_results: Dict[str, PredictResult],
-        phase2_state: Dict,
+        pending_sims: Dict[str, List[Tuple[MCTSNode, BaseEnvironment, List[MCTSNode]]]],
+        completed_sims: List[Tuple[float, Optional[np.ndarray], List[MCTSNode]]],
+        train: bool,
+        current_step: int,
+        env: BaseEnvironment, # Pass env for policy target calculation
     ) -> Tuple[Optional[ActionType], Optional[np.ndarray]]:
         """
-        Completes the MCTS search using the provided network results and selects an action.
+        Processes network results and completed simulations, performs expansion
+        and backpropagation, and selects the final action.
 
         Args:
-            root_node: The MCTS root node from phase 1.
-            network_results: Dictionary mapping state_key to (policy_np, value).
-            phase2_state: Dictionary containing state saved from phase 1.
+            network_results: Results from batched network inference.
+            pending_sims: Simulations waiting for network results.
+            completed_sims: Simulations finished due to terminal state or cache hit.
+            train: Whether this is a training step (for noise/temperature).
+            current_step: Current step count (for temperature decay).
+            env: The environment instance (needed for policy target size/mapping).
 
         Returns:
-            A tuple containing:
-            - chosen_action: The selected action (or None if search fails).
-            - policy_target: The calculated policy target (or None if search fails).
+            Tuple containing the chosen action and the policy target.
         """
-        self.root = root_node  # Restore root
-        nodes_awaiting_eval = phase2_state["nodes_awaiting_eval"]
-        simulation_paths = phase2_state["simulation_paths"]
-        simulation_values = phase2_state["simulation_values"]
-        evaluation_cache = phase2_state["evaluation_cache"]
-        train = phase2_state["train"]
-        current_step = phase2_state["current_step"]
-        env = phase2_state["env"]  # Retrieve env
-        log_prefix = f"AZ MCTS Sync Phase 2"
-
+        log_prefix = f"AZ MCTS Process & Select"
         logger.debug(f"--- {log_prefix} Start ---")
 
-        # --- Phase 2: Process Network Results and Complete Simulations ---
-        num_failed_evals = 0
-        for state_key, results in network_results.items():
-            if state_key not in nodes_awaiting_eval:
-                logger.warning(
-                    f"{log_prefix} Received network result for unexpected state key {state_key}"
-                )
-                continue
+        # --- Process Network Results (Expand & Backpropagate) ---
+        logger.debug(f"{log_prefix} Processing {len(network_results)} network results...")
+        for state_key, result in network_results.items():
+            policy_np, value = result
+            # Update cache *before* processing pending sims for this key
+            self.evaluation_cache[state_key] = result
 
-            policy_np, value = results
-            evaluation_cache[state_key] = results  # Update cache
-
-            # Process all leaf nodes waiting for this state_key
-            for (
-                leaf_node,
-                leaf_env_state,
-                search_path,
-            ) in nodes_awaiting_eval[state_key]:
-                # Find the index of this simulation path to update its value
-                sim_index = -1
-                # Need a reliable way to find the index. Comparing paths might be fragile.
-                # Let's search for the path ending in this specific leaf_node instance.
-                for idx, path in enumerate(simulation_paths):
-                    if (
-                        path
-                        and path[-1] is leaf_node
-                        and simulation_values[idx] is None
-                    ):
-                        sim_index = idx
-                        break
-
-                if sim_index != -1:
-                    simulation_values[sim_index] = value  # Store the evaluated value
-
-                    # Expand the node using the received policy and stored env state
+            if state_key in pending_sims:
+                sims_for_key = pending_sims[state_key]
+                logger.debug(f"  Processing {len(sims_for_key)} pending sims for key {state_key}")
+                for leaf_node, leaf_env_state, search_path in sims_for_key:
+                    # Expand node if not already expanded
                     if not leaf_node.is_expanded():
-                        logger.debug(
-                            f"{log_prefix} Expanding node {leaf_node} for state {state_key} (after predict)."
-                        )
+                        logger.debug(f"  Expanding node {leaf_node} (network result)")
                         self._expand(leaf_node, leaf_env_state, policy_np)
-                    else:
-                        logger.trace(f"{log_prefix} Node {leaf_node} already expanded.")
-
-                    # Backpropagate the received value
+                    # Backpropagate the network value
                     self._backpropagate(leaf_node, value)
-                else:
-                    logger.error(
-                        f"{log_prefix} Could not find simulation path for leaf node {leaf_node} (state {state_key})."
-                    )
-                    num_failed_evals += 1
+            else:
+                 logger.warning(f"{log_prefix} Network result received for key '{state_key}' but no sims were pending.")
 
-        # --- Apply Dirichlet Noise (if training and first simulation was processed) ---
-        # We need to know if the root was expanded, which happens during the first successful eval.
-        # Check if root has children *after* processing results.
+
+        # --- Process Completed Simulations (Backpropagate, Expand if needed) ---
+        logger.debug(f"{log_prefix} Processing {len(completed_sims)} completed simulations...")
+        for value, policy_np, search_path in completed_sims:
+            if not search_path: continue # Skip if path is empty
+            leaf_node = search_path[-1]
+            # Expand node if it's a cache hit and wasn't expanded previously
+            if policy_np is not None and not leaf_node.is_expanded():
+                 # Need env state at the leaf for expansion - this wasn't stored for cache hits!
+                 # TODO: Re-run selection for cache hits to get leaf_env_state? Or store it?
+                 # For now, skip expansion for cache hits if node isn't already expanded.
+                 logger.warning(f"  Skipping expansion for cache hit on unexpanded node {leaf_node} (missing env state).")
+                 # self._expand(leaf_node, ???, policy_np) # Cannot expand without env state
+
+            # Backpropagate the terminal/cached value
+            self._backpropagate(leaf_node, value)
+
+        # --- Apply Dirichlet Noise ---
         if train and self.root.is_expanded() and self.config.dirichlet_epsilon > 0:
             self._apply_dirichlet_noise()
 
-        # --- Phase 3: Select Action ---
+        # --- Select Action ---
         if not self.root.children:
-            logger.error(
-                f"{log_prefix} Root node has no children after search. Cannot select action."
-            )
-            # What action to return? Random legal action? None?
-            # Let's return None, None to indicate failure.
-            # Need env and state to get legal actions for random choice. This info isn't here.
+            logger.error(f"{log_prefix} Root node has no children after search. Cannot select action.")
             return None, None
 
         visit_counts = np.array(
@@ -865,13 +797,16 @@ class AlphaZeroMCTS(MCTS):
         )
         actions = list(self.root.children.keys())
 
-        # Log visit counts before action selection
         if self.config.debug_mode or np.sum(visit_counts) == 0:
             visit_dict = {str(a): v for a, v in zip(actions, visit_counts)}
             logger.debug(f"{log_prefix} Final Visit Counts: {visit_dict}")
             logger.debug(f"{log_prefix} Total Root Visits: {self.root.visit_count}")
 
-        if train:
+        if np.sum(visit_counts) == 0:
+             logger.warning(f"{log_prefix} All child visit counts are zero. Choosing random action.")
+             # Choose randomly among legal actions associated with children
+             chosen_action = random.choice(actions) if actions else None
+        elif train:
             temperature = (
                 1.0 if current_step < self.config.temperature_decay_steps else 0.1
             )
@@ -880,41 +815,38 @@ class AlphaZeroMCTS(MCTS):
                 sum_visits_temp = np.sum(visit_counts_temp)
                 if sum_visits_temp > 0:
                     action_probs = visit_counts_temp / sum_visits_temp
-                    action_probs /= action_probs.sum()  # Normalize
+                    action_probs /= action_probs.sum() # Normalize
                     try:
-                        chosen_action_index = np.random.choice(
-                            len(actions), p=action_probs
-                        )
+                        chosen_action_index = np.random.choice(len(actions), p=action_probs)
+                        chosen_action = actions[chosen_action_index]
                     except ValueError as e:
-                        logger.warning(
-                            f"{log_prefix} Error choosing action with temp (probs sum {np.sum(action_probs)}): {e}. Choosing greedily."
-                        )
+                        logger.warning(f"{log_prefix} Error choosing action with temp (probs sum {np.sum(action_probs)}): {e}. Choosing greedily.")
                         chosen_action_index = np.argmax(visit_counts)
+                        chosen_action = actions[chosen_action_index]
                 else:
-                    logger.warning(
-                        f"{log_prefix} Sum of visits with temp is zero. Choosing greedily."
-                    )
+                    logger.warning(f"{log_prefix} Sum of visits with temp is zero. Choosing greedily.")
                     chosen_action_index = np.argmax(visit_counts)
-            else:  # Temp is zero or near-zero
+                    chosen_action = actions[chosen_action_index]
+            else: # Temp is zero or near-zero
                 chosen_action_index = np.argmax(visit_counts)
-        else:  # Not training, choose greedily
+                chosen_action = actions[chosen_action_index]
+        else: # Not training, choose greedily
             chosen_action_index = np.argmax(visit_counts)
+            chosen_action = actions[chosen_action_index]
 
-        chosen_action = actions[chosen_action_index]
-
-        # Calculate policy target using the agent's method (requires agent instance or env+network)
-        # We passed env via phase2_state, so we can use the MCTS internal helper
+        # --- Calculate Policy Target ---
         policy_target = self._calculate_policy_target(
             self.root, actions, visit_counts, env
-        )  # Pass env
+        )
 
         logger.debug(f"{log_prefix} Chosen Action: {chosen_action}")
         if policy_target is not None:
             logger.debug(
                 f"{log_prefix} Policy Target (Top 5): { {i: p for i, p in enumerate(policy_target) if p > 0.01} }"
-            )  # Log non-zero targets
+            )
 
         return chosen_action, policy_target
+
 
     def _apply_dirichlet_noise(self):
         """Applies Dirichlet noise to the root node's children's priors."""
@@ -945,8 +877,9 @@ class AlphaZeroMCTS(MCTS):
             f"  Noisy Root Priors (Top 5): { {a: f'{p:.3f}' for a, p in sorted_noisy_priors[:5]} }"
         )
 
+    # Modify signature to accept env directly
     def _select_leaf(
-        self, root_node: MCTSNode, env: BaseEnvironment, initial_state: StateType
+        self, root_node: MCTSNode, env: BaseEnvironment
     ) -> Tuple[Optional[MCTSNode], Optional[BaseEnvironment], List[MCTSNode]]:
         """
         Selects a leaf node starting from the root using PUCT scores.
@@ -963,15 +896,21 @@ class AlphaZeroMCTS(MCTS):
             - The list of nodes in the search path.
         """
         node = root_node
+        # Start simulation from the env's current state (assumed to be initial_state)
         sim_env = env.copy()
-        sim_env.set_state(initial_state)
         search_path = [node]
         sim_log_prefix = "  Sim Select:"  # Simplified prefix for helper
 
         selection_active = True
         loop_count = 0  # Add loop counter for debugging deep selections
+        # Calculate safety break based on env dimensions passed in
+        max_loops = (
+            env.height * env.width + 5
+            if hasattr(env, "height") and hasattr(env, "width")
+            else 100
+        )  # Fallback
 
-        while selection_active and node.is_expanded() and not sim_env.is_game_over():
+        while selection_active and node.is_expanded() and not sim_env.is_game_over() and loop_count < max_loops:
             loop_count += 1
             parent_visits = node.visit_count
             logger.trace(

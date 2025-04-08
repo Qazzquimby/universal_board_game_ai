@@ -146,41 +146,35 @@ class AlphaZeroAgent(Agent):
         # Ensure network is in evaluation mode for inference
         self.network.eval()
 
-        # --- Perform Synchronous MCTS Search ---
-        # This requires adapting the MCTS class or using a simpler MCTS implementation
-        # for the non-training 'act' method. Let's assume MCTS has a method
-        # `run_synchronous_search` that handles internal predictions.
-
-        # Placeholder: Use the new two-phase approach but with immediate prediction
-        # This is inefficient for single calls but reuses the logic.
-        root_node, requests, phase2_state = self.mcts.get_action_and_policy(
-            self.env, state, train=False, current_step=state.get("step_count", 0)
+        # --- Perform Synchronous MCTS Search for Evaluation ---
+        # 1. Prepare simulations and get requests
+        requests, pending_sims, completed_sims = self.mcts.prepare_simulations(
+            self.env, state
         )
 
-        if not requests and not root_node.children:
-            logger.warning(
-                "MCTS search returned no requests and no children. Choosing random."
-            )
-            # Need env access here for random choice. Pass env to act?
-            # Or handle this case within MCTS? Let MCTS return None action.
-            return None  # Indicate failure
-
-        # Perform immediate predictions for any requests (inefficient, but reuses code)
+        # 2. Perform immediate predictions (not batched for single 'act' call)
         network_results = {}
         if requests:
-            states_to_predict = [obs for _, obs in requests]
-            state_keys = [key for key, _ in requests]
+            state_keys = list(requests.keys())
+            states_to_predict = [requests[key] for key in state_keys]
             try:
-                policy_list, value_list = self.network.predict_batch(states_to_predict)
+                policy_list, value_list = self.network.predict_batch(
+                    states_to_predict
+                )
                 for i, key in enumerate(state_keys):
                     network_results[key] = (policy_list[i], value_list[i])
             except Exception as e:
                 logger.error(f"Error during immediate prediction in act(): {e}")
                 return None  # Indicate failure
 
-        # Complete the search
-        chosen_action, _ = self.mcts.complete_search_and_get_action(
-            root_node, network_results, phase2_state
+        # 3. Process results and select action
+        chosen_action, _ = self.mcts.process_results_and_select_action(
+            network_results=network_results,
+            pending_sims=pending_sims,
+            completed_sims=completed_sims,
+            train=False,  # Not training during evaluation act()
+            current_step=state.get("step_count", 0),
+            env=self.env, # Pass env for policy target calculation
         )
 
         if chosen_action is None:
@@ -190,11 +184,13 @@ class AlphaZeroAgent(Agent):
 
         # --- Optional Debug Print: MCTS Results ---
         if self.config.debug_mode:
-            if root_node and root_node.children:
+            # Access root node via self.mcts after search completion
+            final_root_node = self.mcts.root
+            if final_root_node and final_root_node.children:
                 visit_counts = np.array(
-                    [child.visit_count for child in root_node.children.values()]
+                    [child.visit_count for child in final_root_node.children.values()]
                 )
-                actions = list(root_node.children.keys())
+                actions = list(final_root_node.children.keys())
                 logger.debug(f"[DEBUG Act Eval] MCTS Visit Counts:")
                 sorted_visits = sorted(
                     zip(actions, visit_counts), key=lambda item: item[1], reverse=True

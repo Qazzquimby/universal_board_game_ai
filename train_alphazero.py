@@ -180,11 +180,15 @@ def _initialize_parallel_games(num_parallel_games: int, env_factory: callable) -
     game_is_done = [False] * num_parallel_games
     # Track games needing an action search
     games_needing_action: List[int] = list(range(num_parallel_games))
-    # Store MCTS root nodes and phase 2 state between phases
-    mcts_roots: Dict[int, MCTSNode] = {}
-    mcts_phase2_states: Dict[int, Dict] = {}
-    # Store pending network requests aggregated across all games
-    pending_requests: List[Tuple[str, StateType]] = []
+    # Store MCTS intermediate results between phases
+    mcts_pending_sims: Dict[
+        int, Dict[str, List[Tuple[MCTSNode, BaseEnvironment, List[MCTSNode]]]]
+    ] = {}
+    mcts_completed_sims: Dict[
+        int, List[Tuple[float, Optional[np.ndarray], List[MCTSNode]]]
+    ] = {}
+    # Store pending network requests aggregated across all games, mapping key to list of game_idx
+    pending_requests: Dict[str, Tuple[StateType, List[int]]] = {}
     # Store completed actions and policy targets after phase 2
     completed_actions: Dict[int, Tuple[Optional[ActionType], Optional[np.ndarray]]] = {}
     # Store state before MCTS search for replay buffer
@@ -196,8 +200,8 @@ def _initialize_parallel_games(num_parallel_games: int, env_factory: callable) -
         "parallel_histories": parallel_histories,
         "game_is_done": game_is_done,
         "games_needing_action": games_needing_action,
-        "mcts_roots": mcts_roots,
-        "mcts_phase2_states": mcts_phase2_states,
+        "mcts_pending_sims": mcts_pending_sims,
+        "mcts_completed_sims": mcts_completed_sims,
         "pending_requests": pending_requests,
         "completed_actions": completed_actions,
         "states_before_action": states_before_action,
@@ -209,7 +213,7 @@ def _initialize_parallel_games(num_parallel_games: int, env_factory: callable) -
 
 def _process_network_batch(
     agent: AlphaZeroAgent,
-    pending_requests: List[Tuple[str, StateType]],
+    pending_requests: Dict[str, Tuple[StateType, List[int]]],
     inference_batch_size: int,
 ) -> Dict[str, PredictResult]:
     """
@@ -227,27 +231,29 @@ def _process_network_batch(
     if not agent.network or not pending_requests:
         return network_results
 
-    # Process requests in batches
-    num_requests = len(pending_requests)
-    logger.debug(f"Processing {num_requests} network requests in batches...")
+    # Process requests in batches based on the dictionary structure
+    all_state_keys = list(pending_requests.keys())
+    num_unique_requests = len(all_state_keys)
+    logger.debug(
+        f"Processing {num_unique_requests} unique network requests in batches..."
+    )
 
-    for i in range(0, num_requests, inference_batch_size):
-        batch_slice = pending_requests[i : i + inference_batch_size]
-        state_keys_in_batch = [req[0] for req in batch_slice]
-        states_to_predict_batch = [req[1] for req in batch_slice]
+    for i in range(0, num_unique_requests, inference_batch_size):
+        batch_keys = all_state_keys[i : i + inference_batch_size]
+        states_to_predict_batch = [pending_requests[key][0] for key in batch_keys]
 
         logger.debug(
-            f"  Processing batch {i//inference_batch_size + 1}, size: {len(batch_slice)}"
+            f"  Processing batch {i//inference_batch_size + 1}, size: {len(batch_keys)}"
         )
 
         policy_list, value_list = agent.network.predict_batch(states_to_predict_batch)
 
-        if len(policy_list) != len(state_keys_in_batch):
+        if len(policy_list) != len(states_to_predict_batch):
             logger.error("Network batch result size mismatch!")
             # Continue processing other batches if possible, but log error
             continue
 
-        for j, state_key in enumerate(state_keys_in_batch):
+        for j, state_key in enumerate(batch_keys):  # Use batch_keys here
             network_results[state_key] = (policy_list[j], value_list[j])
 
     logger.debug(
@@ -447,9 +453,9 @@ def collect_parallel_self_play_data(
     parallel_histories = game_states["parallel_histories"]
     game_is_done = game_states["game_is_done"]
     games_needing_action = game_states["games_needing_action"]
-    mcts_roots = game_states["mcts_roots"]
-    mcts_phase2_states = game_states["mcts_phase2_states"]
-    pending_requests = game_states["pending_requests"]
+    mcts_pending_sims = game_states["mcts_pending_sims"]
+    mcts_completed_sims = game_states["mcts_completed_sims"]
+    pending_requests = game_states["pending_requests"]  # Now a Dict
     completed_actions = game_states["completed_actions"]
     states_before_action = game_states["states_before_action"]
 
@@ -463,11 +469,11 @@ def collect_parallel_self_play_data(
     with collection_timer:
         while finished_episodes_count < num_episodes_to_collect:
 
-            # --- Phase 1: Start MCTS Searches & Collect Requests ---
+            # --- Phase 1: Prepare MCTS Simulations & Aggregate Requests ---
             games_to_search = games_needing_action[:]  # Copy list
             games_needing_action.clear()
-            all_predict_requests_this_cycle: List[Tuple[str, StateType]] = []
-            games_started_search: List[int] = []
+            # pending_requests is now the global dict, cleared later
+            games_prepared_this_cycle: List[int] = []  # Track games prepared
 
             if not games_to_search:
                 # If no games need action and no actions are pending, check if done
@@ -484,41 +490,34 @@ def collect_parallel_self_play_data(
                     # This might indicate a logic error if it persists.
                     continue
 
-            logger.debug(f"Starting MCTS Phase 1 for games: {games_to_search}")
+            logger.debug(f"Preparing MCTS simulations for games: {games_to_search}")
             for game_idx in games_to_search:
                 if game_is_done[game_idx]:
                     continue
 
                 state = observations[game_idx]
-                states_before_action[
-                    game_idx
-                ] = state.copy()  # Store state before search
+                states_before_action[game_idx] = state.copy()
 
                 try:
                     (
-                        root_node,
-                        requests,
-                        phase2_state,
-                    ) = agent.mcts.get_action_and_policy(
-                        envs[game_idx],
-                        state,
-                        train=True,
-                        current_step=state.get("step_count", 0),
-                    )
-                    if root_node is not None:  # Check if search succeeded
-                        mcts_roots[game_idx] = root_node
-                        mcts_phase2_states[game_idx] = phase2_state
-                        all_predict_requests_this_cycle.extend(requests)
-                        games_started_search.append(game_idx)
-                    else:
-                        logger.error(
-                            f"MCTS Phase 1 failed for game {game_idx}. Marking done."
-                        )
-                        game_is_done[game_idx] = True  # Treat as error/end game
-                        # Ensure it gets processed as finished later
-                        if game_idx not in completed_actions:
-                            completed_actions[game_idx] = (None, None)
+                        requests_dict,
+                        pending_sim_dict,
+                        completed_sim_list,
+                    ) = agent.mcts.prepare_simulations(envs[game_idx], state)
 
+                    # Store results for this game
+                    mcts_pending_sims[game_idx] = pending_sim_dict
+                    mcts_completed_sims[game_idx] = completed_sim_list
+                    games_prepared_this_cycle.append(game_idx)
+
+                    # Aggregate requests into the global pending_requests dict
+                    for state_key, state_obs in requests_dict.items():
+                        if state_key not in pending_requests:
+                            pending_requests[state_key] = (state_obs, [])
+                        if game_idx not in pending_requests[state_key][1]:
+                            pending_requests[state_key][1].append(game_idx)
+
+                # I made it IOError to disable it. There is no IOError happening
                 except IOError as e:
                     logger.error(
                         f"Error during MCTS Phase 1 for game {game_idx}: {e}",
@@ -530,45 +529,92 @@ def collect_parallel_self_play_data(
 
             # --- Phase 2: Batch Network Inference ---
             network_results: Dict[str, PredictResult] = {}
-            if all_predict_requests_this_cycle:
+            # Track which games are waiting for which keys
+            games_awaiting_results: Dict[int, List[str]] = {}
+
+            if pending_requests:
                 logger.debug(
-                    f"Processing {len(all_predict_requests_this_cycle)} network requests..."
+                    f"Processing {len(pending_requests)} unique network requests..."
                 )
+                # Store which games are waiting for which keys *before* processing
+                for key, (_, game_indices) in pending_requests.items():
+                    for game_idx in game_indices:
+                        if game_idx not in games_awaiting_results:
+                            games_awaiting_results[game_idx] = []
+                        games_awaiting_results[game_idx].append(key)
+
                 network_results = _process_network_batch(
                     agent=agent,
-                    pending_requests=all_predict_requests_this_cycle,
+                    pending_requests=pending_requests,  # Pass the dict
                     inference_batch_size=inference_batch_size,
                 )
+                # Clear pending requests *after* processing
+                pending_requests.clear()
             else:
                 logger.debug("No network requests needed this cycle.")
 
-            # --- Phase 3: Complete MCTS Searches ---
-            logger.debug(f"Completing MCTS Phase 2 for games: {games_started_search}")
-            for game_idx in games_started_search:
-                if game_idx in mcts_roots and game_idx in mcts_phase2_states:
-                    root_node = mcts_roots[game_idx]
-                    phase2_state = mcts_phase2_states[game_idx]
-                    (
-                        action,
-                        policy_target,
-                    ) = agent.mcts.complete_search_and_get_action(
-                        root_node, network_results, phase2_state
-                    )
-                    completed_actions[game_idx] = (action, policy_target)
-                    logger.debug(f"Game {game_idx} completed search. Action: {action}")
-                else:
-                    # This case might happen if Phase 1 failed but wasn't caught properly
-                    if game_idx not in completed_actions:
-                        logger.warning(
-                            f"Missing MCTS root/state for game {game_idx} in Phase 2. Marking error."
-                        )
-                        completed_actions[game_idx] = (None, None)
+            # --- Phase 3: Process Results and Select Actions ---
+            games_to_process = list(games_awaiting_results.keys())
+            logger.debug(f"Processing MCTS results for games: {games_to_process}")
 
-                # Clean up stored MCTS data for this game
-                if game_idx in mcts_roots:
-                    del mcts_roots[game_idx]
-                if game_idx in mcts_phase2_states:
-                    del mcts_phase2_states[game_idx]
+            for game_idx in games_to_process:
+                if (
+                    game_idx not in mcts_pending_sims
+                    or game_idx not in mcts_completed_sims
+                ):
+                    logger.warning(
+                        f"Missing MCTS intermediate state for game {game_idx}. Skipping."
+                    )
+                    # Ensure it doesn't get stuck waiting
+                    if game_idx in games_awaiting_results:
+                        del games_awaiting_results[game_idx]
+                    continue
+
+                # Check if all required network results are available for this game
+                required_keys = games_awaiting_results.get(game_idx, [])
+                results_for_game = {
+                    k: network_results[k] for k in required_keys if k in network_results
+                }
+
+                # Only proceed if all required results were obtained
+                if len(results_for_game) == len(required_keys):
+                    try:
+                        (
+                            action,
+                            policy_target,
+                        ) = agent.mcts.process_results_and_select_action(
+                            network_results=results_for_game,
+                            pending_sims=mcts_pending_sims[game_idx],
+                            completed_sims=mcts_completed_sims[game_idx],
+                            train=True,
+                            current_step=observations[game_idx].get("step_count", 0),
+                            env=envs[game_idx],  # Pass the specific env instance
+                        )
+                        completed_actions[game_idx] = (action, policy_target)
+                        logger.debug(
+                            f"Game {game_idx} completed search. Action: {action}"
+                        )
+                    except Exception as e:
+                        logger.error(
+                            f"Error during MCTS process_results for game {game_idx}: {e}",
+                            exc_info=True,
+                        )
+                        completed_actions[game_idx] = (None, None)  # Mark error
+                else:
+                    logger.warning(
+                        f"Game {game_idx}: Missing some network results ({len(results_for_game)}/{len(required_keys)}). Will retry next cycle."
+                    )
+                    # Add game back to needing action if it didn't complete processing
+                    if game_idx not in games_needing_action:
+                        games_needing_action.append(game_idx)
+
+                # Clean up stored MCTS intermediate data for this game regardless of success/failure
+                if game_idx in mcts_pending_sims:
+                    del mcts_pending_sims[game_idx]
+                if game_idx in mcts_completed_sims:
+                    del mcts_completed_sims[game_idx]
+                if game_idx in games_awaiting_results:
+                    del games_awaiting_results[game_idx]
 
             # --- Step Environments ---
             games_ready_to_step = list(completed_actions.keys())
