@@ -340,19 +340,28 @@ def _process_network_batch(
             if waiting_game_idx in mcts_generators:
                 generator_to_resume = mcts_generators[waiting_game_idx]
                 try:
-                    # --- Assert result_tuple is not None ---
-                    assert result_tuple is not None, f"Attempting to send None result for state {state_key}"
-                    assert isinstance(result_tuple, tuple) and len(result_tuple) == 2, f"Attempting to send invalid result type {type(result_tuple)} for state {state_key}"
-                    # --- End Assertion ---
+                    assert (
+                        result_tuple is not None
+                    ), f"Attempting to send None result for state {state_key}"
+                    assert (
+                        isinstance(result_tuple, tuple) and len(result_tuple) == 2
+                    ), f"Attempting to send invalid result type {type(result_tuple)} for state {state_key}"
+                    assert isinstance(
+                        generator_to_resume, Generator
+                    ), f"Attempting to send to non-generator object for game {waiting_game_idx}"
 
                     # Send the result directly to the main search_generator
                     generator_to_resume.send(result_tuple)
-                    logger.debug(f"Sent result to generator {waiting_game_idx}. Advancing to process response...")
+                    logger.debug(
+                        f"Sent result to generator {waiting_game_idx}. Advancing to process response..."
+                    )
 
-                    # --- Immediately advance generator after sending result to process its response ---
+                    # --- Immediately advance generator after sending result ---
                     try:
-                        # Use send(None) which is equivalent to next() for resuming
-                        yielded_value_after_send: GeneratorYield = generator_to_resume.send(None)
+                        # todo this line is sending None to the generator when it expects to be given a prediction request.
+                        yielded_value_after_send: GeneratorYield = (
+                            generator_to_resume.send(None)
+                        )
                         yield_type_after_send = yielded_value_after_send[0]
 
                         if yield_type_after_send == "predict_request":
@@ -362,50 +371,56 @@ def _process_network_batch(
                                 game_idx=waiting_game_idx,
                                 state_key=new_state_key,
                                 state_obs=new_state_obs,
-                                pending_reqs=remaining_requests, # Add to remaining
+                                pending_reqs=remaining_requests,  # Add to remaining
                                 waiting_gens=waiting_generators,
                                 gen_states=generator_states,
-                            ) # State becomes 'waiting_predict'
+                            )  # State becomes 'waiting_predict' via helper
                         elif yield_type_after_send == "resumed":
                             # Generator resumed, ready for next main loop poll
-                            logger.debug(f"Generator {waiting_game_idx} resumed after processing result.")
-                            generator_states[waiting_game_idx] = "running"
+                            logger.debug(
+                                f"Generator {waiting_game_idx} resumed after processing result."
+                            )
+                            generator_states[
+                                waiting_game_idx
+                            ] = "running"  # Mark as running
                         elif yield_type_after_send == "search_complete":
-                             # This case should be handled by the main loop's _advance_and_process
-                             # If it happens here, it means the generator finished right after processing the result.
-                             logger.warning(f"Generator {waiting_game_idx} yielded 'search_complete' unexpectedly within _process_network_batch.")
-                             # Mark as finished - main loop will clean up
-                             if waiting_game_idx in mcts_generators: del mcts_generators[waiting_game_idx]
-                             if waiting_game_idx in generator_states: del generator_states[waiting_game_idx]
+                            logger.warning(
+                                f"Generator {waiting_game_idx} yielded 'search_complete' unexpectedly within _process_network_batch."
+                            )
+                            # Mark as finished - main loop's _advance_and_process will clean up
+                            if waiting_game_idx in mcts_generators:
+                                del mcts_generators[waiting_game_idx]
+                            if waiting_game_idx in generator_states:
+                                del generator_states[waiting_game_idx]
                         else:
-                            logger.error(f"Generator {waiting_game_idx} yielded unexpected type '{yield_type_after_send}' after send.")
-                            generator_states[waiting_game_idx] = "running" # Fallback?
+                            logger.error(
+                                f"Generator {waiting_game_idx} yielded unexpected type '{yield_type_after_send}' after send."
+                            )
+                            generator_states[waiting_game_idx] = "running"  # Fallback?
 
                     except StopIteration:
-                         # Generator finished after processing the sent result.
-                         logger.debug(f"Generator {waiting_game_idx} finished (StopIteration) after processing result.")
-                         # Clean up state and generator tracking
-                         if waiting_game_idx in mcts_generators: del mcts_generators[waiting_game_idx]
-                         if waiting_game_idx in generator_states: del generator_states[waiting_game_idx]
-                         # Completed search will be handled by the main loop when it notices the generator is gone.
+                        # Generator finished after processing the sent result.
+                        logger.debug(
+                            f"Generator {waiting_game_idx} finished (StopIteration) after processing result."
+                        )
+                        # Clean up state and generator tracking
+                        if waiting_game_idx in mcts_generators:
+                            del mcts_generators[waiting_game_idx]
+                        if waiting_game_idx in generator_states:
+                            del generator_states[waiting_game_idx]
 
-                except StopIteration: # This catches StopIteration from the initial send(result_tuple)
+                except StopIteration:  # This catches StopIteration from the initial send(result_tuple)
                     # Generator finished immediately upon receiving the result.
-                    # This might happen if the result triggers the final step.
                     logger.debug(
-                        f"Generator {waiting_game_idx} finished immediately after receiving result (StopIteration)."
+                        f"Generator {waiting_game_idx} finished immediately after receiving result (StopIteration on initial send)."
                     )
                     # Clean up state and generator tracking
                     if waiting_game_idx in mcts_generators:
                         del mcts_generators[waiting_game_idx]
                     if waiting_game_idx in generator_states:
                         del generator_states[waiting_game_idx]
-                    # The main loop (_advance_and_process_generators) won't see this generator again,
-                    # so we need to handle potential completed_search population here if necessary.
-                    # However, the 'search_complete' yield should handle this. If StopIteration
-                    # happens here, it likely indicates an issue. Let's just clean up for now.
 
-                except Exception as e:  # Catch errors during send
+                except Exception as e:  # Catch errors during send or immediate advance
                     logger.error(
                         f"Error sending result/advancing generator for game {waiting_game_idx}: {e}",
                         exc_info=True,
@@ -626,7 +641,9 @@ def _advance_and_process_generators(
             elif yield_type == "search_complete":
                 _, root_node = yielded_value
                 # Add logging for received root node state
-                logger.debug(f"MCTS search complete for game {game_idx}. Received Root ID: {id(root_node)}, Has Children: {bool(root_node.children)}")
+                logger.debug(
+                    f"MCTS search complete for game {game_idx}. Received Root ID: {id(root_node)}, Has Children: {bool(root_node.children)}"
+                )
                 generators_finished_this_cycle.append(game_idx)
                 # Process completed search result
                 if not root_node.children:
@@ -806,7 +823,7 @@ def collect_parallel_self_play_data(
             # --- Process Network Batch if Ready ---
             # Check if all active generators are waiting for prediction
             all_waiting = False
-            if mcts_generators: # Only check if there are active generators
+            if mcts_generators:  # Only check if there are active generators
                 all_waiting = all(
                     generator_states.get(idx) == "waiting_predict"
                     for idx in mcts_generators
@@ -815,7 +832,7 @@ def collect_parallel_self_play_data(
             # Process batch if enough pending requests OR if requests exist and all active generators are waiting
             if agent.network and (
                 len(pending_requests) >= inference_batch_size
-                or (pending_requests and all_waiting) # Modified condition
+                or (pending_requests and all_waiting)  # Modified condition
             ):
                 pending_requests = _process_network_batch(
                     agent=agent,
