@@ -50,10 +50,9 @@ def get_agents(env: BaseEnvironment, config: AppConfig) -> Dict[str, Agent]:
     # Training should happen separately via train_alphazero.py
     # Pass the profiler instance to the agent's constructor
     az_agent = AlphaZeroAgent(
-        env,
-        config.alpha_zero,
-        config.training,
-        profiler=profiler,  # Pass the created profiler here (can be None)
+        env=env,
+        config=config.alpha_zero,
+        training_config=config.training,
     )
     if not az_agent.load():
         logger.warning(

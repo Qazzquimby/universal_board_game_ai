@@ -17,7 +17,7 @@ from loguru import logger
 import numpy as np
 import torch.nn as nn
 
-from core.config import MuZeroConfig
+from core.config import MuZeroConfig, AlphaZeroConfig
 from environments.base import ActionType, StateType, BaseEnvironment
 from models.networks import AlphaZeroNet, MuZeroNet
 
@@ -146,23 +146,6 @@ def get_state_key(s: StateType) -> str:
             f"State not easily hashable: {s}. Error: {e}. Using simple str()."
         )
         return str(s)
-
-
-# --- Type Aliases for Generator Yield Values ---
-# Yielded when the generator needs a network prediction
-PredictRequestYield = Tuple[Literal["predict_request"], str, StateType]
-# Yielded when the generator has resumed after an internal step (cache hit, rollout)
-ResumedYield = Tuple[Literal["resumed"]]
-# Yielded when the MCTS search is complete
-SearchCompleteYield = Tuple[
-    Literal["search_complete"], "MCTSNode"
-]  # Forward reference MCTSNode
-
-# Union of all possible yield types from search_generator
-GeneratorYield = Union[PredictRequestYield, ResumedYield, SearchCompleteYield]
-
-# Yield types specifically for sub-generators like _run_one_simulation
-SubGeneratorYield = Union[PredictRequestYield, ResumedYield]
 
 
 class Timer:
@@ -485,24 +468,16 @@ class AlphaZeroMCTS(MCTS):
 
     def __init__(
         self,
-        env: BaseEnvironment,  # <<< Add env parameter
-        exploration_constant: float = 1.0,  # c_puct in AlphaZero
-        num_simulations: int = 100,
-        network: Optional[AlphaZeroNet] = None,  # Type hint Optional
-        discount_factor: float = 1.0,
-        profiler: Optional[MCTSProfiler] = None,
-        dirichlet_alpha: float = 0.3,  # Add noise params
-        dirichlet_epsilon: float = 0.25,
+        env: BaseEnvironment,
+        config: AlphaZeroConfig,
+        network: Optional[AlphaZeroNet] = None,
     ):
         super().__init__(
-            exploration_constant=exploration_constant,
-            discount_factor=discount_factor,
-            num_simulations=num_simulations,
+            exploration_constant=config.cpuct,
+            num_simulations=config.num_simulations,
         )
+        self.config = config
         self.network = network if network is not None else DummyAlphaZeroNet(env)
-        self.profiler = profiler
-        self.dirichlet_alpha = dirichlet_alpha
-        self.dirichlet_epsilon = dirichlet_epsilon
 
     def _expand(
         self,
@@ -635,336 +610,340 @@ class AlphaZeroMCTS(MCTS):
             )
         return q_value_for_parent + u_score
 
-    def _run_one_simulation(
+    def _evaluate_terminal_leaf(
+        self, leaf_node: MCTSNode, leaf_env_state: BaseEnvironment
+    ) -> float:
+        """Calculates the value of a terminal leaf node."""
+        player_at_leaf = leaf_env_state.get_current_player()
+        winner = leaf_env_state.get_winning_player()
+        if winner is None:
+            value = 0.0
+        elif winner == player_at_leaf:
+            value = 1.0
+        else:
+            value = -1.0
+        logger.debug(
+            f"  Sim Eval: Terminal state found. Winner={winner}, PlayerAtNode={player_at_leaf}, Value={value}"
+        )
+        return value
+
+    def get_action_and_policy(
         self,
         env: BaseEnvironment,
-        initial_state_obs: StateType,
-        evaluation_cache: Dict[str, PredictResult],
-        sim_log_prefix: str,
-    ) -> Generator[SubGeneratorYield, Optional[PredictResult], bool]:
+        state: StateType,
+        train: bool,  # Needed for temperature and noise
+        current_step: int,  # Needed for temperature decay
+    ) -> Tuple[Optional[ActionType], Optional[np.ndarray], List[Tuple[str, StateType]]]:
         """
-        Runs a single MCTS simulation path: Selection, Evaluation/Expansion, Backpropagation.
-        Handles yielding for network predictions.
+        Performs the two-phase MCTS search:
+        1. Runs simulations, collecting network prediction requests.
+        2. (Implicitly expects caller to batch predict)
+        3. Uses provided predictions to complete the search and select an action.
 
         Args:
-            env: Base environment instance (used for copying).
-            initial_state_obs: The root state observation for this search.
-            evaluation_cache: Cache for network results for the current search.
-            sim_log_prefix: Logging prefix for this simulation.
-
-        Yields:
-            PredictRequestYield if a network prediction is needed.
-            ResumedYield if evaluation completes internally.
-
-        Receives:
-            PredictResult via send() if a prediction was requested.
+            env: The *real* environment instance.
+            state: The current state dictionary from the real environment.
+            train: Boolean indicating if this is a training step (for noise/temp).
+            current_step: The current step number in the episode (for temp decay).
 
         Returns:
-            True if the simulation completed successfully (including backprop), False otherwise.
+            A tuple containing:
+            - chosen_action: The selected action (or None if search fails).
+            - policy_target: The calculated policy target (or None if search fails).
+            - predict_requests: List of (state_key, state_obs) tuples needing prediction.
         """
-        try:
+        self.reset_root()
+        initial_state_obs = state
+        log_prefix = f"AZ MCTS Sync (Net={type(self.network).__name__}, Sims={self.num_simulations})"
+        logger.debug(f"--- {log_prefix} Start: State={initial_state_obs} ---")
+
+        # --- Phase 1: Run Simulations and Collect Network Requests ---
+        pending_predict_requests: Dict[str, StateType] = {}
+        # Cache for results *within this search* (cleared each call)
+        evaluation_cache: Dict[str, PredictResult] = {}
+        # Store the path taken for each simulation for backpropagation later
+        simulation_paths: List[List[MCTSNode]] = []
+        # Store the final value obtained for each simulation path
+        simulation_values: List[Optional[float]] = []
+        # Store leaf nodes, their env state, and path for evaluation after batch prediction
+        nodes_awaiting_eval: Dict[
+            str, List[Tuple[MCTSNode, BaseEnvironment, List[MCTSNode]]]
+        ] = {}
+
+        if self.num_simulations <= 0:
+            logger.warning(f"{log_prefix} num_simulations <= 0. Skipping search.")
+            return None, None, []
+
+        for sim_num in range(self.num_simulations):
+            sim_log_prefix = f"  Sim {sim_num+1}/{self.num_simulations}:"
+            logger.debug(f"{sim_log_prefix} Starting Selection...")
+
             # 1. Selection
             leaf_node, leaf_env_state, search_path = self._select_leaf(
                 self.root, env, initial_state_obs
             )
 
             if leaf_node is None or leaf_env_state is None:
-                logger.error(f"{sim_log_prefix} Selection failed.")
-                return False  # Indicate simulation failure
+                logger.error(f"{sim_log_prefix} Selection failed. Skipping simulation.")
+                simulation_paths.append(search_path)  # Store path even if failed
+                simulation_values.append(None)  # Mark as failed
+                continue
 
-            # 2. Evaluate & Expand Leaf
-            eval_generator = self._evaluate_and_expand_leaf(
-                leaf_node, leaf_env_state, evaluation_cache
-            )
+            # 2. Check if Leaf is Terminal
+            if leaf_env_state.is_game_over():
+                value = self._evaluate_terminal_leaf(leaf_node, leaf_env_state)
+                simulation_paths.append(search_path)
+                simulation_values.append(value)
+                # Backpropagate immediately for terminal nodes
+                self._backpropagate(leaf_node, value)
+                continue  # Move to next simulation
 
-            # Handle eval generator (yield/send/stopiteration)
-            try:
-                eval_result = next(eval_generator)
-                if (
-                    isinstance(eval_result, tuple)
-                    and eval_result[0] == "predict_request"
-                ):
-                    predict_request_yield: PredictRequestYield = eval_result
-                    logger.debug(
-                        f"{sim_log_prefix} Yielding predict request: {predict_request_yield[1]}"
-                    )
-                    received_result: Optional[
-                        PredictResult
-                    ] = yield predict_request_yield
-                    # --- Assert received_result is not None ---
-                    assert (
-                        received_result is not None
-                    ), f"{sim_log_prefix} _run_one_simulation received None from yield!"
-                    # --- End Assertion ---
-                    logger.debug(
-                        f"{sim_log_prefix} Sending received result back to eval generator."
-                    )
-                    try:
-                        final_value = eval_generator.send(received_result)
-                    except StopIteration as e:
-                        final_value = e.value
-                    except Exception as e_inner:
-                        logger.error(
-                            f"{sim_log_prefix} Error sending result to eval generator: {e_inner}",
-                            exc_info=True,
-                        )
-                        final_value = None
-                elif isinstance(eval_result, float):
-                    final_value = eval_result
-                    logger.debug(
-                        f"{sim_log_prefix} Evaluation completed directly (value={final_value:.3f}). Yielding resume."
-                    )
-                    resumed_yield: ResumedYield = ("resumed",)
-                    yield resumed_yield
-                else:
-                    logger.error(
-                        f"{sim_log_prefix} Unexpected result from eval generator: {eval_result}"
-                    )
-                    final_value = None
+            # 3. Leaf Needs Evaluation (Cache Check / Request Collection)
+            leaf_state_obs = leaf_env_state.get_observation()
+            state_key = get_state_key(leaf_state_obs)
 
-                # 3. Backpropagation
-                if final_value is not None:
-                    logger.debug(
-                        f"{sim_log_prefix} Backpropagating value {final_value:.3f}."
-                    )
-                    self._backpropagate(leaf_node, final_value)
-                    return True  # Success
-                else:
-                    logger.error(
-                        f"{sim_log_prefix} Skipping backpropagation due to evaluation error."
-                    )
-                    return False  # Indicate simulation failure
+            if state_key in evaluation_cache:
+                # Cache Hit: Use cached value for this simulation path
+                _, value = evaluation_cache[state_key]
+                logger.debug(
+                    f"{sim_log_prefix} Cache Hit for StateKey={state_key}, Value={value:.3f}"
+                )
+                simulation_paths.append(search_path)
+                simulation_values.append(value)
+                # Expand node if needed (using cached policy) - crucial!
+                if not leaf_node.is_expanded():
+                    policy_np, _ = evaluation_cache[state_key]
+                    self._expand(leaf_node, leaf_env_state, policy_np)
+                # Backpropagate immediately using cached value
+                self._backpropagate(leaf_node, value)
 
-            except StopIteration as e:
-                final_value = e.value
-                if final_value is not None:
-                    logger.debug(
-                        f"{sim_log_prefix} Evaluation finished (terminal/cached), backpropagating value {final_value:.3f}."
-                    )
-                    self._backpropagate(leaf_node, final_value)
-                    resumed_yield: ResumedYield = ("resumed",)
-                    yield resumed_yield  # Yield resume even if StopIteration occurred
-                    return True  # Success
-                else:
-                    logger.error(
-                        f"{sim_log_prefix} Eval generator stopped with None value."
-                    )
-                    return False  # Indicate simulation failure
+            else:
+                # Cache Miss: Record request and store path/node for later processing
+                logger.debug(
+                    f"{sim_log_prefix} Cache Miss. Recording Request for StateKey={state_key}"
+                )
+                if state_key not in pending_predict_requests:
+                    pending_predict_requests[state_key] = leaf_state_obs
 
-        except Exception as e:
-            logger.error(
-                f"{sim_log_prefix} Error during simulation: {e}", exc_info=True
-            )
-            return False  # Indicate simulation failure
+                # Store the leaf node, its env state, and its path, grouped by state_key
+                if state_key not in nodes_awaiting_eval:
+                    nodes_awaiting_eval[state_key] = []
+                # Store a copy of the leaf env state
+                nodes_awaiting_eval[state_key].append(
+                    (leaf_node, leaf_env_state.copy(), search_path)
+                )
+                # Mark this simulation path as incomplete for now
+                simulation_paths.append(search_path)
+                simulation_values.append(
+                    None
+                )  # Placeholder, will be filled after prediction
 
-    # Renamed from search to search_generator
-    def search_generator(
-        self, env: BaseEnvironment, state: StateType
-    ) -> Generator[GeneratorYield, Optional[PredictResult], None]:
+        # --- End Simulation Loop (Phase 1) ---
+        logger.debug(
+            f"{log_prefix} Phase 1 Complete. Unique prediction requests: {len(pending_predict_requests)}"
+        )
+
+        # Convert pending requests dict to list format expected by caller
+        predict_requests_list = list(pending_predict_requests.items())
+
+        # Return the root, requests, and state needed for Phase 2
+        # We bundle the state needed for phase 2 into a dictionary
+        phase2_state = {
+            "nodes_awaiting_eval": nodes_awaiting_eval,
+            "simulation_paths": simulation_paths,
+            "simulation_values": simulation_values,
+            "evaluation_cache": evaluation_cache,  # Pass cache for reuse if needed
+            "initial_state_obs": initial_state_obs,  # For potential re-use/logging
+            "train": train,  # Pass training flag
+            "current_step": current_step,  # Pass step count
+            # Add env for policy target calculation fallback if needed
+            "env": env,
+        }
+
+        return self.root, predict_requests_list, phase2_state
+
+    def complete_search_and_get_action(
+        self,
+        root_node: MCTSNode,
+        network_results: Dict[str, PredictResult],
+        phase2_state: Dict,
+    ) -> Tuple[Optional[ActionType], Optional[np.ndarray]]:
         """
-        Generator-based MCTS search. Yields network requests and expects results via send().
-
-        Yields:
-            ('predict_request', state_key, state_obs, node): When network evaluation is needed.
-            ('search_complete', root_node): When all simulations are done.
-
-        Receives (via send):
-            (policy_np, value): The result of a network prediction for a yielded request.
+        Completes the MCTS search using the provided network results and selects an action.
 
         Args:
-            env: The *real* environment instance (used for copying and initial state).
-            state: The current state dictionary from the real environment.
+            root_node: The MCTS root node from phase 1.
+            network_results: Dictionary mapping state_key to (policy_np, value).
+            phase2_state: Dictionary containing state saved from phase 1.
 
         Returns:
-            Nothing directly, yields results. The final root is yielded in 'search_complete'.
+            A tuple containing:
+            - chosen_action: The selected action (or None if search fails).
+            - policy_target: The calculated policy target (or None if search fails).
         """
-        self.reset_root()
-        initial_state_obs = state  # Keep the original state dict
+        self.root = root_node  # Restore root
+        nodes_awaiting_eval = phase2_state["nodes_awaiting_eval"]
+        simulation_paths = phase2_state["simulation_paths"]
+        simulation_values = phase2_state["simulation_values"]
+        evaluation_cache = phase2_state["evaluation_cache"]
+        train = phase2_state["train"]
+        current_step = phase2_state["current_step"]
+        env = phase2_state["env"]  # Retrieve env
+        log_prefix = f"AZ MCTS Sync Phase 2"
 
-        # --- State for Generator-Based Batching ---
-        # Cache for network results within this single search instance
-        evaluation_cache: Dict[str, PredictResult] = {}
+        logger.debug(f"--- {log_prefix} Start ---")
 
-        search_timer = Timer() if self.profiler else contextlib.nullcontext()
-        with search_timer:
-            log_prefix = f"AZ MCTS Search Gen (NetType={type(self.network).__name__}, Sims={self.num_simulations})"
-            logger.debug(f"--- {log_prefix} Start: State={initial_state_obs} ---")
-
-            # --- Handle Zero Simulations ---
-            if self.num_simulations <= 0:
+        # --- Phase 2: Process Network Results and Complete Simulations ---
+        num_failed_evals = 0
+        for state_key, results in network_results.items():
+            if state_key not in nodes_awaiting_eval:
                 logger.warning(
-                    f"{log_prefix} num_simulations is {self.num_simulations}. Skipping search."
+                    f"{log_prefix} Received network result for unexpected state key {state_key}"
                 )
-            # --- Simulation Loop ---
-            logger.debug(f"{log_prefix} Entering simulation loop...")
-            sim_success_count = 0
-            first_sim_success = False  # Track outcome of first simulation
+                continue
 
-            for sim_num in range(self.num_simulations):
-                sim_log_prefix = f"  Sim {sim_num+1}/{self.num_simulations}:"
-                logger.debug(f"{sim_log_prefix} Starting...")
+            policy_np, value = results
+            evaluation_cache[state_key] = results  # Update cache
 
-                # Create and run the simulation sub-generator directly
-                sim_runner = self._run_one_simulation(
-                    env, initial_state_obs, evaluation_cache, sim_log_prefix
-                )
-                # --- Cleaner Simulation Driving Logic ---
-                sim_outcome = False  # Default to failure
-                received_result_for_send = None  # Store result between yield and send
+            # Process all leaf nodes waiting for this state_key
+            for (
+                leaf_node,
+                leaf_env_state,
+                search_path,
+            ) in nodes_awaiting_eval[state_key]:
+                # Find the index of this simulation path to update its value
+                sim_index = -1
+                # Need a reliable way to find the index. Comparing paths might be fragile.
+                # Let's search for the path ending in this specific leaf_node instance.
+                for idx, path in enumerate(simulation_paths):
+                    if (
+                        path
+                        and path[-1] is leaf_node
+                        and simulation_values[idx] is None
+                    ):
+                        sim_index = idx
+                        break
 
-                while True:  # Loop to advance the simulation generator
-                    try:
-                        # Advance the generator, sending result if available
-                        if received_result_for_send is not None:
-                            # Sending result back after yielding 'predict_request'
-                            logger.trace(
-                                f"{sim_log_prefix} Sending result back to sim_runner."
-                            )
-                            yield_or_outcome = sim_runner.send(received_result_for_send)
-                            received_result_for_send = None  # Consume the result
-                        else:
-                            # Advancing normally (first call or after 'resumed')
-                            logger.trace(
-                                f"{sim_log_prefix} Advancing sim_runner with next()."
-                            )
-                            yield_or_outcome = next(sim_runner)
+                if sim_index != -1:
+                    simulation_values[sim_index] = value  # Store the evaluated value
 
-                        # Process the yield
-                        if isinstance(yield_or_outcome, tuple):
-                            yield_type = yield_or_outcome[0]
-                            if yield_type == "predict_request":
-                                # Yield request outwards, store result for next iteration's send()
-                                predict_request_yield: PredictRequestYield = (
-                                    yield_or_outcome
-                                )
-                                logger.trace(
-                                    f"{sim_log_prefix} Relaying 'predict_request'."
-                                )
-                                received_result_for_send = yield predict_request_yield
-                                assert (
-                                    received_result_for_send is not None
-                                ), f"{sim_log_prefix} search_generator received None after yield!"
-                                # Continue loop to send the result back
-                                continue
-                            elif yield_type == "resumed":
-                                # Simulation resumed internally, continue loop to advance again
-                                logger.trace(
-                                    f"{sim_log_prefix} Simulation resumed internally."
-                                )
-                                continue
-                            else:
-                                logger.error(
-                                    f"{sim_log_prefix} Unexpected tuple yield from _run_one_simulation: {yield_or_outcome}"
-                                )
-                                sim_outcome = False
-                                break  # Exit while loop on error
-                        else:
-                            logger.error(
-                                f"{sim_log_prefix} Unexpected non-tuple yield from _run_one_simulation: {yield_or_outcome}"
-                            )
-                            sim_outcome = False
-                            break  # Exit while loop on error
-
-                    except StopIteration as e:
-                        # Simulation finished successfully
-                        sim_outcome = e.value if isinstance(e.value, bool) else False
+                    # Expand the node using the received policy and stored env state
+                    if not leaf_node.is_expanded():
                         logger.debug(
-                            f"{sim_log_prefix} Simulation finished via StopIteration, outcome: {sim_outcome}"
+                            f"{log_prefix} Expanding node {leaf_node} for state {state_key} (after predict)."
                         )
-                        break  # Exit while loop
-                # --- End Simulation Driving Logic ---
+                        self._expand(leaf_node, leaf_env_state, policy_np)
+                    else:
+                        logger.trace(f"{log_prefix} Node {leaf_node} already expanded.")
 
-                # Record simulation outcome
-                if sim_outcome:
-                    sim_success_count += 1
+                    # Backpropagate the received value
+                    self._backpropagate(leaf_node, value)
+                else:
+                    logger.error(
+                        f"{log_prefix} Could not find simulation path for leaf node {leaf_node} (state {state_key})."
+                    )
+                    num_failed_evals += 1
+
+        # --- Apply Dirichlet Noise (if training and first simulation was processed) ---
+        # We need to know if the root was expanded, which happens during the first successful eval.
+        # Check if root has children *after* processing results.
+        if train and self.root.is_expanded() and self.config.dirichlet_epsilon > 0:
+            self._apply_dirichlet_noise()
+
+        # --- Phase 3: Select Action ---
+        if not self.root.children:
+            logger.error(
+                f"{log_prefix} Root node has no children after search. Cannot select action."
+            )
+            # What action to return? Random legal action? None?
+            # Let's return None, None to indicate failure.
+            # Need env and state to get legal actions for random choice. This info isn't here.
+            return None, None
+
+        visit_counts = np.array(
+            [child.visit_count for child in self.root.children.values()]
+        )
+        actions = list(self.root.children.keys())
+
+        # Log visit counts before action selection
+        if self.config.debug_mode or np.sum(visit_counts) == 0:
+            visit_dict = {str(a): v for a, v in zip(actions, visit_counts)}
+            logger.debug(f"{log_prefix} Final Visit Counts: {visit_dict}")
+            logger.debug(f"{log_prefix} Total Root Visits: {self.root.visit_count}")
+
+        if train:
+            temperature = (
+                1.0 if current_step < self.config.temperature_decay_steps else 0.1
+            )
+            if temperature > 1e-6:
+                visit_counts_temp = visit_counts ** (1.0 / temperature)
+                sum_visits_temp = np.sum(visit_counts_temp)
+                if sum_visits_temp > 0:
+                    action_probs = visit_counts_temp / sum_visits_temp
+                    action_probs /= action_probs.sum()  # Normalize
+                    try:
+                        chosen_action_index = np.random.choice(
+                            len(actions), p=action_probs
+                        )
+                    except ValueError as e:
+                        logger.warning(
+                            f"{log_prefix} Error choosing action with temp (probs sum {np.sum(action_probs)}): {e}. Choosing greedily."
+                        )
+                        chosen_action_index = np.argmax(visit_counts)
                 else:
                     logger.warning(
-                        f"{sim_log_prefix} Simulation failed or did not complete successfully."
+                        f"{log_prefix} Sum of visits with temp is zero. Choosing greedily."
                     )
+                    chosen_action_index = np.argmax(visit_counts)
+            else:  # Temp is zero or near-zero
+                chosen_action_index = np.argmax(visit_counts)
+        else:  # Not training, choose greedily
+            chosen_action_index = np.argmax(visit_counts)
 
-                # --- Apply Dirichlet Noise After First Simulation ---
-                if sim_num == 0:
-                    first_sim_success = sim_outcome  # Store outcome of first sim
-                    if first_sim_success:
-                        root_expanded = self.root.is_expanded()
-                        if root_expanded and self.dirichlet_epsilon > 0:
-                            num_children = len(self.root.children)
-                            if num_children > 0:
-                                noise = np.random.dirichlet(
-                                    [self.dirichlet_alpha] * num_children
-                                )
-                                noisy_priors = []
-                                child_items = list(
-                                    self.root.children.items()
-                                )  # Get fixed list
-                                for i, (action, child) in enumerate(child_items):
-                                    child.prior = (
-                                        (1 - self.dirichlet_epsilon) * child.prior
-                                        + self.dirichlet_epsilon * noise[i]
-                                    )
-                                    noisy_priors.append((action, child.prior))
-                                sorted_noisy_priors = sorted(
-                                    noisy_priors, key=lambda item: item[1], reverse=True
-                                )
-                                logger.debug(
-                                    f"{log_prefix} Applied Dirichlet noise (alpha={self.dirichlet_alpha}, eps={self.dirichlet_epsilon})"
-                                )
-                                logger.debug(
-                                    f"  Noisy Root Priors (Top 5): { {a: f'{p:.3f}' for a, p in sorted_noisy_priors[:5]} }"
-                                )
-                            else:
-                                # If expanded but no children, something is wrong with expansion logic
-                                logger.error(
-                                    f"{log_prefix} Root expanded after sim 1 but has NO children. Expansion failed."
-                                )
-                                # Raise an error or assert? Assert seems appropriate here.
-                                assert (
-                                    self.root.children
-                                ), "Root expanded but has no children after sim 1."
-                        elif not root_expanded:
-                            # This should not happen if the first simulation ran successfully without error
-                            logger.error(
-                                f"{log_prefix} Root NOT expanded after successful sim 1. This should not happen."
-                            )
-                            assert (
-                                root_expanded
-                            ), "Root not expanded after successful sim 1."
-                    else:
-                        # Keep this as a warning, as a failed simulation is possible (though indicates other issues)
-                        logger.warning(
-                            f"{log_prefix} First simulation failed or did not complete. Skipping noise application."
-                        )
-            # --- End Simulation Loop ---
+        chosen_action = actions[chosen_action_index]
+
+        # Calculate policy target using the agent's method (requires agent instance or env+network)
+        # We passed env via phase2_state, so we can use the MCTS internal helper
+        policy_target = self._calculate_policy_target(
+            self.root, actions, visit_counts, env
+        )  # Pass env
+
+        logger.debug(f"{log_prefix} Chosen Action: {chosen_action}")
+        if policy_target is not None:
             logger.debug(
-                f"{log_prefix} Simulation loop finished. Successful sims: {sim_success_count}/{self.num_simulations}"
-            )
+                f"{log_prefix} Policy Target (Top 5): { {i: p for i, p in enumerate(policy_target) if p > 0.01} }"
+            )  # Log non-zero targets
 
-        # --- Post-Search Logging & Completion ---
-        logger.debug(f"{log_prefix} All requested simulations finished.")
+        return chosen_action, policy_target
 
-        if self.profiler and isinstance(search_timer, Timer):
-            self.profiler.record_search_time(search_timer.elapsed_ms)
-            # Log cache stats if network was used
-            if self.network:
-                logger.debug(f"{log_prefix} End: Cache size={len(evaluation_cache)}")
+    def _apply_dirichlet_noise(self):
+        """Applies Dirichlet noise to the root node's children's priors."""
+        log_prefix = "AZ MCTS Noise:"
+        num_children = len(self.root.children)
+        if num_children == 0:
+            logger.warning(f"{log_prefix} Cannot apply noise, root has no children.")
+            return
 
-        # Log final root node state
-        if self.root.children:
-            child_visits = {a: c.visit_count for a, c in self.root.children.items()}
-            logger.debug(
-                f"{log_prefix} End: Root VisitCount={self.root.visit_count}, Child Visits={child_visits}"
-            )
-        else:
-            logger.debug(
-                f"{log_prefix} End: Root VisitCount={self.root.visit_count}, No children expanded."
-            )
+        noise = np.random.dirichlet([self.config.dirichlet_alpha] * num_children)
+        noisy_priors = []
+        child_items = list(self.root.children.items())  # Get fixed list
 
-        # Signal completion and yield the final root node
+        for i, (action, child) in enumerate(child_items):
+            original_prior = child.prior
+            child.prior = (
+                1 - self.config.dirichlet_epsilon
+            ) * original_prior + self.config.dirichlet_epsilon * noise[i]
+            noisy_priors.append((action, child.prior))
+
+        sorted_noisy_priors = sorted(
+            noisy_priors, key=lambda item: item[1], reverse=True
+        )
         logger.debug(
-            f"{log_prefix} Yielding search_complete. Root ID: {id(self.root)}, Root Children: {bool(self.root.children)}"
-        )  # Add logging
-        search_complete_yield: SearchCompleteYield = ("search_complete", self.root)
-        yield search_complete_yield
+            f"{log_prefix} Applied Dirichlet noise (alpha={self.config.dirichlet_alpha}, eps={self.config.dirichlet_epsilon})"
+        )
+        logger.debug(
+            f"  Noisy Root Priors (Top 5): { {a: f'{p:.3f}' for a, p in sorted_noisy_priors[:5]} }"
+        )
 
     def _select_leaf(
         self, root_node: MCTSNode, env: BaseEnvironment, initial_state: StateType
@@ -1025,119 +1004,74 @@ class AlphaZeroMCTS(MCTS):
         logger.debug(f"{sim_log_prefix} Selection finished. Leaf node: {node}")
         return node, sim_env, search_path
 
-    def _evaluate_and_expand_leaf(
-        self,
-        leaf_node: MCTSNode,
-        leaf_env_state: BaseEnvironment,
-        evaluation_cache: Dict[str, PredictResult],
-    ) -> Generator[GeneratorYield, Optional[PredictResult], Optional[float]]:
-        """
-        Evaluates a leaf node. Handles terminal states, cache lookups,
-        network prediction requests (yielding), expansion, and returns the value
-        from the perspective of the player at the leaf node.
-
-        Args:
-            leaf_node: The leaf node reached during selection.
-            leaf_env_state: The environment state corresponding to the leaf node.
-            evaluation_cache: The cache for network results for the current search.
-
-        Yields:
-            PredictRequestYield if a network prediction is needed.
-
-        Receives:
-            PredictResult via send() if a prediction was requested.
-
-        Returns:
-            The evaluated value (float) from the perspective of the player at the leaf node,
-            or None if an error occurred during prediction/handling.
-        """
-        sim_log_prefix = "  Sim Eval/Expand:"  # Simplified prefix
-
-        # --- Handle Terminal State ---
-        if leaf_env_state.is_game_over():
-            player_at_leaf = leaf_env_state.get_current_player()
-            winner = leaf_env_state.get_winning_player()
-            if winner is None:
-                value = 0.0
-            elif winner == player_at_leaf:
-                value = 1.0
-            else:
-                value = -1.0
-            logger.debug(
-                f"{sim_log_prefix} Terminal state found. Winner={winner}, PlayerAtNode={player_at_leaf}, Value={value}"
-            )
-            return value  # Return value directly
-
-        # --- Non-Terminal Leaf Node ---
-        leaf_state_obs = leaf_env_state.get_observation()
-        state_key = get_state_key(leaf_state_obs)
-
-        if state_key in evaluation_cache:
-            # --- Cache Hit ---
-            policy_np, value = evaluation_cache[state_key]
-            logger.debug(
-                f"{sim_log_prefix} Cache Hit for StateKey={state_key}, Value={value:.3f}"
-            )
-            if not leaf_node.is_expanded():
-                logger.debug(f"{sim_log_prefix} Expanding node (cache hit).")
-                # Use self.network which is guaranteed to exist
-                self._expand(leaf_node, leaf_env_state, policy_np)
-            # Return cached value
-            return value
+    def _calculate_policy_target(
+        self, root_node, actions, visit_counts, env: BaseEnvironment
+    ) -> Optional[np.ndarray]:
+        """Calculates the policy target vector based on MCTS visit counts."""
+        # Requires env access if network isn't available or doesn't have size info
+        if self.network:
+            policy_size = self.network._calculate_policy_size(env)
         else:
-            # --- Cache Miss: Request Prediction ---
-            logger.debug(
-                f"{sim_log_prefix} Cache Miss. Yielding Request for StateKey={state_key}"
-            )
-            predict_request_yield: PredictRequestYield = (
-                "predict_request",
-                state_key,
-                leaf_state_obs,
-            )
-            received_result: Optional[PredictResult] = yield predict_request_yield
-
-            # --- Add Assertion ---
-            assert (
-                received_result is not None
-            ), f"{sim_log_prefix} Assertion failed: _evaluate_and_expand_leaf received_result is None!"
-            # --- End Assertion ---
-
-            # --- Handle Received Result ---
-            if received_result is None:
+            try:
+                policy_size = env.policy_vector_size
+            except AttributeError:
                 logger.error(
-                    f"{sim_log_prefix} Received None result for state {state_key}. Cannot proceed."
+                    "Cannot determine policy size without network or env.policy_vector_size"
                 )
-                return None  # Signal error
+                return None
 
-            if not isinstance(received_result, tuple) or len(received_result) != 2:
-                logger.error(
-                    f"{sim_log_prefix} Received invalid result structure for state {state_key}. Type: {type(received_result)}, Value: {received_result}."
+        policy_target = np.zeros(policy_size, dtype=np.float32)
+        total_visits = np.sum(visit_counts)
+
+        if total_visits > 0:
+            if self.network:
+                for i, action in enumerate(actions):
+                    action_key = tuple(action) if isinstance(action, list) else action
+                    action_idx = self.network.get_action_index(action_key)
+                    if action_idx is not None and 0 <= action_idx < policy_size:
+                        policy_target[action_idx] = visit_counts[i] / total_visits
+                    else:
+                        logger.warning(
+                            f"Action {action_key} could not be mapped to index during policy target calculation."
+                        )
+            else:  # Fallback logic (less ideal)
+                if hasattr(env, "map_action_to_policy_index"):
+                    for i, action in enumerate(actions):
+                        action_key = (
+                            tuple(action) if isinstance(action, list) else action
+                        )
+                        action_idx = env.map_action_to_policy_index(action_key)
+                        if action_idx is not None and 0 <= action_idx < policy_size:
+                            policy_target[action_idx] = visit_counts[i] / total_visits
+                        else:
+                            logger.warning(
+                                f"Action {action_key} could not be mapped via env during policy target calculation."
+                            )
+                else:
+                    logger.error(
+                        "Cannot calculate policy target without network or env mapping."
+                    )
+                    return None  # Indicate failure
+
+            # Normalize policy target
+            current_sum = policy_target.sum()
+            if current_sum > 1e-6:
+                policy_target /= current_sum
+            elif policy_target.size > 0:
+                logger.warning(
+                    f"Policy target sum is near zero ({current_sum}). Setting uniform distribution."
                 )
-                return None  # Signal error
+                policy_target.fill(1.0 / policy_target.size)
 
-            policy_np, value = received_result
-            if not isinstance(policy_np, np.ndarray) or not isinstance(
-                value, (float, int)
-            ):
-                logger.error(
-                    f"{sim_log_prefix} Received tuple with unexpected types for state {state_key}: ({type(policy_np)}, {type(value)})."
-                )
-                return None  # Signal error
-
-            value = float(value)
-            logger.debug(
-                f"{sim_log_prefix} Received Result for StateKey={state_key}, Value={value:.3f}"
+            return policy_target
+        else:
+            logger.warning(
+                "No visits recorded in MCTS root. Cannot calculate policy target."
             )
+            return None
 
-            evaluation_cache[state_key] = (policy_np, value)
 
-            if not leaf_node.is_expanded():
-                logger.debug(f"{sim_log_prefix} Expanding node (after predict).")
-                self._expand(leaf_node, leaf_env_state, policy_np)
-
-            # Return the received value
-            return value
-
+# Removed _calculate_policy_target from MCTS, agent should handle it.
 
 # --- MuZero MCTS ---
 

@@ -59,7 +59,7 @@ class AlphaZeroAgent(Agent):
         env: BaseEnvironment,
         config: AlphaZeroConfig,
         training_config: TrainingConfig,
-        profiler: Optional[MCTSProfiler] = None,  # Add profiler argument
+        # profiler: Optional[MCTSProfiler] = None, # Profiler removed
     ):
         """
         Initialize the AlphaZero agent.
@@ -73,7 +73,7 @@ class AlphaZeroAgent(Agent):
         self.env = env
         self.config = config
         self.training_config = training_config  # Store training config
-        self.profiler = profiler  # Store the profiler instance
+        # self.profiler = profiler # Profiler removed
 
         if self.config.should_use_network:
             self.network = AlphaZeroNet(
@@ -86,15 +86,10 @@ class AlphaZeroAgent(Agent):
             self.network = None
             self.device = torch.device("cpu")
 
-        # Pass the stored profiler instance and env to the MCTS constructor
         self.mcts = AlphaZeroMCTS(
             env=self.env,
-            exploration_constant=config.cpuct,
-            num_simulations=config.num_simulations,
+            config=config,
             network=self.network,
-            profiler=self.profiler,
-            dirichlet_alpha=config.dirichlet_alpha,  # Pass noise params
-            dirichlet_epsilon=config.dirichlet_epsilon,
         )
 
         # Learning:
@@ -129,118 +124,87 @@ class AlphaZeroAgent(Agent):
             train: If True, use temperature sampling for exploration during training.
                    If False, choose the most visited node (greedy).
 
+        Choose an action using MCTS guided by the neural network.
+        This simplified version is primarily for evaluation/playing against the agent.
+        It performs a full synchronous MCTS search with immediate network predictions.
+        The training loop uses a different mechanism (`collect_parallel_self_play_data`).
+
+        Args:
+            state: The current environment state observation.
+            train: If True, use temperature sampling (IGNORED in this simplified version).
+                   If False, choose the most visited node (greedy).
+
         Returns:
             The chosen action.
         """
+        if not self.network:
+            logger.error("Cannot act: Network not initialized.")
+            # Fallback to random action? Requires env access.
+            # For now, return None or raise error. Let's return None.
+            return None
+
         # Ensure network is in evaluation mode for inference
-        if self.network:
-            self.network.eval()
+        self.network.eval()
 
-        # --- Optional Debug Print: Network Prediction ---
-        if self.config.debug_mode and self.network:
-            try:
-                policy_np, value_np = self.network.predict(state)
-                logger.debug(
-                    f"[DEBUG Act] State: {state.get('board', state.get('piles', 'N/A'))}"
-                )
-                logger.debug(f"[DEBUG Act] To Play: {state['current_player']}")
-                logger.debug(f"[DEBUG Act] Network Value Prediction: {value_np:.4f}")
-                legal_actions = self.env.get_legal_actions()
-                action_probs = {}
-                for action in legal_actions:
-                    idx = self.network.get_action_index(action)
-                    if idx is not None and 0 <= idx < len(policy_np):
-                        action_probs[action] = policy_np[idx]
-                sorted_probs = sorted(
-                    action_probs.items(), key=lambda item: item[1], reverse=True
-                )
-                top_k = 5
-                logger.debug(f"[DEBUG Act] Network Policy Priors (Top {top_k} Legal):")
-                for action, prob in sorted_probs[:top_k]:
-                    logger.debug(f"  - {action}: {prob:.4f}")
-            except Exception as e:
-                logger.error(f"[DEBUG Act] Error during network predict debug: {e}")
+        # --- Perform Synchronous MCTS Search ---
+        # This requires adapting the MCTS class or using a simpler MCTS implementation
+        # for the non-training 'act' method. Let's assume MCTS has a method
+        # `run_synchronous_search` that handles internal predictions.
 
-        # MCTS search now uses the profiler internally if it exists
-        root_node = self.mcts.search(self.env, state)
-
-        if not root_node.children:
-            logger.warning(
-                "MCTS root has no children after search. Choosing random action."
-            )
-            temp_env = self.env.copy()
-            temp_env.set_state(state)
-            legal_actions = temp_env.get_legal_actions()
-            return random.choice(legal_actions) if legal_actions else None
-
-        # Select action based on visit counts
-        visit_counts = np.array(
-            [child.visit_count for child in root_node.children.values()]
+        # Placeholder: Use the new two-phase approach but with immediate prediction
+        # This is inefficient for single calls but reuses the logic.
+        root_node, requests, phase2_state = self.mcts.get_action_and_policy(
+            self.env, state, train=False, current_step=state.get("step_count", 0)
         )
-        actions = list(root_node.children.keys())
 
-        if train:
-            current_step = state.get("step_count", 0)
-            temperature = (
-                1.0 if current_step < self.config.temperature_decay_steps else 0.1
-            )  # Example decay
+        if not requests and not root_node.children:
+            logger.warning(
+                "MCTS search returned no requests and no children. Choosing random."
+            )
+            # Need env access here for random choice. Pass env to act?
+            # Or handle this case within MCTS? Let MCTS return None action.
+            return None  # Indicate failure
 
-            if temperature > 1e-6:  # Avoid division by zero / issues with temp=0
-                visit_counts_temp = visit_counts ** (1.0 / temperature)
-                sum_visits_temp = np.sum(visit_counts_temp)
-                if sum_visits_temp > 0:
-                    action_probs = visit_counts_temp / sum_visits_temp
-                    # Ensure probabilities sum to 1 due to potential floating point issues
-                    action_probs /= action_probs.sum()
-                    try:
-                        chosen_action_index = np.random.choice(
-                            len(actions), p=action_probs
-                        )
-                    except ValueError as e:
-                        logger.warning(
-                            f"Error during np.random.choice (probs might not sum to 1?): {e}"
-                        )
-                        logger.warning(
-                            f"Action probs: {action_probs}, Sum: {np.sum(action_probs)}"
-                        )
-                        chosen_action_index = np.argmax(
-                            visit_counts
-                        )  # Fallback to greedy
-                else:
-                    # Fallback if sum is zero (e.g., only one action, one visit?) - choose greedily
-                    logger.warning(
-                        "Sum of visit counts with temperature was zero. Choosing greedily."
-                    )
-                    chosen_action_index = np.argmax(visit_counts)
-            else:
-                # If temperature is effectively zero, choose greedily
-                chosen_action_index = np.argmax(visit_counts)
-        else:
-            # Greedy selection for evaluation/play
-            chosen_action_index = np.argmax(visit_counts)
+        # Perform immediate predictions for any requests (inefficient, but reuses code)
+        network_results = {}
+        if requests:
+            states_to_predict = [obs for _, obs in requests]
+            state_keys = [key for key, _ in requests]
+            try:
+                policy_list, value_list = self.network.predict_batch(states_to_predict)
+                for i, key in enumerate(state_keys):
+                    network_results[key] = (policy_list[i], value_list[i])
+            except Exception as e:
+                logger.error(f"Error during immediate prediction in act(): {e}")
+                return None  # Indicate failure
 
-        chosen_action = actions[chosen_action_index]
+        # Complete the search
+        chosen_action, _ = self.mcts.complete_search_and_get_action(
+            root_node, network_results, phase2_state
+        )
+
+        if chosen_action is None:
+            logger.warning("MCTS completed but returned no action. Choosing random.")
+            # Again, need env access for random choice.
+            return None
 
         # --- Optional Debug Print: MCTS Results ---
         if self.config.debug_mode:
-            logger.debug(f"[DEBUG Act] MCTS Visit Counts:")
-            sorted_visits = sorted(
-                zip(actions, visit_counts), key=lambda item: item[1], reverse=True
-            )
-            for action, visits in sorted_visits:
-                logger.debug(f"  - {action}: {visits}")
-            logger.debug(f"[DEBUG Act] Chosen Action (Train={train}): {chosen_action}")
+            if root_node and root_node.children:
+                visit_counts = np.array(
+                    [child.visit_count for child in root_node.children.values()]
+                )
+                actions = list(root_node.children.keys())
+                logger.debug(f"[DEBUG Act Eval] MCTS Visit Counts:")
+                sorted_visits = sorted(
+                    zip(actions, visit_counts), key=lambda item: item[1], reverse=True
+                )
+                for action, visits in sorted_visits:
+                    logger.debug(f"  - {action}: {visits}")
+            logger.debug(f"[DEBUG Act Eval] Chosen Action: {chosen_action}")
 
-        policy_target = None
-        if train:
-            policy_target = self._calculate_policy_target(
-                root_node, actions, visit_counts
-            )
-
-        if train:
-            return chosen_action, policy_target
-        else:
-            return chosen_action
+        # Return only the action for evaluation/play
+        return chosen_action
 
     def _calculate_policy_target(self, root_node, actions, visit_counts) -> np.ndarray:
         """Calculates the policy target vector based on MCTS visit counts."""
