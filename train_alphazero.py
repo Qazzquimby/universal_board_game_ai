@@ -350,69 +350,17 @@ def _process_network_batch(
                         generator_to_resume, Generator
                     ), f"Attempting to send to non-generator object for game {waiting_game_idx}"
 
-                    # Send the result directly to the main search_generator
                     generator_to_resume.send(result_tuple)
+                    generator_states[waiting_game_idx] = "running"
                     logger.debug(
-                        f"Sent result to generator {waiting_game_idx}. Advancing to process response..."
+                        f"Sent result to generator {waiting_game_idx}. Marked as 'running'."
                     )
 
-                    # --- Immediately advance generator after sending result ---
-                    try:
-                        # todo this line is sending None to the generator when it expects to be given a prediction request.
-                        yielded_value_after_send: GeneratorYield = (
-                            generator_to_resume.send(None)
-                        )
-                        yield_type_after_send = yielded_value_after_send[0]
-
-                        if yield_type_after_send == "predict_request":
-                            # Generator immediately yielded another request
-                            _, new_state_key, new_state_obs = yielded_value_after_send
-                            _handle_predict_request(
-                                game_idx=waiting_game_idx,
-                                state_key=new_state_key,
-                                state_obs=new_state_obs,
-                                pending_reqs=remaining_requests,  # Add to remaining
-                                waiting_gens=waiting_generators,
-                                gen_states=generator_states,
-                            )  # State becomes 'waiting_predict' via helper
-                        elif yield_type_after_send == "resumed":
-                            # Generator resumed, ready for next main loop poll
-                            logger.debug(
-                                f"Generator {waiting_game_idx} resumed after processing result."
-                            )
-                            generator_states[
-                                waiting_game_idx
-                            ] = "running"  # Mark as running
-                        elif yield_type_after_send == "search_complete":
-                            logger.warning(
-                                f"Generator {waiting_game_idx} yielded 'search_complete' unexpectedly within _process_network_batch."
-                            )
-                            # Mark as finished - main loop's _advance_and_process will clean up
-                            if waiting_game_idx in mcts_generators:
-                                del mcts_generators[waiting_game_idx]
-                            if waiting_game_idx in generator_states:
-                                del generator_states[waiting_game_idx]
-                        else:
-                            logger.error(
-                                f"Generator {waiting_game_idx} yielded unexpected type '{yield_type_after_send}' after send."
-                            )
-                            generator_states[waiting_game_idx] = "running"  # Fallback?
-
-                    except StopIteration:
-                        # Generator finished after processing the sent result.
-                        logger.debug(
-                            f"Generator {waiting_game_idx} finished (StopIteration) after processing result."
-                        )
-                        # Clean up state and generator tracking
-                        if waiting_game_idx in mcts_generators:
-                            del mcts_generators[waiting_game_idx]
-                        if waiting_game_idx in generator_states:
-                            del generator_states[waiting_game_idx]
-
-                except StopIteration:  # This catches StopIteration from the initial send(result_tuple)
+                except StopIteration:
                     # Generator finished immediately upon receiving the result.
+                    # This might happen if the result leads directly to the end of the search.
                     logger.debug(
-                        f"Generator {waiting_game_idx} finished immediately after receiving result (StopIteration on initial send)."
+                        f"Generator {waiting_game_idx} finished (StopIteration) immediately after receiving result."
                     )
                     # Clean up state and generator tracking
                     if waiting_game_idx in mcts_generators:
@@ -420,9 +368,9 @@ def _process_network_batch(
                     if waiting_game_idx in generator_states:
                         del generator_states[waiting_game_idx]
 
-                except Exception as e:  # Catch errors during send or immediate advance
+                except Exception as e:
                     logger.error(
-                        f"Error sending result/advancing generator for game {waiting_game_idx}: {e}",
+                        f"Error sending result to generator for game {waiting_game_idx}: {e}",
                         exc_info=True,
                     )
                     if waiting_game_idx in mcts_generators:
@@ -614,15 +562,26 @@ def _advance_and_process_generators(
     generators_finished_this_cycle = []
 
     for game_idx in active_generator_indices:
+        current_state = generator_states.get(game_idx)
+        logger.trace(f"Advancing Gen {game_idx}: Checking state '{current_state}'")
+
         # Skip if generator finished or is waiting for prediction
-        if (
-            game_idx not in mcts_generators
-            or generator_states.get(game_idx) == "waiting_predict"
-        ):
+        if game_idx not in mcts_generators or current_state == "waiting_predict":
+            logger.trace(f"Advancing Gen {game_idx}: Skipping (Not found or waiting)")
             continue
+
+        # If we reach here, state should be 'running'. Add extra check for safety.
+        if current_state != "running":
+            logger.error(
+                f"Advancing Gen {game_idx}: State is '{current_state}', expected 'running'! Skipping send(None)."
+            )
+            continue  # Avoid sending None if state is unexpected
 
         generator = mcts_generators[game_idx]
         try:
+            logger.trace(
+                f"Advancing Gen {game_idx}: State is '{current_state}', sending None..."
+            )
             # Advance the main search_generator by sending None
             yielded_value: GeneratorYield = generator.send(None)
             yield_type = yielded_value[0]
