@@ -460,22 +460,21 @@ class SelfPlayManager:
                 mcts = AlphaZeroMCTS(
                     self.envs[game_idx], self.agent.config, self.agent.network
                 )
-                mcts.start_search(
-                    self.envs[game_idx], self.observations[game_idx], train=True
-                )
+                mcts.base_env = self.envs[game_idx].copy()
+                mcts.base_env.set_state(self.observations[game_idx])
+                mcts.prepare_for_next_search(train=True)
                 self.mcts_instances[game_idx] = mcts
                 self._get_mcts_network_request(game_idx=game_idx, response=None)
             else:
                 # Continue game
                 self.states_before_action[game_idx] = self.observations[game_idx].copy()
                 mcts = self.mcts_instances[game_idx]
-                # The root has already been advanced by _handle_completed_searches.
-                # We just need to kick off the simulation loop by requesting the first network eval.
-                # Reset sim_count and flags (might be redundant if advance_root does it)
-                mcts.sim_count = 0
-                mcts.training = True  # Assume training context
-                mcts.current_leaf_node = None
-                mcts.current_leaf_env = None
+                # Ensure MCTS internal env reflects the current actual env state
+                # This is crucial if the env state changed between the last step and now
+                # (though it shouldn't have if logic is correct)
+                mcts.env = self.envs[game_idx].copy()
+                mcts.env.set_state(self.observations[game_idx])
+                mcts.prepare_for_next_search(train=True)
                 self._get_mcts_network_request(game_idx=game_idx, response=None)
 
     def _get_mcts_network_request(
@@ -511,11 +510,16 @@ class SelfPlayManager:
             mcts = self.mcts_instances[game_idx]
             action, policy = mcts.get_result()
 
-            assert action is not None
+            # todo, can this be moved earlier inside get_result()
+            current_legal_actions = self.envs[game_idx].get_legal_actions()
+            assert (
+                action in current_legal_actions
+            ), f"Illegal action chosen by MCTS! Action: {action}, Legal: {current_legal_actions}, State: {self.observations[game_idx]}"
+
             next_obs, reward, done = self.envs[game_idx].step(action)
             self.num_steps_taken += 1
 
-            assert policy is not None
+            assert policy is not None, "MCTS returned valid action but None policy."
             self.histories[game_idx].append(
                 (self.states_before_action[game_idx], action, policy)
             )
@@ -543,6 +547,7 @@ class SelfPlayManager:
         )
         self.all_experiences.extend(episode_result.buffer_experiences)
 
+        # Optional: Save game log (keep conditional saving logic if desired)
         save_game_log(
             logged_history=episode_result.logged_history,
             iteration=self.iteration,

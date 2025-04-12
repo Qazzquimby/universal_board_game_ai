@@ -176,13 +176,13 @@ class MCTSNode:
                     f" Was expand called multiple times?"
                 )
 
-        if action_priors and children_added == 0:
-            logger.error(
-                f"  Node.expand: action_priors provided but no children were added! Priors: {action_priors}"
-            )
-        assert (
-            not action_priors or self.children
-        ), "Node expansion failed: children dict is empty despite non-empty priors."
+        if action_priors:
+            assert children_added > 0 or all(
+                p == 0.0 for p in action_priors.values()
+            ), f"Node expansion failed: non-zero priors provided but no children added. Priors: {action_priors}"
+            assert self.children or all(
+                p == 0.0 for p in action_priors.values()
+            ), f"Node expansion failed: children dict empty despite non-zero priors. Priors: {action_priors}"
 
 
 class MCTS:
@@ -366,17 +366,26 @@ class AlphaZeroMCTS(MCTS):
         self.config = config
         self.network = network if network is not None else DummyAlphaZeroNet(env)
 
+        self.env = env
         self.current_leaf_node = None
         self.current_leaf_env = None
+        self.sim_count = 0
+        self.training = True
 
     def advance_root(self, action: ActionType):
         """Advances the root of the search tree to the child corresponding to the action."""
         action_key = tuple(action) if isinstance(action, list) else action
-        assert action_key in self.root.children
+        assert (
+            action_key in self.root.children
+        ), f"Action {action_key} not found in root children {list(self.root.children.keys())} during advance_root."
 
         self.root = self.root.children[action_key]
         self.root.parent = None  # Detach from the old parent
-        self.sim_count = 0  # Reset simulation count for the new search
+
+    def prepare_for_next_search(self, train: bool = False):
+        """Resets simulation-specific state before starting the next search iteration."""
+        self.sim_count = 0
+        self.training = train
         self.current_leaf_node = None
         self.current_leaf_env = None
 
@@ -527,7 +536,7 @@ class AlphaZeroMCTS(MCTS):
 
         while self.sim_count < self.num_simulations:
             self.sim_count += 1
-            leaf_node, leaf_env, _ = self._select_leaf(self.root, self.base_env)
+            leaf_node, leaf_env, _ = self._select_leaf(self.root, self.env)
             if leaf_env.is_game_over():
                 value = self.get_terminal_value(leaf_env)
                 self._backpropagate(leaf_node, value)
@@ -539,33 +548,27 @@ class AlphaZeroMCTS(MCTS):
 
         return None
 
-    def start_search(
-        self, env: BaseEnvironment, state: StateType, train: bool = False
-    ) -> None:
-        # todo, I think this can be removed and handled with init?
-        self.reset_root()
-        self.base_env = env.copy()
-        self.base_env.set_state(state)
-        self.sim_count = 0
-        self.training = train
-        self.current_leaf_node = None
-        self.current_leaf_env = None
-
-    def get_result(self) -> Tuple[Optional[ActionType], Optional[np.ndarray]]:
-        if not self.root.children:
-            logger.error("Root node has no children after search.")
-            assert False
+    def get_result(self) -> Tuple[ActionType, np.ndarray]:
+        assert self.root.children, "MCTS Error: Root node has no children after search."
 
         visit_counts = np.array(
             [child.visit_count for child in self.root.children.values()]
         )
         actions = list(self.root.children.keys())
 
-        if np.sum(visit_counts) == 0:
-            assert False
-        elif self.training:
-            visit_counts_temp = visit_counts ** (1.0 / 1.0)
+        total_visits = np.sum(visit_counts)
+        assert total_visits > 0, "MCTS Error: Total visits for root children is zero."
+
+        if self.training:
+            # Temperature sampling (temp=1.0 means proportional to visits)
+            temp = 1.0
+            visit_counts_temp = visit_counts ** (1.0 / temp)
             action_probs = visit_counts_temp / np.sum(visit_counts_temp)
+            if abs(np.sum(action_probs) - 1.0) > 1e-6:
+                logger.warning(
+                    f"Action probabilities sum to {np.sum(action_probs)}, renormalizing."
+                )
+                action_probs /= np.sum(action_probs)  # Renormalize
             chosen_action_index = np.random.choice(len(actions), p=action_probs)
             chosen_action = actions[chosen_action_index]
         else:
@@ -573,7 +576,7 @@ class AlphaZeroMCTS(MCTS):
             chosen_action = actions[chosen_action_index]
 
         policy_target = self._calculate_policy_target(
-            self.root, actions, visit_counts, self.base_env
+            self.root, actions, visit_counts, self.env
         )
         return chosen_action, policy_target
 
@@ -640,49 +643,28 @@ class AlphaZeroMCTS(MCTS):
         policy_target = np.zeros(policy_size, dtype=np.float32)
         total_visits = np.sum(visit_counts)
 
-        if total_visits > 0:
-            if self.network:
-                for i, action in enumerate(actions):
-                    action_key = tuple(action) if isinstance(action, list) else action
-                    action_idx = self.network.get_action_index(action_key)
-                    if action_idx is not None and 0 <= action_idx < policy_size:
-                        policy_target[action_idx] = visit_counts[i] / total_visits
-                    else:
-                        logger.warning(
-                            f"Action {action_key} could not be mapped to index during policy target calculation."
-                        )
-            else:  # Fallback logic (less ideal)
-                if hasattr(env, "map_action_to_policy_index"):
-                    for i, action in enumerate(actions):
-                        action_key = (
-                            tuple(action) if isinstance(action, list) else action
-                        )
-                        action_idx = env.map_action_to_policy_index(action_key)
-                        if action_idx is not None and 0 <= action_idx < policy_size:
-                            policy_target[action_idx] = visit_counts[i] / total_visits
-                        else:
-                            logger.warning(
-                                f"Action {action_key} could not be mapped via env during policy target calculation."
-                            )
-                else:
-                    logger.error(
-                        "Cannot calculate policy target without network or env mapping."
-                    )
-                    return None  # Indicate failure
+        if total_visits <= 0:
+            assert False, "No visits"
 
-            # Normalize policy target
-            current_sum = policy_target.sum()
-            if current_sum > 1e-6:
-                policy_target /= current_sum
-            elif policy_target.size > 0:
-                logger.warning(
-                    f"Policy target sum is near zero ({current_sum}). Setting uniform distribution."
-                )
-                policy_target.fill(1.0 / policy_target.size)
+        for i, action in enumerate(actions):
+            action_key = tuple(action) if isinstance(action, list) else action
+            action_idx = self.network.get_action_index(action_key)
+            assert (
+                action_idx is not None and 0 <= action_idx < policy_size
+            ), f"Action {action_key} (from MCTS children) could not be mapped to policy index."
+            policy_target[action_idx] = visit_counts[i] / total_visits
 
-            return policy_target
-        else:
+        # Normalize policy target
+        current_sum = policy_target.sum()
+        assert (
+            abs(current_sum - 1.0) < 1e-5
+        ), f"Policy target sum is {current_sum}, expected ~1.0"
+        if current_sum > 1e-6:
+            policy_target /= current_sum
+        elif policy_target.size > 0:
             logger.warning(
-                "No visits recorded in MCTS root. Cannot calculate policy target."
+                f"Policy target sum is near zero ({current_sum}). Setting uniform distribution."
             )
-            return None
+            policy_target.fill(1.0 / policy_target.size)
+
+        return policy_target
