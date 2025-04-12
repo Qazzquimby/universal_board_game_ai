@@ -438,7 +438,9 @@ class SelfPlayManager:
         self._handle_pending_requests()
         self._handle_completed_searches()
 
-    def _get_mcts_network_request(self, game_idx: int, response: Optional[Tuple[np.ndarray, float]]):
+    def _get_mcts_network_request(
+        self, game_idx: int, response: Optional[Tuple[np.ndarray, float]]
+    ):
         mcts: AlphaZeroMCTS = self.mcts_instances[game_idx]
         request = mcts.get_network_request(previous_response=response)
         if request is not None:
@@ -449,21 +451,19 @@ class SelfPlayManager:
             batch_size = min(self.inference_batch_size, len(self.pending_requests))
             batch_states = [req[1] for req in self.pending_requests[:batch_size]]
             policy_list, value_list = self.agent.network.predict_batch(batch_states)
-
+            # todo confirm policy_list,value_list perfectly map to the pending requests
             # Process responses and collect new requests
-            new_requests = []
             for i, (game_idx, _) in enumerate(self.pending_requests[:batch_size]):
                 response = (policy_list[i], value_list[i])
                 self._get_mcts_network_request(game_idx=game_idx, response=response)
-
-            self.pending_requests = self.pending_requests[batch_size:] + new_requests
+                # todo remove pending request
 
     def _handle_completed_searches(self):
         for game_idx, mcts in list(self.mcts_instances.items()):
             if not any(req[0] == game_idx for req in self.pending_requests):
                 action, policy = mcts.get_result()
                 if action is None:
-                    continue # Why would this be none?
+                    continue  # Why would this be none?
 
                 # Step environment
                 next_obs, reward, done = self.envs[game_idx].step(action)
@@ -499,8 +499,6 @@ class SelfPlayManager:
                     self.observations[game_idx] = self.envs[game_idx].reset()
                     self.histories[game_idx] = []
 
-
-
     def _create_missing_games(self):
         for game_idx in range(self.num_parallel_games):
             if (
@@ -515,7 +513,7 @@ class SelfPlayManager:
                     self.envs[game_idx], self.observations[game_idx], train=True
                 )
                 self.mcts_instances[game_idx] = mcts
-
+                # todo avoid duplicate requests and cache past responses
                 self._get_mcts_network_request(game_idx=game_idx, response=None)
 
 

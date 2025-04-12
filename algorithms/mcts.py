@@ -377,6 +377,9 @@ class AlphaZeroMCTS(MCTS):
         self.config = config
         self.network = network if network is not None else DummyAlphaZeroNet(env)
 
+        self.current_leaf_node = None
+        self.current_leaf_env = None
+
     def _expand(
         self,
         node: MCTSNode,
@@ -511,18 +514,21 @@ class AlphaZeroMCTS(MCTS):
         )
         return value
 
-    def get_network_request(self, previous_response: Optional[Tuple[np.ndarray, float]] = None) -> Optional[StateType]:
+    def get_network_request(
+        self, previous_response: Optional[Tuple[np.ndarray, float]] = None
+    ) -> Optional[StateType]:
         if previous_response:
             policy_np, value = previous_response
             self._expand(self.current_leaf_node, self.current_leaf_env, policy_np)
-            if self.current_leaf_node == self.root and self.training and self.config.dirichlet_epsilon > 0:
+            if (
+                self.current_leaf_node == self.root
+                and self.training
+                and self.config.dirichlet_epsilon > 0
+            ):
                 self._apply_dirichlet_noise()
             self._backpropagate(self.current_leaf_node, value)
             self.current_leaf_node = None
             self.current_leaf_env = None
-
-        if self.sim_count >= self.num_simulations:
-            return None
 
         while self.sim_count < self.num_simulations:
             self.sim_count += 1
@@ -538,7 +544,9 @@ class AlphaZeroMCTS(MCTS):
 
         return None
 
-    def start_search(self, env: BaseEnvironment, state: StateType, train: bool = False) -> None:
+    def start_search(
+        self, env: BaseEnvironment, state: StateType, train: bool = False
+    ) -> None:
         self.reset_root()
         self.base_env = env.copy()
         self.base_env.set_state(state)
@@ -552,7 +560,9 @@ class AlphaZeroMCTS(MCTS):
             logger.error("Root node has no children after search.")
             assert False
 
-        visit_counts = np.array([child.visit_count for child in self.root.children.values()])
+        visit_counts = np.array(
+            [child.visit_count for child in self.root.children.values()]
+        )
         actions = list(self.root.children.keys())
 
         if np.sum(visit_counts) == 0:
@@ -566,22 +576,35 @@ class AlphaZeroMCTS(MCTS):
             chosen_action_index = np.argmax(visit_counts)
             chosen_action = actions[chosen_action_index]
 
-        policy_target = self._calculate_policy_target(self.root, actions, visit_counts, self.base_env)
+        policy_target = self._calculate_policy_target(
+            self.root, actions, visit_counts, self.base_env
+        )
         return chosen_action, policy_target
 
     # Modify signature to accept env directly
-    def _select_leaf(self, root_node: MCTSNode, env: BaseEnvironment) -> Tuple[MCTSNode, BaseEnvironment, List[MCTSNode]]:
+    def _select_leaf(
+        self, root_node: MCTSNode, env: BaseEnvironment
+    ) -> Tuple[MCTSNode, BaseEnvironment, List[MCTSNode]]:
         node = root_node
         sim_env = env.copy()
         search_path = [node]
-        max_loops = env.height * env.width + 5 if hasattr(env, "height") and hasattr(env, "width") else 100
+        max_loops = (
+            env.height * env.width + 5
+            if hasattr(env, "height") and hasattr(env, "width")
+            else 100
+        )
         loop_count = 0
 
-        while node.is_expanded() and not sim_env.is_game_over() and loop_count < max_loops:
+        while (
+            node.is_expanded() and not sim_env.is_game_over() and loop_count < max_loops
+        ):
             loop_count += 1
             parent_visits = node.visit_count
             assert node.children, f"Node {node} is expanded but has no children!"
-            child_scores = {act: self._score_child(child, parent_visits) for act, child in node.children.items()}
+            child_scores = {
+                act: self._score_child(child, parent_visits)
+                for act, child in node.children.items()
+            }
             best_action = max(child_scores, key=child_scores.get)
             sim_env.step(best_action)
             node = node.children[best_action]
@@ -594,9 +617,13 @@ class AlphaZeroMCTS(MCTS):
         if not self.root.children:
             return
 
-        noise = np.random.dirichlet([self.config.dirichlet_alpha] * len(self.root.children))
+        noise = np.random.dirichlet(
+            [self.config.dirichlet_alpha] * len(self.root.children)
+        )
         for i, (_, child) in enumerate(self.root.children.items()):
-            child.prior = (1 - self.config.dirichlet_epsilon) * child.prior + self.config.dirichlet_epsilon * noise[i]
+            child.prior = (
+                1 - self.config.dirichlet_epsilon
+            ) * child.prior + self.config.dirichlet_epsilon * noise[i]
 
     def _calculate_policy_target(
         self, root_node, actions, visit_counts, env: BaseEnvironment
