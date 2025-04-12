@@ -374,8 +374,25 @@ class AlphaZeroMCTS(MCTS):
         self.training = True
         self.last_request_state: Optional[StateType] = None
 
+    def _check_dynamic_termination(self) -> bool:
+        """Checks if the MCTS search can terminate early based on visit counts."""
+        if (
+            not self.config.dynamic_simulations_enabled
+            or self.sim_count < self.config.dynamic_simulations_min_visits
+            or not self.root.children
+        ):
+            return False
+
+        children_visits = [child.visit_count for child in self.root.children.values()]
+        if len(children_visits) < 2:
+            return False
+
+        children_visits.sort(reverse=True)
+        visit_delta = children_visits[0] - children_visits[1]
+
+        return visit_delta >= self.config.dynamic_simulations_visit_delta
+
     def advance_root(self, action: ActionType):
-        """Advances the root of the search tree to the child corresponding to the action."""
         action_key = tuple(action) if isinstance(action, list) else action
         assert (
             action_key in self.root.children
@@ -524,6 +541,9 @@ class AlphaZeroMCTS(MCTS):
             self.last_request_state = None
 
         while self.sim_count < self.num_simulations:
+            if self._check_dynamic_termination():
+                break
+
             leaf_node, leaf_env, _ = self._select_leaf(self.root, self.env)
 
             if leaf_env.is_game_over():
@@ -548,6 +568,8 @@ class AlphaZeroMCTS(MCTS):
                     self._apply_dirichlet_noise()
                 self._backpropagate(leaf_node, value)
                 self.sim_count += 1
+                if self._check_dynamic_termination():
+                    break
             else:
                 # Cache Miss: Return state dict to manager
                 self.current_leaf_node = leaf_node

@@ -57,6 +57,12 @@ class AlphaZeroConfig:
     # --- Learning Rate ---
     lr_scheduler_step_size: int = 100  # Decay LR every N training iterations
     lr_scheduler_gamma: float = 0.9  # Multiplicative factor for LR decay
+    # --- Dynamic Simulations ---
+    dynamic_simulations_enabled: bool = True  # Set to True to enable early stopping
+    dynamic_simulations_min_visits: int = 30  # Min total visits before stopping early
+    dynamic_simulations_visit_delta: int = (
+        50  # Required visit diff between best/second best
+    )
     debug_mode: bool = False
     should_use_network: bool = True
 
