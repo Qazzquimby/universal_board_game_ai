@@ -377,9 +377,6 @@ class AlphaZeroMCTS(MCTS):
         self.root = self.root.children[action_key]
         self.root.parent = None  # Detach from the old parent
         self.sim_count = 0  # Reset simulation count for the new search
-        self.training = (
-            False  # Reset training flag (can be set again in start_search if needed)
-        )
         self.current_leaf_node = None
         self.current_leaf_env = None
 

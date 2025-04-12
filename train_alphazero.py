@@ -511,11 +511,11 @@ class SelfPlayManager:
             mcts = self.mcts_instances[game_idx]
             action, policy = mcts.get_result()
 
-            assert action
+            assert action is not None
             next_obs, reward, done = self.envs[game_idx].step(action)
             self.num_steps_taken += 1
 
-            assert policy
+            assert policy is not None
             self.histories[game_idx].append(
                 (self.states_before_action[game_idx], action, policy)
             )
