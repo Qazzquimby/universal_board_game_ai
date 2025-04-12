@@ -134,7 +134,7 @@ def run_training(config: AppConfig, env_name_override: str = None):
     # --- Training Loop ---
     # Use values from config (consider adding MuZero specific iteration counts)
     num_training_iterations = config.training.num_iterations
-    num_episodes_per_iteration = config.training.num_episodes_per_iteration
+    num_episodes_per_iteration = config.training.num_games_per_iteration
 
     print(
         f"Starting MuZero training (Self-Play Phase) for {num_training_iterations} iterations..."

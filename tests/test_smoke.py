@@ -42,7 +42,7 @@ class TestSmoke(unittest.TestCase):
         # Training settings
         config.training.num_episodes = 2  # Q-learning episodes
         config.training.num_iterations = 1  # AlphaZero iterations
-        config.training.num_episodes_per_iteration = 1  # AlphaZero self-play games
+        config.training.num_games_per_iteration = 1  # AlphaZero self-play games
 
         return config
 

@@ -154,14 +154,6 @@ def load_game_logs_into_buffer(agent: AlphaZeroAgent, env_name: str, buffer_limi
     logger.info(f"Current buffer size: {len(agent.replay_buffer)}/{buffer_limit}")
 
 
-@dataclass
-class SelfPlayResult:
-    """Holds the results of the self-play data collection phase."""
-
-    experiences: List[Tuple[StateType, np.ndarray, float]]
-    network_time_ms: float
-
-
 def _initialize_parallel_games(num_parallel_games: int, env_factory: callable) -> Dict:
     """Initializes environments, observations, and tracking structures for parallel games."""
     envs = [env_factory() for _ in range(num_parallel_games)]
@@ -399,106 +391,131 @@ def _process_finished_games(
     return episodes_finished_this_cycle
 
 
-def collect_parallel_self_play_data(
-    env_factory: callable,
-    agent: AlphaZeroAgent,
-    num_episodes_to_collect: int,
-    num_parallel_games: int,
-    iteration: int,
-    env_name: str,
-    inference_batch_size: int,
-    use_tqdm: bool = True,
-) -> SelfPlayResult:
-    all_experiences = []
-    finished_episodes_count = 0
-    total_steps_taken = 0
+# Experience = Tuple[StateType, np.ndarray, float]]
 
-    envs = [env_factory() for _ in range(num_parallel_games)]
-    observations = [env.reset() for env in envs]
-    histories = [[] for _ in range(num_parallel_games)]
-    states_before_action = {}
-    mcts_instances = {}
-    pending_requests = []
 
-    while finished_episodes_count < num_episodes_to_collect:
-        # Create new MCTS instances for games that need them
-        for game_idx in range(num_parallel_games):
-            if game_idx not in mcts_instances and not envs[game_idx].is_game_over():
-                states_before_action[game_idx] = observations[game_idx].copy()
-                mcts = AlphaZeroMCTS(envs[game_idx], agent.config, agent.network)
-                mcts.start_search(envs[game_idx], observations[game_idx], train=True)
-                mcts_instances[game_idx] = mcts
+class SelfPlayManager:
+    def __init__(
+        self,
+        env_factory: callable,
+        agent: AlphaZeroAgent,
+        num_games_to_collect: int,
+        num_parallel_games: int,
+        iteration: int,
+        env_name: str,
+        inference_batch_size: int,
+    ):
+        self.num_games_to_collect = num_games_to_collect
+        self.num_parallel_games = num_parallel_games
+        self.agent = agent
+        self.inference_batch_size = inference_batch_size
+        self.iteration = iteration
+        self.env_name = env_name
+
+        self.all_experiences = []
+        self.num_finished_games = 0
+        self.num_steps_taken = 0
+
+        self.envs = [env_factory() for _ in range(num_parallel_games)]
+        self.observations = [env.reset() for env in self.envs]
+        self.histories = [[] for _ in range(num_parallel_games)]
+        self.states_before_action = {}
+        self.mcts_instances = {}
+        self.pending_requests = []
+
+    def run(self):
+        while self.num_finished_games < self.num_games_to_collect:
+            self._run_one_iter()
+
+        logger.info(
+            f"Collected {len(self.all_experiences)} experiences from {self.num_finished_games} games ({self.num_steps_taken} steps)."
+        )
+        self.agent.reset()
+        return self.all_experiences
+
+    def _run_one_iter(self):
+        self._create_missing_games()
 
         # Collect network requests from all active MCTS instances
-        for game_idx, mcts in mcts_instances.items():
+        # todo: You're passing None in to *all* instances? Are not some of them awaiting a response? Do you not want to do this only for the new instances?
+        for game_idx, mcts in self.mcts_instances.items():
             request = mcts.get_network_request(None)
             if request is not None:
-                pending_requests.append((game_idx, request))
+                self.pending_requests.append((game_idx, request))
 
         # Process network requests in batches
-        if pending_requests:
-            batch_states = [req[1] for req in pending_requests]
-            policy_list, value_list = agent.network.predict_batch(
-                batch_states[:inference_batch_size]
+        if self.pending_requests:
+            batch_states = [req[1] for req in self.pending_requests]
+            policy_list, value_list = self.agent.network.predict_batch(
+                batch_states[: self.inference_batch_size]
             )
 
             # Process responses
-            for i, (game_idx, _) in enumerate(pending_requests[:inference_batch_size]):
-                mcts = mcts_instances[game_idx]
+            for i, (game_idx, _) in enumerate(
+                self.pending_requests[: self.inference_batch_size]
+            ):
+                mcts = self.mcts_instances[game_idx]
                 request = mcts.get_network_request((policy_list[i], value_list[i]))
                 if request is not None:
-                    pending_requests.append((game_idx, request))
+                    self.pending_requests.append((game_idx, request))
 
-            pending_requests = pending_requests[inference_batch_size:]
+            self.pending_requests = self.pending_requests[self.inference_batch_size :]
 
         # Check for completed searches
-        completed_games = []
-        for game_idx, mcts in list(mcts_instances.items()):
-            if not any(req[0] == game_idx for req in pending_requests):
+        for game_idx, mcts in list(self.mcts_instances.items()):
+            if not any(req[0] == game_idx for req in self.pending_requests):
                 action, policy = mcts.get_result()
                 if action is None:
                     continue
 
                 # Step environment
-                next_obs, reward, done = envs[game_idx].step(action)
-                total_steps_taken += 1
+                next_obs, reward, done = self.envs[game_idx].step(action)
+                self.num_steps_taken += 1
 
                 # Record history
-                histories[game_idx].append(
-                    (states_before_action[game_idx], action, policy)
+                self.histories[game_idx].append(
+                    (self.states_before_action[game_idx], action, policy)
                 )
-                observations[game_idx] = next_obs
+                self.observations[game_idx] = next_obs
 
                 # Clean up
-                del mcts_instances[game_idx]
-                del states_before_action[game_idx]
+                del self.mcts_instances[game_idx]
+                del self.states_before_action[game_idx]
 
                 if done:
-                    winner = envs[game_idx].get_winning_player()
+                    winner = self.envs[game_idx].get_winning_player()
                     final_outcome = 1.0 if winner == 0 else -1.0 if winner == 1 else 0.0
 
-                    episode_result = agent.process_finished_episode(
-                        histories[game_idx], final_outcome
+                    episode_result = self.agent.process_finished_episode(
+                        self.histories[game_idx], final_outcome
                     )
-                    all_experiences.extend(episode_result.buffer_experiences)
+                    self.all_experiences.extend(episode_result.buffer_experiences)
 
                     save_game_log(
-                        episode_result.logged_history,
-                        iteration,
-                        finished_episodes_count + 1,
-                        env_name,
+                        logged_history=episode_result.logged_history,
+                        iteration=self.iteration,
+                        game_index=self.num_finished_games + 1,
+                        env_name=self.env_name,
                     )
 
-                    finished_episodes_count += 1
-                    observations[game_idx] = envs[game_idx].reset()
-                    histories[game_idx] = []
+                    self.num_finished_games += 1
+                    self.observations[game_idx] = self.envs[game_idx].reset()
+                    self.histories[game_idx] = []
 
-    logger.info(
-        f"Collected {len(all_experiences)} experiences from {finished_episodes_count} games ({total_steps_taken} steps)."
-    )
-    agent.reset()
-
-    return SelfPlayResult(experiences=all_experiences, network_time_ms=0.0)
+    def _create_missing_games(self):
+        for game_idx in range(self.num_parallel_games):
+            if (
+                game_idx not in self.mcts_instances
+                and not self.envs[game_idx].is_game_over()
+            ):
+                self.states_before_action[game_idx] = self.observations[game_idx].copy()
+                mcts = AlphaZeroMCTS(
+                    self.envs[game_idx], self.agent.config, self.agent.network
+                )
+                mcts.start_search(
+                    self.envs[game_idx], self.observations[game_idx], train=True
+                )
+                self.mcts_instances[game_idx] = mcts
 
 
 def run_training(config: AppConfig, env_name_override: str = None):
@@ -521,25 +538,24 @@ def run_training(config: AppConfig, env_name_override: str = None):
         agent, config.env.name, config.alpha_zero.replay_buffer_size
     )
 
-    num_training_iterations = config.training.num_iterations
-    num_episodes_per_iteration = config.training.num_episodes_per_iteration
-
     logger.info(
-        f"Starting AlphaZero training for {num_training_iterations} iterations..."
+        f"Starting AlphaZero training for {config.training.num_iterations} iterations..."
     )
-    logger.info(f"({num_episodes_per_iteration} self-play games per iteration)")
+    logger.info(
+        f"({config.training.num_games_per_iteration} self-play games per iteration)"
+    )
 
     # Lists to store losses for plotting
     total_losses = []
     value_losses = []
     policy_losses = []
 
-    # Disable tqdm if running smoke test to potentially avoid encoding issues
-    use_tqdm = not config.smoke_test
-    outer_loop_iterator = range(num_training_iterations)
+    outer_loop_iterator = range(config.training.num_iterations)
 
     for iteration in outer_loop_iterator:
-        logger.info(f"\n--- Iteration {iteration + 1}/{num_training_iterations} ---")
+        logger.info(
+            f"\n--- Iteration {iteration + 1}/{config.training.num_iterations} ---"
+        )
 
         # 1. Self-Play Phase
         if agent.network:
@@ -548,24 +564,18 @@ def run_training(config: AppConfig, env_name_override: str = None):
 
         env_factory = lambda: get_environment(config.env)
 
-        self_play_result = collect_parallel_self_play_data(
+        self_play_experiences = SelfPlayManager(
             env_factory=env_factory,
             agent=agent,
-            num_episodes_to_collect=num_episodes_per_iteration,
+            num_games_to_collect=config.training.num_games_per_iteration,
             num_parallel_games=config.alpha_zero.num_parallel_games,
             iteration=iteration + 1,
             env_name=config.env.name,
             inference_batch_size=config.alpha_zero.inference_batch_size,
-            use_tqdm=use_tqdm,
-        )
+        ).run()
 
-        if self_play_result.experiences:
-            agent.add_experiences_to_buffer(self_play_result.experiences)
-            logger.info(
-                f"Added {len(self_play_result.experiences)} experiences to replay buffer."
-            )
-        else:
-            logger.warning("No experiences collected in this iteration.")
+        agent.add_experiences_to_buffer(self_play_experiences)
+        logger.info(f"Added {len(self_play_experiences)} experiences to replay buffer.")
 
         # 2. Learning Phase
         logger.info("Running learning step...")
