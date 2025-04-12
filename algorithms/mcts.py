@@ -442,9 +442,6 @@ class AlphaZeroMCTS(MCTS):
             else:
                 # Assign 0 prior if action is illegal according to network mapping or out of bounds
                 action_priors_dict[action_key] = 0.0
-                logger.warning(
-                    f"Action {action_key} (index {action_index}) not found in policy vector during expand."
-                )
         node.expand(action_priors_dict)
 
         # If priors were provided and non-zero, children should have been created.
