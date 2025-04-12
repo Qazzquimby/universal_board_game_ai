@@ -167,9 +167,7 @@ class MCTSNode:
         for action, prior in action_priors.items():
             action_key = tuple(action) if isinstance(action, list) else action
             if action_key not in self.children:
-                logger.trace(
-                    f"  Node.expand: Creating child for action {action_key} with prior {prior:.4f}"
-                )
+                # logger.trace(f"  Node.expand: Creating child for action {action_key} with prior {prior:.4f}")
                 self.children[action_key] = MCTSNode(parent=self, prior=prior)
                 children_added += 1
             else:
@@ -224,9 +222,6 @@ class MCTS:
                 break
 
             best_action = max(child_scores, key=child_scores.get)
-            logger.debug(
-                f"  Select: ParentVisits={parent_visits}, Scores={ {a: f'{s:.3f}' for a, s in child_scores.items()} }, Chosen={best_action}"
-            )
             action, node = best_action, node.children[best_action]
 
             sim_env.step(action)
@@ -289,9 +284,7 @@ class MCTS:
             value = 1.0
         else:
             value = -1.0
-        logger.debug(
-            f"  Rollout: StartPlayer={player_at_rollout_start}, Winner={winner}, Value={value}"
-        )
+        # logger.debug(f"  Rollout: StartPlayer={player_at_rollout_start}, Winner={winner}, Value={value}")
         return value
 
     def _backpropagate(self, leaf_node: MCTSNode, value_from_leaf_perspective: float):
@@ -308,9 +301,7 @@ class MCTS:
 
         while current_node is not None:
             current_node.visit_count += 1
-            logger.debug(
-                f"  Backprop: Node={current_node}, ValueToAdd={value_for_current_node:.3f}, OldW={current_node.total_value:.3f}, OldN={current_node.visit_count - 1}, NewW={current_node.total_value + value_for_current_node:.3f}, NewN={current_node.visit_count}"
-            )
+            # logger.debug(f"  Backprop: Node={current_node}, ValueToAdd={value_for_current_node:.3f}, OldW={current_node.total_value:.3f}, OldN={current_node.visit_count - 1}, NewW={current_node.total_value + value_for_current_node:.3f}, NewN={current_node.visit_count}")
             current_node.total_value += value_for_current_node
 
             # Flip the value perspective for the parent node.
@@ -321,10 +312,10 @@ class MCTS:
         """Run MCTS search from the given state using UCB1 and random rollouts."""
         self.reset_root()
 
-        logger.debug(f"--- MCTS Search Start: State={state} ---")
+        # logger.debug(f"--- MCTS Search Start: State={state} ---")
 
         for sim_num in range(self.num_simulations):
-            logger.debug(f" Simulation {sim_num+1}/{self.num_simulations}")
+            # logger.debug(f" Simulation {sim_num+1}/{self.num_simulations}")
             # Start from the root node and a copy of the environment set to the initial state
             sim_env = env.copy()
             sim_env.set_state(state)
@@ -352,9 +343,7 @@ class MCTS:
                 else:
                     value = -1.0
 
-                logger.debug(
-                    f"  Terminal Found during Select: Winner={winner}, PlayerAtNode={player_at_leaf}, Value={value}"
-                )
+                # logger.debug(f"  Terminal Found during Select: Winner={winner}, PlayerAtNode={player_at_leaf}, Value={value}")
             # 3. Backpropagation: Update nodes along the path from the leaf to the root.
             self._backpropagate(leaf_node, value)
 
@@ -412,9 +401,7 @@ class AlphaZeroMCTS(MCTS):
             action_index = self.network.get_action_index(action_key)
 
             policy_len = len(policy_priors_np) if policy_priors_np is not None else -1
-            logger.trace(
-                f"  Expand Check: Action={action_key}, Index={action_index}, PolicyLen={policy_len}"
-            )
+            # logger.trace(f"  Expand Check: Action={action_key}, Index={action_index}, PolicyLen={policy_len}")
 
             if action_index is not None and 0 <= action_index < policy_len:
                 try:
@@ -447,9 +434,9 @@ class AlphaZeroMCTS(MCTS):
                 f"  Expand (Network): State={state_obs.get('board', state_obs.get('piles', 'N/A'))}, Player={state_obs['current_player']}"
             )
             logger.debug(f"  Expand (Network): Legal Actions={legal_actions}")
-            logger.debug(
-                f"  Expand (Network={type(self.network).__name__}): Applied Priors (Top 5): { {a: f'{p:.3f}' for a, p in sorted_priors[:5]} }"
-            )
+            # logger.debug(
+            #     f"  Expand (Network={type(self.network).__name__}): Applied Priors (Top 5): { {a: f'{p:.3f}' for a, p in sorted_priors[:5]} }"
+            # )
 
         node.expand(action_priors_dict)
 
@@ -509,9 +496,7 @@ class AlphaZeroMCTS(MCTS):
             value = 1.0
         else:
             value = -1.0
-        logger.debug(
-            f"  Sim Eval: Terminal state found. Winner={winner}, PlayerAtNode={player_at_leaf}, Value={value}"
-        )
+        # logger.debug(f"  Sim Eval: Terminal state found. Winner={winner}, PlayerAtNode={player_at_leaf}, Value={value}")
         return value
 
     def get_network_request(
