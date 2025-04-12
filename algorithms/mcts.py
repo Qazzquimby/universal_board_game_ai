@@ -589,6 +589,15 @@ class AlphaZeroMCTS(MCTS):
 
         return node, sim_env, search_path
 
+    def _apply_dirichlet_noise(self) -> None:
+        """Apply Dirichlet noise to the root node's children's priors."""
+        if not self.root.children:
+            return
+
+        noise = np.random.dirichlet([self.config.dirichlet_alpha] * len(self.root.children))
+        for i, (_, child) in enumerate(self.root.children.items()):
+            child.prior = (1 - self.config.dirichlet_epsilon) * child.prior + self.config.dirichlet_epsilon * noise[i]
+
     def _calculate_policy_target(
         self, root_node, actions, visit_counts, env: BaseEnvironment
     ) -> Optional[np.ndarray]:
