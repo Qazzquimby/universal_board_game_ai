@@ -26,10 +26,14 @@ The current unvalidated plan is to
   variable sized policy output. Iterate until performance is okay.
 - [ ] gradually work with more complex games. Add components needing embeddings, stochasticity, partial info, etc.
 
-Log 
-
 
 # parallelization plan
+
+MCTS class has interface
+- get_network_request
+  - simulates until it reaches the next required network request
+  - returns None if the game is resolved and no more requests are needed
+
 
 ```
 Setup:
@@ -58,7 +62,7 @@ Put a request (worker_id, state_data) onto the inference_request_queue.
 
 Pause this simulation path temporarily (or store its state).
 
-Ideally, the MCTS continues exploring other paths while waiting, or the worker manages multiple simulations concurrently within its MCTS runs. Crucially, the worker tries to collect several pending evaluation requests before pausing entirely.
+Move to a different game, and again simulate until it needs a network request.
 
 Periodically check its result_queue for completed evaluations sent back by the GPU actor.
 

@@ -1,4 +1,4 @@
-from typing import Dict, Optional
+from typing import Dict
 from loguru import logger
 
 from core.agent_interface import Agent
@@ -11,10 +11,6 @@ from environments.connect4 import Connect4
 from environments.nim_env import NimEnv
 from agents.mcts_agent import MCTSAgent
 from agents.alphazero_agent import AlphaZeroAgent
-from algorithms.mcts import MCTSProfiler
-
-# Import MuZeroAgent when ready
-# from agents.muzero_agent import MuZeroAgent
 
 
 def get_environment(env_config: EnvConfig) -> BaseEnvironment:
@@ -38,17 +34,6 @@ def get_environment(env_config: EnvConfig) -> BaseEnvironment:
 def get_agents(env: BaseEnvironment, config: AppConfig) -> Dict[str, Agent]:
     """Factory function to create agent instances for the given environment."""
 
-    profiler: Optional[MCTSProfiler] = None  # Initialize profiler variable
-
-    # Decide whether to enable profiling based on the config flag
-    if config.training.enable_mcts_profiling:
-        logger.info("MCTS Profiling enabled.")
-        profiler = MCTSProfiler()  # Create the profiler instance
-
-    # --- AlphaZero Agent Initialization ---
-    # Instantiate AlphaZero agent and attempt to load weights.
-    # Training should happen separately via train_alphazero.py
-    # Pass the profiler instance to the agent's constructor
     az_agent = AlphaZeroAgent(
         env=env,
         config=config.alpha_zero,
@@ -63,7 +48,6 @@ def get_agents(env: BaseEnvironment, config: AppConfig) -> Dict[str, Agent]:
     if az_agent.network:
         az_agent.network.eval()
 
-    # --- Benchmark MCTS Agent ---
     mcts_agent_name = f"MCTS_{config.mcts.num_simulations}"
     mcts_agent = MCTSAgent(
         env,
@@ -75,14 +59,5 @@ def get_agents(env: BaseEnvironment, config: AppConfig) -> Dict[str, Agent]:
         "AlphaZero": az_agent,
         mcts_agent_name: mcts_agent,
     }
-
-    # --- MuZero Agent (Example) ---
-    # if config.training.agent_type == "muzero" or ... :
-    #     mz_agent = MuZeroAgent(
-    #         env,
-    #         config.muzero,
-    #         profiler=profiler # Pass the same profiler if needed
-    #     )
-    #     agents["muzero"] = mz_agent
 
     return agents
