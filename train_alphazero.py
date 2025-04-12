@@ -24,10 +24,6 @@ from algorithms.mcts import PredictResult, MCTSNode
 LOG_DIR = DATA_DIR / "game_logs"
 
 
-# Removed PredictRequest dataclass
-# Removed _handle_predict_request function
-
-
 def _default_serializer(obj):
     """JSON serializer for objects not serializable by default json code"""
     if isinstance(obj, np.ndarray):
@@ -200,9 +196,6 @@ def _initialize_parallel_games(num_parallel_games: int, env_factory: callable) -
         "completed_actions": completed_actions,
         "states_before_action": states_before_action,
     }
-
-
-# Removed _start_mcts_searches function
 
 
 def _process_network_batch(
@@ -405,9 +398,6 @@ def _process_finished_games(
                 games_needing_action.append(game_idx)
 
     return episodes_finished_this_cycle
-
-
-# Removed _advance_and_process_generators function
 
 
 def collect_parallel_self_play_data(
