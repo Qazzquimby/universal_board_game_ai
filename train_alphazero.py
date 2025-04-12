@@ -421,7 +421,7 @@ class SelfPlayManager:
         self.histories = [[] for _ in range(num_parallel_games)]
         self.states_before_action = {}
         self.mcts_instances = {}
-        self.pending_requests = []
+        self.pending_requests = {}
 
     def run(self):
         while self.num_finished_games < self.num_games_to_collect:
@@ -435,35 +435,51 @@ class SelfPlayManager:
 
     def _run_one_iter(self):
         self._create_missing_games()
-        self._handle_pending_requests()
+        self._repeatedly_handle_pending_requests()
         self._handle_completed_searches()
 
+    def _create_missing_games(self):
+        for game_idx in range(self.num_parallel_games):
+            if (
+                game_idx not in self.mcts_instances
+                and not self.envs[game_idx].is_game_over()
+            ):
+                self.states_before_action[game_idx] = self.observations[game_idx].copy()
+                mcts = AlphaZeroMCTS(
+                    self.envs[game_idx], self.agent.config, self.agent.network
+                )
+                mcts.start_search(
+                    self.envs[game_idx], self.observations[game_idx], train=True
+                )
+                self.mcts_instances[game_idx] = mcts
+                # todo avoid duplicate requests and cache past responses
+                self._get_mcts_network_request(game_idx=game_idx, response=None)
+
     def _get_mcts_network_request(
-        self, game_idx: int, response: Optional[Tuple[np.ndarray, float]]
+        self, game_idx: int, response: Optional[Tuple[np.ndarray, float]] = None
     ):
         mcts: AlphaZeroMCTS = self.mcts_instances[game_idx]
         request = mcts.get_network_request(previous_response=response)
         if request is not None:
-            self.pending_requests.append((game_idx, request))
+            self.pending_requests[game_idx] = request
 
-    def _handle_pending_requests(self):
+    def _repeatedly_handle_pending_requests(self):
         while len(self.pending_requests) >= self.inference_batch_size // 2:
             batch_size = min(self.inference_batch_size, len(self.pending_requests))
-            batch_states = [req[1] for req in self.pending_requests[:batch_size]]
+            game_indices = list(self.pending_requests.keys())[:batch_size]
+            batch_states = [self.pending_requests[idx] for idx in game_indices]
             policy_list, value_list = self.agent.network.predict_batch(batch_states)
-            # todo confirm policy_list,value_list perfectly map to the pending requests
-            # Process responses and collect new requests
-            for i, (game_idx, _) in enumerate(self.pending_requests[:batch_size]):
+
+            # Process responses
+            for i, game_idx in enumerate(game_indices):
                 response = (policy_list[i], value_list[i])
+                del self.pending_requests[game_idx]
                 self._get_mcts_network_request(game_idx=game_idx, response=response)
-                # todo remove pending request
 
     def _handle_completed_searches(self):
         for game_idx, mcts in list(self.mcts_instances.items()):
-            if not any(req[0] == game_idx for req in self.pending_requests):
+            if game_idx not in self.pending_requests:
                 action, policy = mcts.get_result()
-                if action is None:
-                    continue  # Why would this be none?
 
                 # Step environment
                 next_obs, reward, done = self.envs[game_idx].step(action)
@@ -498,23 +514,6 @@ class SelfPlayManager:
                     self.num_finished_games += 1
                     self.observations[game_idx] = self.envs[game_idx].reset()
                     self.histories[game_idx] = []
-
-    def _create_missing_games(self):
-        for game_idx in range(self.num_parallel_games):
-            if (
-                game_idx not in self.mcts_instances
-                and not self.envs[game_idx].is_game_over()
-            ):
-                self.states_before_action[game_idx] = self.observations[game_idx].copy()
-                mcts = AlphaZeroMCTS(
-                    self.envs[game_idx], self.agent.config, self.agent.network
-                )
-                mcts.start_search(
-                    self.envs[game_idx], self.observations[game_idx], train=True
-                )
-                self.mcts_instances[game_idx] = mcts
-                # todo avoid duplicate requests and cache past responses
-                self._get_mcts_network_request(game_idx=game_idx, response=None)
 
 
 def run_training(config: AppConfig, env_name_override: str = None):

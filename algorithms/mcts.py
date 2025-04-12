@@ -547,6 +547,7 @@ class AlphaZeroMCTS(MCTS):
     def start_search(
         self, env: BaseEnvironment, state: StateType, train: bool = False
     ) -> None:
+        # todo, I think this can be removed and handled with init?
         self.reset_root()
         self.base_env = env.copy()
         self.base_env.set_state(state)

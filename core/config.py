@@ -49,7 +49,7 @@ class AlphaZeroConfig:
     # Number of game steps before reducing temperature
     temperature_decay_steps: int = 30
     # Parallel Self-Play & Batching
-    num_parallel_games: int = 64  # Number of games to run in parallel during self-play
+    num_parallel_games: int = 32  # Number of games to run in parallel during self-play
     inference_batch_size: int = 32  # Max batch size for network inference
     # --- Dirichlet Noise for Exploration during Self-Play ---
     dirichlet_alpha: float = 0.3  # Shape parameter for noise (typical value 0.3)
@@ -88,7 +88,7 @@ class TrainingConfig:
 
     # Specific to AlphaZero/MuZero training loops
     num_iterations: int = 1000  # Total training iterations
-    num_games_per_iteration: int = 25
+    num_games_per_iteration: int = 32
     # Number of epochs (passes over replay buffer) per learning phase
     num_epochs_per_iteration: int = 4  # Increased epochs
     # How often (in iterations) to run sanity checks (0=only at end, 1=every iteration)
