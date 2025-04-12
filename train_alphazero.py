@@ -469,11 +469,6 @@ class SelfPlayManager:
                 # Continue game
                 self.states_before_action[game_idx] = self.observations[game_idx].copy()
                 mcts = self.mcts_instances[game_idx]
-                # Ensure MCTS internal env reflects the current actual env state
-                # This is crucial if the env state changed between the last step and now
-                # (though it shouldn't have if logic is correct)
-                mcts.env = self.envs[game_idx].copy()
-                mcts.env.set_state(self.observations[game_idx])
                 mcts.prepare_for_next_search(train=True)
                 self._get_mcts_network_request(game_idx=game_idx, response=None)
 
@@ -532,6 +527,7 @@ class SelfPlayManager:
                 self._handle_finished_game(game_idx=game_idx)
             else:
                 mcts.advance_root(action)
+                mcts.env = self.envs[game_idx].copy()
 
     def _handle_finished_game(self, game_idx):
         winner = self.envs[game_idx].get_winning_player()

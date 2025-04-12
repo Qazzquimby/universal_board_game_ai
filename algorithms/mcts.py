@@ -445,19 +445,6 @@ class AlphaZeroMCTS(MCTS):
                 logger.warning(
                     f"Action {action_key} (index {action_index}) not found in policy vector during expand."
                 )
-
-            sorted_priors = sorted(
-                action_priors_dict.items(), key=lambda item: item[1], reverse=True
-            )
-            state_obs = env_state.get_observation()
-            logger.debug(
-                f"  Expand (Network): State={state_obs.get('board', state_obs.get('piles', 'N/A'))}, Player={state_obs['current_player']}"
-            )
-            logger.debug(f"  Expand (Network): Legal Actions={legal_actions}")
-            # logger.debug(
-            #     f"  Expand (Network={type(self.network).__name__}): Applied Priors (Top 5): { {a: f'{p:.3f}' for a, p in sorted_priors[:5]} }"
-            # )
-
         node.expand(action_priors_dict)
 
         # If priors were provided and non-zero, children should have been created.
