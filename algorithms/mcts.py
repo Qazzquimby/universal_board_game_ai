@@ -125,19 +125,18 @@ class DummyAlphaZeroNet(nn.Module):
 def get_state_key(s: StateType) -> str:
     """Creates a hashable key from a state dictionary."""
     try:
-        items = []
-        # Sort items for consistency
+        parts = []
         for k, v in sorted(s.items()):
             if isinstance(v, np.ndarray):
-                items.append((k, v.tobytes()))
+                parts.append(f"{k}:{hash(v.tobytes())}")
             elif isinstance(v, list):
-                items.append((k, tuple(v)))  # Convert lists to tuples
+                parts.append(f"{k}:{tuple(v)}")
             else:
-                items.append((k, v))
-        return str(tuple(items))
+                parts.append(f"{k}:{repr(v)}")
+        return "|".join(parts)
     except TypeError as e:
         logger.warning(
-            f"State not easily hashable: {s}. Error: {e}. Using simple str()."
+            f"State key generation failed with TypeError: {e}. Falling back to simple str(). State: {s}"
         )
         return str(s)
 
