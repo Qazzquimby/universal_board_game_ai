@@ -511,17 +511,11 @@ class AlphaZeroMCTS(MCTS):
         )
         return value
 
-    def get_network_request(
-        self, previous_response: Optional[Tuple[np.ndarray, float]] = None
-    ) -> Optional[StateType]:
+    def get_network_request(self, previous_response: Optional[Tuple[np.ndarray, float]] = None) -> Optional[StateType]:
         if previous_response:
             policy_np, value = previous_response
             self._expand(self.current_leaf_node, self.current_leaf_env, policy_np)
-            if (
-                self.current_leaf_node == self.root
-                and self.training
-                and self.config.dirichlet_epsilon > 0
-            ):
+            if self.current_leaf_node == self.root and self.training and self.config.dirichlet_epsilon > 0:
                 self._apply_dirichlet_noise()
             self._backpropagate(self.current_leaf_node, value)
             self.current_leaf_node = None
@@ -544,9 +538,7 @@ class AlphaZeroMCTS(MCTS):
 
         return None
 
-    def start_search(
-        self, env: BaseEnvironment, state: StateType, train: bool = False
-    ) -> None:
+    def start_search(self, env: BaseEnvironment, state: StateType, train: bool = False) -> None:
         self.reset_root()
         self.base_env = env.copy()
         self.base_env.set_state(state)
@@ -557,12 +549,10 @@ class AlphaZeroMCTS(MCTS):
 
     def get_result(self) -> Tuple[Optional[ActionType], Optional[np.ndarray]]:
         if not self.root.children:
-            logger.error(f"Root node has no children after search.")
+            logger.error("Root node has no children after search.")
             assert False
 
-        visit_counts = np.array(
-            [child.visit_count for child in self.root.children.values()]
-        )
+        visit_counts = np.array([child.visit_count for child in self.root.children.values()])
         actions = list(self.root.children.keys())
 
         if np.sum(visit_counts) == 0:
@@ -576,98 +566,26 @@ class AlphaZeroMCTS(MCTS):
             chosen_action_index = np.argmax(visit_counts)
             chosen_action = actions[chosen_action_index]
 
-        policy_target = self._calculate_policy_target(
-            self.root, actions, visit_counts, self.base_env
-        )
+        policy_target = self._calculate_policy_target(self.root, actions, visit_counts, self.base_env)
         return chosen_action, policy_target
 
     # Modify signature to accept env directly
-    def _select_leaf(
-        self, root_node: MCTSNode, env: BaseEnvironment
-    ) -> Tuple[Optional[MCTSNode], Optional[BaseEnvironment], List[MCTSNode]]:
-        """
-        Selects a leaf node starting from the root using PUCT scores.
-
-        Args:
-            root_node: The starting node for selection.
-            env: The base environment instance (used for copying).
-            initial_state: The state corresponding to the root node.
-
-        Returns:
-            A tuple containing:
-            - The selected leaf node (or None if an error occurs).
-            - The environment state at the leaf node (or None if error).
-            - The list of nodes in the search path.
-        """
+    def _select_leaf(self, root_node: MCTSNode, env: BaseEnvironment) -> Tuple[MCTSNode, BaseEnvironment, List[MCTSNode]]:
         node = root_node
-        # Start simulation from the env's current state (assumed to be initial_state)
         sim_env = env.copy()
         search_path = [node]
-        sim_log_prefix = "  Sim Select:"  # Simplified prefix for helper
+        max_loops = env.height * env.width + 5 if hasattr(env, "height") and hasattr(env, "width") else 100
+        loop_count = 0
 
-        selection_active = True
-        loop_count = 0  # Add loop counter for debugging deep selections
-        # Calculate safety break based on env dimensions passed in
-        max_loops = (
-            env.height * env.width + 5
-            if hasattr(env, "height") and hasattr(env, "width")
-            else 100
-        )
-
-        while (
-            selection_active
-            and node.is_expanded()
-            and not sim_env.is_game_over()
-            and loop_count < max_loops
-        ):
+        while node.is_expanded() and not sim_env.is_game_over() and loop_count < max_loops:
             loop_count += 1
             parent_visits = node.visit_count
-            logger.trace(
-                f"{sim_log_prefix} Loop {loop_count}: Node={node}, ParentVisits={parent_visits}"
-            )
-
-            assert (
-                node.children
-            ), f"MCTS _select_leaf: Node {node} is expanded but has no children!"
-
-            # Calculate scores for all children determined during expansion
-            child_scores = {
-                act: self._score_child(child, parent_visits)
-                for act, child in node.children.items()
-            }
-            # --- Add detailed score logging ---
-            log_scores = {str(a): f"{s:.3f}" for a, s in child_scores.items()}
-            logger.trace(
-                f"{sim_log_prefix} Loop {loop_count}: ChildScores={log_scores}"
-            )
-            # --- End detailed score logging ---
-
+            assert node.children, f"Node {node} is expanded but has no children!"
+            child_scores = {act: self._score_child(child, parent_visits) for act, child in node.children.items()}
             best_action = max(child_scores, key=child_scores.get)
-            logger.debug(
-                f"{sim_log_prefix} Loop {loop_count}: ChosenAction={best_action} (Score={child_scores[best_action]:.3f})"
-            )
-
-            try:
-                logger.debug(f"{sim_log_prefix} Stepping env with {best_action}")
-                sim_env.step(best_action)
-                logger.trace(
-                    f"{sim_log_prefix} Loop {loop_count}: Moving to child node for action {best_action}"
-                )
-                selected_child_node = node.children[best_action]
-                node = selected_child_node  # Update node for next loop iteration
-                search_path.append(node)
-                logger.trace(
-                    f"{sim_log_prefix} Loop {loop_count}: New Node={node}, PathLen={len(search_path)}"
-                )
-            except (ValueError, KeyError) as e:
-                logger.error(
-                    f"{sim_log_prefix} Error stepping env or finding child for action {best_action}. Error: {e}"
-                )
-                return None, None, search_path
-
-        logger.debug(
-            f"{sim_log_prefix} Selection finished. Leaf node: {node}, PathLen: {len(search_path)}"
-        )
+            sim_env.step(best_action)
+            node = node.children[best_action]
+            search_path.append(node)
 
         return node, sim_env, search_path
 
