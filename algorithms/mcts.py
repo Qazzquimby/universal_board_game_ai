@@ -543,7 +543,7 @@ class AlphaZeroMCTS(MCTS):
                     and self.config.dirichlet_epsilon > 0
                     and self.sim_count == 0
                 ):
-                     self._apply_dirichlet_noise()
+                    self._apply_dirichlet_noise()
                 self._backpropagate(leaf_node, value)
                 self.sim_count += 1
             else:
@@ -553,7 +553,7 @@ class AlphaZeroMCTS(MCTS):
 
         self.current_leaf_node = None
         self.current_leaf_env = None
-        return None # Indicate search is complete
+        return None  # Indicate search is complete
 
     def get_result(self) -> Tuple[ActionType, np.ndarray]:
         assert self.root.children, "MCTS Error: Root node has no children after search."

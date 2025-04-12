@@ -621,7 +621,7 @@ def run_training(config: AppConfig, env_name_override: str = None):
             iteration=iteration + 1,
             env_name=config.env.name,
             inference_batch_size=config.alpha_zero.inference_batch_size,
-            network_cache={}
+            network_cache={},
         ).run()
 
         agent.add_experiences_to_buffer(self_play_experiences)
