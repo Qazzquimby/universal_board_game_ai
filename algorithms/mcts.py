@@ -369,6 +369,20 @@ class AlphaZeroMCTS(MCTS):
         self.current_leaf_node = None
         self.current_leaf_env = None
 
+    def advance_root(self, action: ActionType):
+        """Advances the root of the search tree to the child corresponding to the action."""
+        action_key = tuple(action) if isinstance(action, list) else action
+        assert action_key in self.root.children
+
+        self.root = self.root.children[action_key]
+        self.root.parent = None  # Detach from the old parent
+        self.sim_count = 0  # Reset simulation count for the new search
+        self.training = (
+            False  # Reset training flag (can be set again in start_search if needed)
+        )
+        self.current_leaf_node = None
+        self.current_leaf_env = None
+
     def _expand(
         self,
         node: MCTSNode,
@@ -496,7 +510,6 @@ class AlphaZeroMCTS(MCTS):
             value = 1.0
         else:
             value = -1.0
-        # logger.debug(f"  Sim Eval: Terminal state found. Winner={winner}, PlayerAtNode={player_at_leaf}, Value={value}")
         return value
 
     def get_network_request(

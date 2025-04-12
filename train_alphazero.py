@@ -420,30 +420,42 @@ class SelfPlayManager:
         self.observations = [env.reset() for env in self.envs]
         self.histories = [[] for _ in range(num_parallel_games)]
         self.states_before_action = {}
-        self.mcts_instances = {}
+        self.mcts_instances: Dict[
+            int, AlphaZeroMCTS
+        ] = {}  # Keep instances between turns
         self.pending_requests = {}
 
     def run(self):
-        while self.num_finished_games < self.num_games_to_collect:
-            self._run_one_iter()
-
-        logger.info(
-            f"Collected {len(self.all_experiences)} experiences from {self.num_finished_games} games ({self.num_steps_taken} steps)."
+        pbar = tqdm(
+            total=self.num_games_to_collect, desc="Self-Play Games", unit="game"
         )
-        self.agent.reset()
+        pbar.update(self.num_finished_games)
+
+        while self.num_finished_games < self.num_games_to_collect:
+            games_finished_before_iter = self.num_finished_games
+            self._run_one_iter()
+            games_finished_after_iter = self.num_finished_games
+            # Update progress bar only by the number of games finished in this iteration
+            pbar.update(games_finished_after_iter - games_finished_before_iter)
+
+        pbar.close()
+
         return self.all_experiences
 
     def _run_one_iter(self):
-        self._create_missing_games()
+        """Performs one iteration of the self-play loop."""
+        self._start_needed_searches()
         self._repeatedly_handle_pending_requests()
         self._handle_completed_searches()
 
-    def _create_missing_games(self):
+    def _start_needed_searches(self):
+        """Starts MCTS search for games that need it (new games or games ready for next move)."""
         for game_idx in range(self.num_parallel_games):
-            if (
-                game_idx not in self.mcts_instances
-                and not self.envs[game_idx].is_game_over()
-            ):
+            if self.envs[game_idx].is_game_over() or game_idx in self.pending_requests:
+                continue
+
+            if game_idx not in self.mcts_instances:
+                # New game
                 self.states_before_action[game_idx] = self.observations[game_idx].copy()
                 mcts = AlphaZeroMCTS(
                     self.envs[game_idx], self.agent.config, self.agent.network
@@ -452,7 +464,18 @@ class SelfPlayManager:
                     self.envs[game_idx], self.observations[game_idx], train=True
                 )
                 self.mcts_instances[game_idx] = mcts
-                # todo avoid duplicate requests and cache past responses
+                self._get_mcts_network_request(game_idx=game_idx, response=None)
+            else:
+                # Continue game
+                self.states_before_action[game_idx] = self.observations[game_idx].copy()
+                mcts = self.mcts_instances[game_idx]
+                # The root has already been advanced by _handle_completed_searches.
+                # We just need to kick off the simulation loop by requesting the first network eval.
+                # Reset sim_count and flags (might be redundant if advance_root does it)
+                mcts.sim_count = 0
+                mcts.training = True  # Assume training context
+                mcts.current_leaf_node = None
+                mcts.current_leaf_env = None
                 self._get_mcts_network_request(game_idx=game_idx, response=None)
 
     def _get_mcts_network_request(
@@ -472,48 +495,67 @@ class SelfPlayManager:
 
             # Process responses
             for i, game_idx in enumerate(game_indices):
+                assert game_idx in self.pending_requests
                 response = (policy_list[i], value_list[i])
                 del self.pending_requests[game_idx]
                 self._get_mcts_network_request(game_idx=game_idx, response=response)
 
     def _handle_completed_searches(self):
+        """Handles games where MCTS search has finished for the current step."""
+        completed_game_indices = []
         for game_idx, mcts in list(self.mcts_instances.items()):
             if game_idx not in self.pending_requests:
-                action, policy = mcts.get_result()
+                completed_game_indices.append(game_idx)
 
-                # Step environment
-                next_obs, reward, done = self.envs[game_idx].step(action)
-                self.num_steps_taken += 1
+        for game_idx in completed_game_indices:
+            mcts = self.mcts_instances[game_idx]
+            action, policy = mcts.get_result()
 
-                # Record history
-                self.histories[game_idx].append(
-                    (self.states_before_action[game_idx], action, policy)
-                )
-                self.observations[game_idx] = next_obs
+            assert action
+            next_obs, reward, done = self.envs[game_idx].step(action)
+            self.num_steps_taken += 1
 
-                # Clean up
-                del self.mcts_instances[game_idx]
+            assert policy
+            self.histories[game_idx].append(
+                (self.states_before_action[game_idx], action, policy)
+            )
+            self.observations[game_idx] = next_obs
+
+            if game_idx in self.states_before_action:
                 del self.states_before_action[game_idx]
 
-                if done:
-                    winner = self.envs[game_idx].get_winning_player()
-                    final_outcome = 1.0 if winner == 0 else -1.0 if winner == 1 else 0.0
+            if done:
+                self._handle_finished_game(game_idx=game_idx)
+            else:
+                mcts.advance_root(action)
 
-                    episode_result = self.agent.process_finished_episode(
-                        self.histories[game_idx], final_outcome
-                    )
-                    self.all_experiences.extend(episode_result.buffer_experiences)
+    def _handle_finished_game(self, game_idx):
+        winner = self.envs[game_idx].get_winning_player()
+        final_outcome = 1.0 if winner == 0 else -1.0 if winner == 1 else 0.0
 
-                    save_game_log(
-                        logged_history=episode_result.logged_history,
-                        iteration=self.iteration,
-                        game_index=self.num_finished_games + 1,
-                        env_name=self.env_name,
-                    )
+        valid_history = [
+            (s, a, p) for s, a, p in self.histories[game_idx] if p is not None
+        ]
 
-                    self.num_finished_games += 1
-                    self.observations[game_idx] = self.envs[game_idx].reset()
-                    self.histories[game_idx] = []
+        assert valid_history
+        episode_result = self.agent.process_finished_episode(
+            valid_history, final_outcome
+        )
+        self.all_experiences.extend(episode_result.buffer_experiences)
+
+        save_game_log(
+            logged_history=episode_result.logged_history,
+            iteration=self.iteration,
+            game_index=self.num_finished_games + 1,
+            env_name=self.env_name,
+        )
+
+        self.num_finished_games += 1
+        self.observations[game_idx] = self.envs[game_idx].reset()
+        self.histories[game_idx] = []
+
+        if game_idx in self.mcts_instances:
+            del self.mcts_instances[game_idx]
 
 
 def run_training(config: AppConfig, env_name_override: str = None):
