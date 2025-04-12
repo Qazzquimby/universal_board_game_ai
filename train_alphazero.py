@@ -436,30 +436,29 @@ class SelfPlayManager:
     def _run_one_iter(self):
         self._create_missing_games()
 
-        # Collect network requests from all active MCTS instances
-        # todo: You're passing None in to *all* instances? Are not some of them awaiting a response? Do you not want to do this only for the new instances?
+        # Collect network requests from MCTS instances that don't have pending responses
         for game_idx, mcts in self.mcts_instances.items():
-            request = mcts.get_network_request(None)
-            if request is not None:
-                self.pending_requests.append((game_idx, request))
-
-        # Process network requests in batches
-        if self.pending_requests:
-            batch_states = [req[1] for req in self.pending_requests]
-            policy_list, value_list = self.agent.network.predict_batch(
-                batch_states[: self.inference_batch_size]
-            )
-
-            # Process responses
-            for i, (game_idx, _) in enumerate(
-                self.pending_requests[: self.inference_batch_size]
-            ):
-                mcts = self.mcts_instances[game_idx]
-                request = mcts.get_network_request((policy_list[i], value_list[i]))
+            if not any(req[0] == game_idx for req in self.pending_requests):
+                request = mcts.get_network_request(None)
                 if request is not None:
                     self.pending_requests.append((game_idx, request))
 
-            self.pending_requests = self.pending_requests[self.inference_batch_size :]
+        # Process network requests in batches
+        if self.pending_requests:
+            batch_size = min(self.inference_batch_size, len(self.pending_requests))
+            batch_states = [req[1] for req in self.pending_requests[:batch_size]]
+            policy_list, value_list = self.agent.network.predict_batch(batch_states)
+
+            # Process responses and collect new requests
+            new_requests = []
+            for i, (game_idx, _) in enumerate(self.pending_requests[:batch_size]):
+                mcts = self.mcts_instances[game_idx]
+                request = mcts.get_network_request((policy_list[i], value_list[i]))
+                if request is not None:
+                    new_requests.append((game_idx, request))
+
+            # Update pending requests
+            self.pending_requests = self.pending_requests[batch_size:] + new_requests
 
         # Check for completed searches
         for game_idx, mcts in list(self.mcts_instances.items()):
