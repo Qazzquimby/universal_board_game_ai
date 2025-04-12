@@ -358,6 +358,7 @@ class AlphaZeroMCTS(MCTS):
         env: BaseEnvironment,
         config: AlphaZeroConfig,
         network: Optional[AlphaZeroNet] = None,
+        network_cache: Optional[Dict] = None,
     ):
         super().__init__(
             exploration_constant=config.cpuct,
@@ -365,6 +366,7 @@ class AlphaZeroMCTS(MCTS):
         )
         self.config = config
         self.network = network if network is not None else DummyAlphaZeroNet(env)
+        self.network_cache = network_cache if network_cache is not None else {}
 
         self.env = env
         self.current_leaf_node = None
@@ -480,7 +482,6 @@ class AlphaZeroMCTS(MCTS):
             )
         return q_value_for_parent + u_score
 
-    # Add helper method to AlphaZeroMCTS or MCTS
     def find_action_for_child(self, child_node: MCTSNode) -> Optional[ActionType]:
         """Find the action that leads to a given child node from the root."""
         if child_node.parent != self.root:
@@ -512,6 +513,7 @@ class AlphaZeroMCTS(MCTS):
                 self.current_leaf_node == self.root
                 and self.training
                 and self.config.dirichlet_epsilon > 0
+                and self.sim_count == 1
             ):
                 self._apply_dirichlet_noise()
             self._backpropagate(self.current_leaf_node, value)
@@ -519,18 +521,39 @@ class AlphaZeroMCTS(MCTS):
             self.current_leaf_env = None
 
         while self.sim_count < self.num_simulations:
-            self.sim_count += 1
             leaf_node, leaf_env, _ = self._select_leaf(self.root, self.env)
+
             if leaf_env.is_game_over():
                 value = self.get_terminal_value(leaf_env)
                 self._backpropagate(leaf_node, value)
+                self.sim_count += 1
                 continue
 
-            self.current_leaf_node = leaf_node
-            self.current_leaf_env = leaf_env
-            return leaf_env.get_observation()
+            leaf_state_obs = leaf_env.get_observation()
+            state_key = get_state_key(leaf_state_obs)
 
-        return None
+            cached_result = self.network_cache.get(state_key)
+            if cached_result:
+                # Cache Hit: Use cached result directly
+                policy_np, value = cached_result
+                self._expand(leaf_node, leaf_env, policy_np)
+                if (
+                    leaf_node == self.root
+                    and self.training
+                    and self.config.dirichlet_epsilon > 0
+                    and self.sim_count == 0
+                ):
+                     self._apply_dirichlet_noise()
+                self._backpropagate(leaf_node, value)
+                self.sim_count += 1
+            else:
+                self.current_leaf_node = leaf_node
+                self.current_leaf_env = leaf_env
+                return leaf_state_obs
+
+        self.current_leaf_node = None
+        self.current_leaf_env = None
+        return None # Indicate search is complete
 
     def get_result(self) -> Tuple[ActionType, np.ndarray]:
         assert self.root.children, "MCTS Error: Root node has no children after search."

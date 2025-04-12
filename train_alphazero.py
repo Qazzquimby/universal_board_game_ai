@@ -7,7 +7,6 @@ from typing import (
     Dict,
     Optional,
 )
-from dataclasses import dataclass
 
 import numpy as np
 from tqdm import tqdm
@@ -18,7 +17,7 @@ from environments.base import BaseEnvironment, StateType, ActionType
 from agents.alphazero_agent import AlphaZeroAgent
 from factories import get_environment, get_agents
 from utils.plotting import plot_losses
-from algorithms.mcts import PredictResult, MCTSNode, AlphaZeroMCTS
+from algorithms.mcts import PredictResult, MCTSNode, AlphaZeroMCTS, get_state_key
 
 LOG_DIR = DATA_DIR / "game_logs"
 
@@ -404,9 +403,11 @@ class SelfPlayManager:
         iteration: int,
         env_name: str,
         inference_batch_size: int,
+        network_cache: Dict,
     ):
         self.num_games_to_collect = num_games_to_collect
         self.num_parallel_games = num_parallel_games
+        self.network_cache = network_cache
         self.agent = agent
         self.inference_batch_size = inference_batch_size
         self.iteration = iteration
@@ -458,10 +459,14 @@ class SelfPlayManager:
                 # New game
                 self.states_before_action[game_idx] = self.observations[game_idx].copy()
                 mcts = AlphaZeroMCTS(
-                    self.envs[game_idx], self.agent.config, self.agent.network
+                    env=self.envs[game_idx],
+                    config=self.agent.config,
+                    network=self.agent.network,
+                    network_cache=self.network_cache,
                 )
-                mcts.base_env = self.envs[game_idx].copy()
-                mcts.base_env.set_state(self.observations[game_idx])
+
+                mcts.env = self.envs[game_idx].copy()
+                mcts.env.set_state(self.observations[game_idx])
                 mcts.prepare_for_next_search(train=True)
                 self.mcts_instances[game_idx] = mcts
                 self._get_mcts_network_request(game_idx=game_idx, response=None)
@@ -491,6 +496,9 @@ class SelfPlayManager:
             for i, game_idx in enumerate(game_indices):
                 assert game_idx in self.pending_requests
                 response = (policy_list[i], value_list[i])
+                self.network_cache[
+                    get_state_key(self.pending_requests[game_idx])
+                ] = response
                 del self.pending_requests[game_idx]
                 self._get_mcts_network_request(game_idx=game_idx, response=response)
 
@@ -613,6 +621,7 @@ def run_training(config: AppConfig, env_name_override: str = None):
             iteration=iteration + 1,
             env_name=config.env.name,
             inference_batch_size=config.alpha_zero.inference_batch_size,
+            network_cache={}
         ).run()
 
         agent.add_experiences_to_buffer(self_play_experiences)
