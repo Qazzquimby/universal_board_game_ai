@@ -18,8 +18,7 @@ from environments.base import BaseEnvironment, StateType, ActionType
 from agents.alphazero_agent import AlphaZeroAgent
 from factories import get_environment, get_agents
 from utils.plotting import plot_losses
-from algorithms.mcts import PredictResult, MCTSNode
-
+from algorithms.mcts import PredictResult, MCTSNode, AlphaZeroMCTS
 
 LOG_DIR = DATA_DIR / "game_logs"
 
@@ -418,80 +417,85 @@ def collect_parallel_self_play_data(
     observations = [env.reset() for env in envs]
     histories = [[] for _ in range(num_parallel_games)]
     states_before_action = {}
-    active_searches = {}
+    mcts_instances = {}
     pending_requests = []
 
-    pbar = tqdm(total=num_episodes_to_collect, desc="Parallel Self-Play", leave=False) if use_tqdm else None
-
     while finished_episodes_count < num_episodes_to_collect:
-        # Start new searches
+        # Create new MCTS instances for games that need them
         for game_idx in range(num_parallel_games):
-            if game_idx not in active_searches and not envs[game_idx].is_game_over():
+            if game_idx not in mcts_instances and not envs[game_idx].is_game_over():
                 states_before_action[game_idx] = observations[game_idx].copy()
-                agent.mcts.start_search(envs[game_idx], observations[game_idx], train=True)
-                active_searches[game_idx] = True
+                mcts = AlphaZeroMCTS(envs[game_idx], agent.config, agent.network)
+                mcts.start_search(envs[game_idx], observations[game_idx], train=True)
+                mcts_instances[game_idx] = mcts
 
-        # Get network requests from all active searches
-        for game_idx in list(active_searches.keys()):
-            request = agent.mcts.get_network_request(None)
+        # Collect network requests from all active MCTS instances
+        for game_idx, mcts in mcts_instances.items():
+            request = mcts.get_network_request(None)
             if request is not None:
                 pending_requests.append((game_idx, request))
 
         # Process network requests in batches
         if pending_requests:
             batch_states = [req[1] for req in pending_requests]
-            policy_list, value_list = agent.network.predict_batch(batch_states[:inference_batch_size])
-            
+            policy_list, value_list = agent.network.predict_batch(
+                batch_states[:inference_batch_size]
+            )
+
             # Process responses
             for i, (game_idx, _) in enumerate(pending_requests[:inference_batch_size]):
-                request = agent.mcts.get_network_request((policy_list[i], value_list[i]))
+                mcts = mcts_instances[game_idx]
+                request = mcts.get_network_request((policy_list[i], value_list[i]))
                 if request is not None:
                     pending_requests.append((game_idx, request))
 
             pending_requests = pending_requests[inference_batch_size:]
 
         # Check for completed searches
-        for game_idx in list(active_searches.keys()):
-            if not pending_requests or all(req[0] != game_idx for req in pending_requests):
-                action, policy = agent.mcts.get_result()
+        completed_games = []
+        for game_idx, mcts in list(mcts_instances.items()):
+            if not any(req[0] == game_idx for req in pending_requests):
+                action, policy = mcts.get_result()
                 if action is None:
                     continue
 
                 # Step environment
                 next_obs, reward, done = envs[game_idx].step(action)
                 total_steps_taken += 1
-                
+
                 # Record history
-                histories[game_idx].append((states_before_action[game_idx], action, policy))
+                histories[game_idx].append(
+                    (states_before_action[game_idx], action, policy)
+                )
                 observations[game_idx] = next_obs
-                
+
                 # Clean up
-                del active_searches[game_idx]
+                del mcts_instances[game_idx]
                 del states_before_action[game_idx]
 
                 if done:
-                    # Process episode
                     winner = envs[game_idx].get_winning_player()
                     final_outcome = 1.0 if winner == 0 else -1.0 if winner == 1 else 0.0
-                    
-                    episode_result = agent.process_finished_episode(histories[game_idx], final_outcome)
+
+                    episode_result = agent.process_finished_episode(
+                        histories[game_idx], final_outcome
+                    )
                     all_experiences.extend(episode_result.buffer_experiences)
-                    
-                    save_game_log(episode_result.logged_history, iteration, 
-                                finished_episodes_count + 1, env_name)
-                    
-                    # Reset for next episode
+
+                    save_game_log(
+                        episode_result.logged_history,
+                        iteration,
+                        finished_episodes_count + 1,
+                        env_name,
+                    )
+
                     finished_episodes_count += 1
-                    if pbar:
-                        pbar.update(1)
-                    
                     observations[game_idx] = envs[game_idx].reset()
                     histories[game_idx] = []
 
-    if pbar:
-        pbar.close()
-
-    logger.info(f"Collected {len(all_experiences)} experiences from {finished_episodes_count} games ({total_steps_taken} steps).")
+    logger.info(
+        f"Collected {len(all_experiences)} experiences from {finished_episodes_count} games ({total_steps_taken} steps)."
+    )
     agent.reset()
 
     return SelfPlayResult(experiences=all_experiences, network_time_ms=0.0)
@@ -538,14 +542,12 @@ def run_training(config: AppConfig, env_name_override: str = None):
         logger.info(f"\n--- Iteration {iteration + 1}/{num_training_iterations} ---")
 
         # 1. Self-Play Phase
-        if agent.network:  # Check if network exists before setting mode
-            agent.network.eval()  # Ensure network is in eval mode for self-play actions
+        if agent.network:
+            agent.network.eval()
         logger.info("Collecting self-play data (parallel)...")
 
-        # Need a way to create new env instances for parallel collection
         env_factory = lambda: get_environment(config.env)
 
-        # Call using keyword arguments and receive the dataclass object
         self_play_result = collect_parallel_self_play_data(
             env_factory=env_factory,
             agent=agent,
@@ -553,11 +555,10 @@ def run_training(config: AppConfig, env_name_override: str = None):
             num_parallel_games=config.alpha_zero.num_parallel_games,
             iteration=iteration + 1,
             env_name=config.env.name,
-            inference_batch_size=config.alpha_zero.inference_batch_size,  # Pass batch size
+            inference_batch_size=config.alpha_zero.inference_batch_size,
             use_tqdm=use_tqdm,
         )
 
-        # Add collected data to the agent's replay buffer from the result object
         if self_play_result.experiences:
             agent.add_experiences_to_buffer(self_play_result.experiences)
             logger.info(
@@ -569,7 +570,6 @@ def run_training(config: AppConfig, env_name_override: str = None):
         # 2. Learning Phase
         logger.info("Running learning step...")
         loss_results = agent.learn()
-        # Log learning time only if learning actually happened
         if loss_results:
             total_loss, value_loss, policy_loss = loss_results
             total_losses.append(total_loss)
@@ -584,12 +584,11 @@ def run_training(config: AppConfig, env_name_override: str = None):
             logger.info("Saving agent checkpoint...")
             agent.save()
 
-        # Print buffer size and latest losses if available
         buffer_size = len(agent.replay_buffer)
         logger.info(
             f"Iteration {iteration + 1} complete. Buffer size: {buffer_size}/{config.alpha_zero.replay_buffer_size}"
         )
-        if total_losses:  # Check if any learning steps have occurred
+        if total_losses:
             logger.info(
                 f"  Latest Losses: Total={total_losses[-1]:.4f}, Value={value_losses[-1]:.4f}, Policy={policy_losses[-1]:.4f}"
             )
@@ -602,15 +601,13 @@ def run_training(config: AppConfig, env_name_override: str = None):
             and (iteration + 1) % config.training.sanity_check_frequency == 0
         ):
 
-            run_sanity_checks(env, agent)  # Run checks on the current agent state
+            run_sanity_checks(env, agent)
 
     logger.info("\nTraining complete. Saving final agent state.")
     agent.save()
 
     logger.info("Plotting training losses...")
-    plot_losses(
-        total_losses, value_losses, policy_losses
-    )  # Call the new plotting function
+    plot_losses(total_losses, value_losses, policy_losses)
 
     # Run sanity checks one last time on the final trained agent
     # This ensures checks run even if num_iterations isn't a multiple of frequency
@@ -630,33 +627,27 @@ def run_sanity_checks(env: BaseEnvironment, agent: AlphaZeroAgent):
         logger.warning("Cannot run sanity checks: Agent network not initialized.")
         return
 
-    agent.network.eval()  # Ensure network is in eval mode
+    agent.network.eval()
 
     if not sanity_states:
         logger.info("No sanity check states defined for this environment.")
         return
 
-    for check_case in sanity_states:  # Iterate over SanityCheckState objects
+    for check_case in sanity_states:
         logger.info(f"\nChecking State: {check_case.description}")
-        # Print board/piles for context
         if "board" in check_case.state:
             logger.info("Board:")
-            logger.info(
-                f"\n{check_case.state['board']}"
-            )  # Add newline for better formatting
+            logger.info(f"\n{check_case.state['board']}")
         elif "piles" in check_case.state:
             logger.info(f"Piles: {check_case.state['piles']}")
         logger.info(f"Current Player: {check_case.state['current_player']}")
 
         try:
-            # Get network predictions
             policy_np, value_np = agent.network.predict(check_case.state)
-            # Print expected vs predicted value
             logger.info(
                 f"  Value: Expected={check_case.expected_value:.1f}, Predicted={value_np:.4f}"
             )
 
-            # Get legal actions for this state to interpret policy
             temp_env = env.copy()
             temp_env.set_state(check_case.state)
             legal_actions = temp_env.get_legal_actions()
@@ -669,7 +660,6 @@ def run_sanity_checks(env: BaseEnvironment, agent: AlphaZeroAgent):
                 else:
                     action_probs[action] = -1  # Indicate mapping error
 
-            # Sort actions by predicted probability for display
             sorted_probs = sorted(
                 action_probs.items(), key=lambda item: item[1], reverse=True
             )
@@ -680,7 +670,6 @@ def run_sanity_checks(env: BaseEnvironment, agent: AlphaZeroAgent):
             else:
                 for action, prob in sorted_probs:
                     if prob >= 0:
-                        # Highlight the best predicted action
                         highlight = " <<< BEST" if action == sorted_probs[0][0] else ""
                         logger.info(f"    - {action}: {prob:.4f}{highlight}")
                     else:
@@ -691,20 +680,14 @@ def run_sanity_checks(env: BaseEnvironment, agent: AlphaZeroAgent):
 
 
 if __name__ == "__main__":
-    # --- Configuration ---
     config = AppConfig()
     env_override = None
 
-    # --- Environment Selection (Optional: Add CLI arg parsing) ---
     if len(sys.argv) > 1:
         env_override = sys.argv[1]  # e.g., python train_alphazero.py Nim
 
-    # --- Loguru Configuration ---
     # Remove the default handler to prevent duplicate messages if re-adding stderr
     logger.remove()
     logger.add(sys.stderr, level="INFO")
-    # You could also add file logging here if needed:
-    # logger.add("file_{time}.log", level="INFO")
-    # --- End Loguru Configuration ---
 
     run_training(config, env_name_override=env_override)
