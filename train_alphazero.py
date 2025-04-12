@@ -421,10 +421,8 @@ class SelfPlayManager:
         self.observations = [env.reset() for env in self.envs]
         self.histories = [[] for _ in range(num_parallel_games)]
         self.states_before_action = {}
-        self.mcts_instances: Dict[
-            int, AlphaZeroMCTS
-        ] = {}  # Keep instances between turns
-        self.pending_requests = {}
+        self.mcts_instances: Dict[int, AlphaZeroMCTS] = {}
+        self.pending_requests: Dict[int, StateType] = {}  # game_idx -> state_dict
 
     def run(self):
         pbar = tqdm(
@@ -495,10 +493,11 @@ class SelfPlayManager:
             # Process responses
             for i, game_idx in enumerate(game_indices):
                 assert game_idx in self.pending_requests
+                evaluated_state = self.pending_requests[game_idx]
+                state_key = get_state_key(evaluated_state)
                 response = (policy_list[i], value_list[i])
-                self.network_cache[
-                    get_state_key(self.pending_requests[game_idx])
-                ] = response
+
+                self.network_cache[state_key] = response
                 del self.pending_requests[game_idx]
                 self._get_mcts_network_request(game_idx=game_idx, response=response)
 

@@ -372,6 +372,7 @@ class AlphaZeroMCTS(MCTS):
         self.current_leaf_env = None
         self.sim_count = 0
         self.training = True
+        self.last_request_state: Optional[StateType] = None
 
     def advance_root(self, action: ActionType):
         """Advances the root of the search tree to the child corresponding to the action."""
@@ -507,17 +508,20 @@ class AlphaZeroMCTS(MCTS):
     ) -> Optional[StateType]:
         if previous_response:
             policy_np, value = previous_response
+            assert self.current_leaf_node is not None
+            assert self.current_leaf_env is not None
             self._expand(self.current_leaf_node, self.current_leaf_env, policy_np)
             if (
                 self.current_leaf_node == self.root
                 and self.training
                 and self.config.dirichlet_epsilon > 0
-                and self.sim_count == 1
+                and self.sim_count == 1  # Noise applied after first expansion of root
             ):
                 self._apply_dirichlet_noise()
             self._backpropagate(self.current_leaf_node, value)
             self.current_leaf_node = None
             self.current_leaf_env = None
+            self.last_request_state = None
 
         while self.sim_count < self.num_simulations:
             leaf_node, leaf_env, _ = self._select_leaf(self.root, self.env)
@@ -533,7 +537,6 @@ class AlphaZeroMCTS(MCTS):
 
             cached_result = self.network_cache.get(state_key)
             if cached_result:
-                # Cache Hit: Use cached result directly
                 policy_np, value = cached_result
                 self._expand(leaf_node, leaf_env, policy_np)
                 if (
@@ -546,13 +549,16 @@ class AlphaZeroMCTS(MCTS):
                 self._backpropagate(leaf_node, value)
                 self.sim_count += 1
             else:
+                # Cache Miss: Return state dict to manager
                 self.current_leaf_node = leaf_node
                 self.current_leaf_env = leaf_env
+                self.last_request_state = leaf_state_obs
                 return leaf_state_obs
 
         self.current_leaf_node = None
         self.current_leaf_env = None
-        return None  # Indicate search is complete
+        self.last_request_state = None
+        return None
 
     def get_result(self) -> Tuple[ActionType, np.ndarray]:
         assert self.root.children, "MCTS Error: Root node has no children after search."
