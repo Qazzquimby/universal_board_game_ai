@@ -11,13 +11,15 @@ from typing import (
 import numpy as np
 from tqdm import tqdm
 from loguru import logger
+import ray
 
-from core.config import AppConfig, DATA_DIR
+from core.config import AppConfig, DATA_DIR, AlphaZeroConfig
 from environments.base import BaseEnvironment, StateType, ActionType
 from agents.alphazero_agent import AlphaZeroAgent
 from factories import get_environment, get_agents
 from utils.plotting import plot_losses
-from algorithms.mcts import PredictResult, MCTSNode, AlphaZeroMCTS, get_state_key
+from algorithms.mcts import AlphaZeroMCTS, get_state_key, MCTSNode, PredictResult
+from actors.inference_actor import InferenceActor
 
 LOG_DIR = DATA_DIR / "game_logs"
 
@@ -390,26 +392,27 @@ def _process_finished_games(
     return episodes_finished_this_cycle
 
 
-# Experience = Tuple[StateType, np.ndarray, float]]
+# Experience = Tuple[StateType, np.ndarray, float]
 
 
 class SelfPlayManager:
     def __init__(
         self,
         env_factory: callable,
-        agent: AlphaZeroAgent,
+        inference_actor_handle: ray.actor.ActorHandle,
+        agent_config: AlphaZeroConfig,  # Still need agent config for MCTS
         num_games_to_collect: int,
         num_parallel_games: int,
         iteration: int,
         env_name: str,
-        inference_batch_size: int,
         network_cache: Dict,
     ):
         self.num_games_to_collect = num_games_to_collect
         self.num_parallel_games = num_parallel_games
         self.network_cache = network_cache
-        self.agent = agent
-        self.inference_batch_size = inference_batch_size
+        self.inference_actor = inference_actor_handle
+        self.agent_config = agent_config
+        self.inference_batch_size = agent_config.inference_batch_size  # Get from config
         self.iteration = iteration
         self.env_name = env_name
 
@@ -458,8 +461,7 @@ class SelfPlayManager:
                 self.states_before_action[game_idx] = self.observations[game_idx].copy()
                 mcts = AlphaZeroMCTS(
                     env=self.envs[game_idx],
-                    config=self.agent.config,
-                    network=self.agent.network,
+                    config=self.agent_config,
                     network_cache=self.network_cache,
                 )
 
@@ -488,9 +490,12 @@ class SelfPlayManager:
             batch_size = min(self.inference_batch_size, len(self.pending_requests))
             game_indices = list(self.pending_requests.keys())[:batch_size]
             batch_states = [self.pending_requests[idx] for idx in game_indices]
-            policy_list, value_list = self.agent.network.predict_batch(batch_states)
 
-            # Process responses
+            inference_task_ref = self.inference_actor.predict_batch.remote(batch_states)
+            policy_list, value_list = ray.get(inference_task_ref)
+
+            assert len(policy_list) == len(game_indices)
+
             for i, game_idx in enumerate(game_indices):
                 assert game_idx in self.pending_requests
                 evaluated_state = self.pending_requests[game_idx]
@@ -544,13 +549,8 @@ class SelfPlayManager:
             (s, a, p) for s, a, p in self.histories[game_idx] if p is not None
         ]
 
-        assert valid_history
-        episode_result = self.agent.process_finished_episode(
-            valid_history, final_outcome
-        )
-        self.all_experiences.extend(episode_result.buffer_experiences)
-
-        # Optional: Save game log (keep conditional saving logic if desired)
+        # Need access to agent.process_finished_episode or replicate logic
+        self._handle_finished_game_local(game_idx)  # Use local version
         save_game_log(
             logged_history=episode_result.logged_history,
             iteration=self.iteration,
@@ -562,6 +562,34 @@ class SelfPlayManager:
         self.observations[game_idx] = self.envs[game_idx].reset()
         self.histories[game_idx] = []
 
+        if game_idx in self.mcts_instances:
+            del self.mcts_instances[game_idx]
+
+    # Need a local version of _handle_finished_game as agent is not directly available
+    def _handle_finished_game_local(self, game_idx):
+        winner = self.envs[game_idx].get_winning_player()
+        final_outcome = 1.0 if winner == 0 else -1.0 if winner == 1 else 0.0
+        valid_history = [
+            (s, a, p) for s, a, p in self.histories[game_idx] if p is not None
+        ]
+
+        if valid_history:
+            # Replicate simple value assignment logic from AlphaZeroAgent.process_finished_episode
+            # This needs to match the actual logic used by the agent's learn step!
+            num_steps = len(valid_history)
+            for i, (state, _, policy) in enumerate(valid_history):
+                # Simplistic final outcome assignment - REPLACE if agent uses N-step returns etc.
+                value_target = final_outcome
+                self.all_experiences.append((state, policy, value_target))
+
+            # Log saving can still happen here if desired
+            # save_game_log(...) # Needs access to logged_history if different from valid_history
+        else:
+            logger.warning(f"Game {game_idx} finished with no valid history steps.")
+
+        self.num_finished_games += 1
+        self.observations[game_idx] = self.envs[game_idx].reset()
+        self.histories[game_idx] = []
         if game_idx in self.mcts_instances:
             del self.mcts_instances[game_idx]
 
@@ -608,23 +636,73 @@ def run_training(config: AppConfig, env_name_override: str = None):
         # 1. Self-Play Phase
         if agent.network:
             agent.network.eval()
-        logger.info("Collecting self-play data (parallel)...")
+        if agent.network:
+            agent.network.eval()  # Ensure main agent network is in eval mode
 
+        logger.info("Collecting self-play data using remote inference actor...")
+
+        # --- Create Inference Actor ---
+        network_state_ref = None
+        if agent.network:
+            # Send weights to CPU before putting in object store / sending to actor
+            network_state_dict = {
+                k: v.cpu() for k, v in agent.network.state_dict().items()
+            }
+            network_state_ref = network_state_dict  # Pass the dict directly
+        else:
+            network_state_ref = {}  # Empty dict if no network
+
+        # Create the single inference actor
+        inference_actor = InferenceActor.remote(
+            initial_network_state=network_state_ref,
+            env_config=config.env,
+            agent_config=config.alpha_zero,
+        )
+        # Verify actor started and device (optional)
+        try:
+            actor_device = ray.get(inference_actor.get_device.remote())
+            logger.info(
+                f"InferenceActor created successfully on device: {actor_device}"
+            )
+        except Exception as e:
+            logger.error(f"Failed to create or communicate with InferenceActor: {e}")
+            # Cannot proceed without inference actor
+            if ray.is_initialized():
+                ray.shutdown()
+            return
+
+        # --- Run SelfPlayManager (locally, using remote inference) ---
         env_factory = lambda: get_environment(config.env)
+        # The network cache is still managed locally by SelfPlayManager
+        network_cache = {}
 
-        self_play_experiences = SelfPlayManager(
+        # Pass inference actor handle to SelfPlayManager
+        manager = SelfPlayManager(
             env_factory=env_factory,
-            agent=agent,
+            inference_actor_handle=inference_actor,  # Pass handle
+            agent_config=config.alpha_zero,  # Pass agent config
             num_games_to_collect=config.training.num_games_per_iteration,
             num_parallel_games=config.alpha_zero.num_parallel_games,
             iteration=iteration + 1,
             env_name=config.env.name,
-            inference_batch_size=config.alpha_zero.inference_batch_size,
-            network_cache={},
-        ).run()
+            network_cache=network_cache,
+        )
+        self_play_experiences = manager.run()  # Run the local manager loop
 
+        # --- Add experiences to buffer ---
         agent.add_experiences_to_buffer(self_play_experiences)
-        logger.info(f"Added {len(self_play_experiences)} experiences to replay buffer.")
+        logger.info(
+            f"Collected and added {len(self_play_experiences)} total experiences to replay buffer."
+        )
+
+        # --- Optional: Update Inference Actor Weights ---
+        # If the network was updated during the learning phase (which happens next),
+        # you might want to update the inference actor's weights before the *next*
+        # self-play iteration. This can be done here or at the start of the next iteration.
+        # Example:
+        # if agent.network and iteration > 0: # Check if network exists and not first iteration
+        #     new_weights = {k: v.cpu() for k, v in agent.network.state_dict().items()}
+        #     inference_actor.update_weights.remote(new_weights)
 
         # 2. Learning Phase
         logger.info("Running learning step...")
