@@ -632,6 +632,31 @@ def run_training(config: AppConfig, env_name_override: str = None):
         f"({config.training.num_games_per_iteration} self-play games per iteration)"
     )
 
+    # --- Ray Initialization ---
+    assert not ray.is_initialized()
+    ray.init(ignore_reinit_error=True, log_to_driver=config.alpha_zero.debug_mode)
+
+    if agent.network:
+        network_state_dict = {k: v.cpu() for k, v in agent.network.state_dict().items()}
+        try:
+            inference_actor = InferenceActor.remote(
+                initial_network_state=network_state_dict,
+                env_config=config.env,
+                agent_config=config.alpha_zero,
+            )
+            # Verify actor started and device (optional, blocks until ready)
+            actor_device = ray.get(inference_actor.get_device.remote())
+            logger.info(
+                f"InferenceActor created successfully on device: {actor_device}"
+            )
+        except Exception as e:
+            logger.error(f"Failed to create or communicate with InferenceActor: {e}")
+            if ray.is_initialized():
+                ray.shutdown()
+            return
+    else:
+        logger.warning("No agent network found. Self-play will use DummyNet locally.")
+
     # Lists to store losses for plotting
     total_losses = []
     value_losses = []
@@ -648,40 +673,14 @@ def run_training(config: AppConfig, env_name_override: str = None):
         if agent.network:
             agent.network.eval()
 
-        logger.info("Collecting self-play data using remote inference actor...")
-
-        # --- Create Inference Actor ---
-        if agent.network:
-            # Send weights to CPU before putting in object store / sending to actor
-            network_state_dict = {
-                k: v.cpu() for k, v in agent.network.state_dict().items()
-            }
-            network_state_ref = network_state_dict
+        logger.info("Collecting self-play data...")
+        if inference_actor:
+            logger.info("(Using remote inference actor)")
         else:
-            network_state_ref = {}
+            logger.warning("(No remote inference actor; MCTS will use DummyNet)")
 
-        # Create the single inference actor
-        inference_actor = InferenceActor.remote(
-            initial_network_state=network_state_ref,
-            env_config=config.env,
-            agent_config=config.alpha_zero,
-        )
-        # Verify actor started and device (optional)
-        try:
-            actor_device = ray.get(inference_actor.get_device.remote())
-            logger.info(
-                f"InferenceActor created successfully on device: {actor_device}"
-            )
-        except Exception as e:
-            logger.error(f"Failed to create or communicate with InferenceActor: {e}")
-            # Cannot proceed without inference actor
-            if ray.is_initialized():
-                ray.shutdown()
-            return
-
-        # --- Run SelfPlayManager (locally, using remote inference) ---
+        # --- Run SelfPlayManager ---
         env_factory = lambda: get_environment(config.env)
-        # The network cache is still managed locally by SelfPlayManager
         network_cache = {}
 
         # Pass inference actor handle to SelfPlayManager
@@ -693,9 +692,9 @@ def run_training(config: AppConfig, env_name_override: str = None):
             num_parallel_games=config.alpha_zero.num_parallel_games,
             iteration=iteration + 1,
             env_name=config.env.name,
-            network_cache=network_cache,
+            network_cache=network_cache,  # Pass the cache (cleared each iteration)
         )
-        self_play_experiences = manager.run()  # Run the local manager loop
+        self_play_experiences = manager.run()
 
         # --- Add experiences to buffer ---
         agent.add_experiences_to_buffer(self_play_experiences)
@@ -707,14 +706,16 @@ def run_training(config: AppConfig, env_name_override: str = None):
         # If the network was updated during the learning phase (which happens next),
         # you might want to update the inference actor's weights before the *next*
         # self-play iteration. This can be done here or at the start of the next iteration.
-        # Example:
-        # if agent.network and iteration > 0: # Check if network exists and not first iteration
-        #     new_weights = {k: v.cpu() for k, v in agent.network.state_dict().items()}
-        #     inference_actor.update_weights.remote(new_weights)
+        # Example: Update inference actor weights *before* next self-play
+        if inference_actor and agent.network:
+            new_weights = {k: v.cpu() for k, v in agent.network.state_dict().items()}
+            # Update asynchronously, don't need to wait for it usually
+            inference_actor.update_weights.remote(new_weights)
+            logger.debug("Sent updated weights to InferenceActor.")
 
         # 2. Learning Phase
         logger.info("Running learning step...")
-        loss_results = agent.learn()
+        loss_results = agent.learn()  # Agent learns using its local network
         if loss_results:
             total_loss, value_loss, policy_loss = loss_results
             total_losses.append(total_loss)
@@ -760,6 +761,14 @@ def run_training(config: AppConfig, env_name_override: str = None):
     run_sanity_checks(env, agent)
 
     logger.info("\n--- AlphaZero Training Finished ---")
+
+    # --- Ray Shutdown (after loop) ---
+    if ray.is_initialized():
+        if inference_actor:
+            ray.kill(inference_actor)
+            logger.info("InferenceActor terminated.")
+        ray.shutdown()
+        print("Ray shut down.")
 
 
 # --- Sanity Check Function ---
