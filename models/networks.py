@@ -70,10 +70,11 @@ class AlphaZeroNet(nn.Module):
         if "board" in state_dict:
             board = state_dict["board"]
             if isinstance(board, np.ndarray):
+                writable_board = board.copy()
                 # Normalize board: 0->0, 1->0.5, 2->1.0 (approx)
-                normalized_board = torch.from_numpy(board).float() / 2.0
+                normalized_board = torch.from_numpy(writable_board).float() / 2.0
                 flat_tensors.append(normalized_board.flatten())
-            elif torch.is_tensor(board):  # Keep tensor handling just in case
+            elif torch.is_tensor(board):
                 print(
                     "Warning: Board tensor encountered in _flatten_state, expected ndarray."
                 )
@@ -89,9 +90,14 @@ class AlphaZeroNet(nn.Module):
                 max_pile_size = 1.0  # Avoid division by zero
 
             if isinstance(piles, np.ndarray):
-                normalized_piles = torch.from_numpy(piles).float() / max_pile_size
+                # Explicitly copy the array
+                writable_piles = piles.copy()
+                normalized_piles = (
+                    torch.from_numpy(writable_piles).float() / max_pile_size
+                )
                 flat_tensors.append(normalized_piles)
-            elif torch.is_tensor(piles):  # Keep tensor handling just in case
+            elif torch.is_tensor(piles):
+                # This path should ideally not be hit
                 print(
                     "Warning: Piles tensor encountered in _flatten_state, expected ndarray."
                 )
@@ -404,10 +410,13 @@ class MuZeroNet(nn.Module):
         if "board" in state_dict:
             board = state_dict["board"]
             if isinstance(board, np.ndarray):
+                # Explicitly copy the array
+                writable_board = board.copy()
                 # Normalize board: 0->0, 1->0.5, 2->1.0 (approx)
-                normalized_board = torch.from_numpy(board).float() / 2.0
+                normalized_board = torch.from_numpy(writable_board).float() / 2.0
                 flat_tensors.append(normalized_board.flatten())
             elif torch.is_tensor(board):
+                # This path should ideally not be hit
                 print(
                     "Warning: Board tensor encountered in MuZeroNet._flatten_state, expected ndarray."
                 )
@@ -423,9 +432,14 @@ class MuZeroNet(nn.Module):
                 max_pile_size = 1.0  # Avoid division by zero
 
             if isinstance(piles, np.ndarray):
-                normalized_piles = torch.from_numpy(piles).float() / max_pile_size
+                # Explicitly copy the array
+                writable_piles = piles.copy()
+                normalized_piles = (
+                    torch.from_numpy(writable_piles).float() / max_pile_size
+                )
                 flat_tensors.append(normalized_piles)
             elif torch.is_tensor(piles):
+                # This path should ideally not be hit
                 print(
                     "Warning: Piles tensor encountered in MuZeroNet._flatten_state, expected ndarray."
                 )
