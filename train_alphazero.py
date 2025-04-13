@@ -1,26 +1,18 @@
+import math
 import sys
 import json
-from typing import (
-    Tuple,
-    List,
-    Dict,
-    Optional,
-)
 
 import numpy as np
 from tqdm import tqdm
 from loguru import logger
+import ray
 
-from core.config import AppConfig, AlphaZeroConfig
-from core.serialization import LOG_DIR, save_game_log
-from environments.base import BaseEnvironment, StateType, ActionType
-import math
+from core.config import AppConfig
+from core.serialization import LOG_DIR
+from environments.base import BaseEnvironment
 from agents.alphazero_agent import AlphaZeroAgent
 from factories import get_environment, get_agents
-import os
-import ray
 from utils.plotting import plot_losses
-from algorithms.mcts import AlphaZeroMCTS, get_state_key, MCTSNode, PredictResult
 from actors.inference_actor import InferenceActor
 from actors.self_play_manager_actor import SelfPlayWorkerActor
 
@@ -104,238 +96,6 @@ def load_game_logs_into_buffer(agent: AlphaZeroAgent, env_name: str, buffer_limi
     logger.info(
         f"Loaded {loaded_steps} steps from {loaded_games} game logs into replay buffer."
     )
-    logger.info(f"Current buffer size: {len(agent.replay_buffer)}/{buffer_limit}")
-
-
-def _initialize_parallel_games(num_parallel_games: int, env_factory: callable) -> Dict:
-    """Initializes environments, observations, and tracking structures for parallel games."""
-    envs = [env_factory() for _ in range(num_parallel_games)]
-    observations = [env.reset() for env in envs]
-    parallel_histories: Dict[int, List[Tuple[StateType, ActionType, np.ndarray]]] = {
-        i: [] for i in range(num_parallel_games)
-    }
-    game_is_done = [False] * num_parallel_games
-    games_needing_action: List[int] = list(range(num_parallel_games))
-    mcts_pending_sims: Dict[int, Dict[str, List[MCTSNode]]] = {}
-    mcts_root_keys: Dict[int, str] = {}
-    pending_requests: Dict[str, Tuple[StateType, List[int]]] = {}
-    completed_actions: Dict[int, Tuple[Optional[ActionType], Optional[np.ndarray]]] = {}
-    states_before_action: Dict[int, StateType] = {}
-
-    return {
-        "envs": envs,
-        "observations": observations,
-        "parallel_histories": parallel_histories,
-        "game_is_done": game_is_done,
-        "games_needing_action": games_needing_action,
-        "mcts_pending_sims": mcts_pending_sims,
-        "mcts_root_keys": mcts_root_keys,
-        "pending_requests": pending_requests,
-        "completed_actions": completed_actions,
-        "states_before_action": states_before_action,
-    }
-
-
-def _process_network_batch(
-    agent: AlphaZeroAgent,
-    pending_requests: Dict[str, Tuple[StateType, List[int]]],
-    inference_batch_size: int,
-) -> Dict[str, PredictResult]:
-    """
-    Processes a batch of network prediction requests synchronously.
-
-    Args:
-        agent: The AlphaZeroAgent instance.
-        pending_requests: List of (state_key, state_obs) tuples needing prediction.
-        inference_batch_size: Maximum batch size for network inference.
-
-    Returns:
-        A dictionary mapping state_key to PredictResult (policy_np, value).
-    """
-    network_results: Dict[str, PredictResult] = {}
-    if not agent.network or not pending_requests:
-        return network_results
-
-    # Process requests in batches based on the dictionary structure
-    all_state_keys = list(pending_requests.keys())
-    num_unique_requests = len(all_state_keys)
-    logger.debug(
-        f"Processing {num_unique_requests} unique network requests in batches..."
-    )
-
-    for i in range(0, num_unique_requests, inference_batch_size):
-        batch_keys = all_state_keys[i : i + inference_batch_size]
-        states_to_predict_batch = [pending_requests[key][0] for key in batch_keys]
-
-        logger.debug(
-            f"  Processing batch {i//inference_batch_size + 1}, size: {len(batch_keys)}"
-        )
-
-        policy_list, value_list = agent.network.predict_batch(states_to_predict_batch)
-
-        if len(policy_list) != len(states_to_predict_batch):
-            logger.error("Network batch result size mismatch!")
-            # Continue processing other batches if possible, but log error
-            continue
-
-        for j, state_key in enumerate(batch_keys):  # Use batch_keys here
-            network_results[state_key] = (policy_list[j], value_list[j])
-
-    logger.debug(
-        f"Finished processing network requests. Results count: {len(network_results)}"
-    )
-    return network_results
-
-
-def _step_environments(
-    completed_actions: Dict[int, Tuple[Optional[ActionType], Optional[np.ndarray]]],
-    envs: List[BaseEnvironment],
-    observations: List[StateType],
-    game_is_done: List[bool],
-    parallel_histories: Dict[int, List[Tuple[StateType, ActionType, np.ndarray]]],
-    states_before_action: Dict[int, StateType],
-) -> Tuple[Dict, Dict, Dict, int]:
-    """
-    Steps the environments for games where MCTS search has completed.
-
-    Returns:
-        A tuple containing:
-        - next_observations: Dict mapping game_idx to the new observation.
-        - rewards: Dict mapping game_idx to the reward received.
-        - step_dones: Dict mapping game_idx to the done status after the step.
-        - steps_taken_this_cycle: Count of successful steps taken.
-    """
-    next_observations = {}
-    rewards = {}
-    step_dones = {}
-    steps_taken_this_cycle = 0
-
-    games_to_step = list(completed_actions.keys())
-
-    for game_idx in games_to_step:
-        action, policy_target = completed_actions[game_idx]
-
-        if game_is_done[game_idx]:
-            step_dones[game_idx] = True
-            next_observations[game_idx] = observations[game_idx]
-            rewards[game_idx] = 0.0
-            continue
-
-        if action is None:
-            logger.error(
-                f"Game {game_idx} MCTS completed but action is None. Ending game."
-            )
-            step_dones[game_idx] = True
-            next_observations[game_idx] = observations[game_idx]
-            rewards[game_idx] = 0.0
-            continue
-
-        try:
-            obs, reward, done = envs[game_idx].step(action)
-            next_observations[game_idx] = obs
-            rewards[game_idx] = reward
-            step_dones[game_idx] = done
-            steps_taken_this_cycle += 1
-
-            state_before_action_val = states_before_action.get(game_idx)
-            if policy_target is None:
-                logger.warning(
-                    f"Game {game_idx}, Step {len(parallel_histories[game_idx])}: Skipping history append - MCTS failed to produce policy target (policy_target is None)."
-                )
-            elif state_before_action_val is None:
-                logger.error(
-                    f"Game {game_idx}, Step {len(parallel_histories[game_idx])}: Skipping history append - Missing state_before_action."
-                )
-            else:
-                # Only append if policy_target is valid
-                parallel_histories[game_idx].append(
-                    (state_before_action_val, action, policy_target)
-                )
-
-        except ValueError as e:
-            logger.warning(
-                f"Invalid action {action} in game {game_idx} step. Error: {e}. Ending game."
-            )
-            next_observations[game_idx] = observations[game_idx]
-            rewards[game_idx] = 0.0
-            step_dones[game_idx] = True
-
-    return next_observations, rewards, step_dones, steps_taken_this_cycle
-
-
-def _process_finished_games(
-    games_stepped_indices: List[int],
-    agent: AlphaZeroAgent,
-    envs: List[BaseEnvironment],
-    observations: List[StateType],
-    game_is_done: List[bool],
-    parallel_histories: Dict[int, List[Tuple[StateType, ActionType, np.ndarray]]],
-    games_needing_action: List[int],  # Renamed from ready_for_action_search
-    next_observations: Dict,
-    step_dones: Dict,
-    all_experiences: List[Tuple[StateType, np.ndarray, float]],
-    iteration: int,
-    env_name: str,
-    finished_episodes_count_offset: int,  # To get correct game index for logging
-    pbar: Optional[tqdm] = None,
-):
-    """
-    Updates game states after stepping, processes finished games, resets environments,
-    and updates tracking lists.
-    """
-    episodes_finished_this_cycle = 0
-    for game_idx in games_stepped_indices:
-        observations[game_idx] = next_observations[game_idx]
-        game_is_done[game_idx] = step_dones[game_idx]
-
-        if game_is_done[game_idx]:
-            winner = envs[game_idx].get_winning_player()
-            final_outcome = 1.0 if winner == 0 else -1.0 if winner == 1 else 0.0
-            game_history = parallel_histories[game_idx]
-            valid_history = [(s, a, p) for s, a, p in game_history if p is not None]
-
-            if len(valid_history) != len(game_history):
-                logger.warning(
-                    f"Game {game_idx} history contained steps with None policy target."
-                )
-
-            if valid_history:
-                episode_result = agent.process_finished_episode(
-                    valid_history, final_outcome
-                )
-                all_experiences.extend(episode_result.buffer_experiences)
-                save_game_log(
-                    episode_result.logged_history,
-                    iteration,
-                    finished_episodes_count_offset
-                    + episodes_finished_this_cycle
-                    + 1,  # Calculate unique game index
-                    env_name,
-                )
-            else:
-                logger.warning(
-                    f"Game {game_idx} finished with no valid history steps. No experiences added."
-                )
-
-            episodes_finished_this_cycle += 1
-            if pbar:
-                pbar.update(1)
-            logger.debug(
-                f"Game {game_idx} finished. Total finished this cycle: {episodes_finished_this_cycle}"
-            )
-
-            # Reset environment and history
-            observations[game_idx] = envs[game_idx].reset()
-            game_is_done[game_idx] = False
-            parallel_histories[game_idx] = []
-            if game_idx not in games_needing_action:
-                games_needing_action.append(game_idx)
-        else:
-            # Game not done, mark ready for next action search
-            if game_idx not in games_needing_action:
-                games_needing_action.append(game_idx)
-
-    return episodes_finished_this_cycle
 
 
 # Experience = Tuple[StateType, np.ndarray, float]
@@ -369,8 +129,11 @@ def run_training(config: AppConfig, env_name_override: str = None):
     )
 
     # --- Ray Initialization ---
-    assert not ray.is_initialized()
-    ray.init(ignore_reinit_error=True, log_to_driver=config.alpha_zero.debug_mode)
+    # Ensure Ray is initialized (or initialize it)
+    if not ray.is_initialized():
+        ray.init(ignore_reinit_error=True, log_to_driver=config.alpha_zero.debug_mode)
+    else:
+        logger.warning("Ray already initialized. Using existing context.")
 
     if agent.network:
         network_state_dict = {k: v.cpu() for k, v in agent.network.state_dict().items()}
@@ -461,31 +224,17 @@ def run_training(config: AppConfig, env_name_override: str = None):
 
         # Collect results
         all_experiences_iteration = []
-        # Use ray.get with tqdm for progress visualization
         results = []
-        # Correct total for tqdm might be tricky if games_per_worker isn't exact
-        with tqdm(
-            total=num_games_total, desc="Self-Play Games (Workers)", unit="game"
-        ) as pbar:
-            while tasks:
-                ready, tasks = ray.wait(tasks, num_returns=1)
-                if not ready:
-                    break
-                try:
-                    result_experiences = ray.get(ready[0])
-                    results.append(result_experiences)
-                    # Update progress bar by the number of experiences returned
-                    # This assumes one experience per step, not per game.
-                    # A better approach might be for actor to return game count.
-                    # For now, approximate based on average game length? Or just update by 1 game?
-                    # Let's update by games_per_worker / num_workers for simplicity, though inaccurate.
-                    # A fixed update based on games_per_worker is better if actor returns when done.
-                    pbar.update(
-                        len(result_experiences) if result_experiences else 0
-                    )  # Update by steps/experiences
-                except ray.exceptions.RayTaskError as e:
-                    logger.error(f"Self-play worker task failed: {e}")
-                    # Potentially handle failure (e.g., relaunch worker?)
+        while tasks:
+            ready, tasks = ray.wait(tasks, num_returns=1)
+            if not ready:
+                break
+            try:
+                result_experiences = ray.get(ready[0])
+                results.append(result_experiences)
+            except ray.exceptions.RayTaskError as e:
+                logger.error(f"Self-play worker task failed: {e}")
+                # TODO: Consider adding retry logic or handling worker failure more robustly.
 
         # Aggregate experiences
         for exp_list in results:

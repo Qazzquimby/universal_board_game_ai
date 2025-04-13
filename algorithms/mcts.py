@@ -14,7 +14,6 @@ import torch.nn as nn
 
 from core.config import AlphaZeroConfig
 from environments.base import ActionType, StateType, BaseEnvironment
-from models.networks import AlphaZeroNet
 
 PredictResult = Tuple[np.ndarray, float]
 
@@ -324,11 +323,19 @@ class MCTS:
 
             # 2. Evaluation: Get the value of the leaf node.
             if not leaf_env_state.is_game_over():
+                # Standard MCTS would expand and rollout here.
+                # This base class search is likely unused now, AlphaZeroMCTS overrides.
+                # If used, it needs its own evaluation method (e.g., rollout or dummy).
+                # For now, assume it's not directly called in the AlphaZero context.
+                # If expansion is needed, it should happen before evaluation.
                 if not leaf_node.is_expanded():
                     self._expand(leaf_node, leaf_env_state)
-                    value = self._rollout(leaf_env_state)
-                else:
-                    value = self._rollout(leaf_env_state)
+                # Placeholder: Base MCTS needs an evaluation strategy if used.
+                value = 0.0  # Or raise NotImplementedError
+                logger.warning(
+                    "Base MCTS search called without a specific evaluation method (like rollout or network). Returning 0."
+                )
+
             else:
                 # Game ended during selection. Determine the outcome.
                 # Value must be from the perspective of the player whose turn it was AT THE LEAF node.

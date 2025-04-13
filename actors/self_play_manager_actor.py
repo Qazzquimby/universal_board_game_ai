@@ -41,9 +41,7 @@ class SelfPlayWorkerActor:
 
         # Game state tracking for games managed by this worker
         self.all_experiences_collected: List[Tuple[StateType, np.ndarray, float]] = []
-        self.num_finished_games_total = (
-            0  # Track total games finished by this worker across calls
-        )
+        self.num_finished_games_total = 0
         self.num_steps_taken = 0
         self.envs: List[BaseEnvironment] = []
         self.observations: List[StateType] = []
@@ -80,28 +78,17 @@ class SelfPlayWorkerActor:
         self._initialize_internal_games()  # Reset state for this collection task
         num_finished_this_call = 0
 
-        # Optional: Progress bar per worker (can be noisy)
-        # pbar = tqdm(total=num_games_to_collect_this_call, desc=f"Actor {self.actor_id} Games", position=self.actor_id, leave=False)
-
         while num_finished_this_call < num_games_to_collect_this_call:
-            games_finished_before_iter = num_finished_this_call
-            self._run_one_iter()  # Runs one cycle of MCTS/inference/step for internal games
-            # _handle_finished_game increments num_finished_this_call
-            num_finished_this_call = len(
-                self.all_experiences_collected
-            )  # Track based on experiences added
+            finished_before_iter = self.num_finished_games_total
+            self._run_one_iter()
+            finished_after_iter = self.num_finished_games_total
+            num_finished_this_call += finished_after_iter - finished_before_iter
 
-            # games_finished_in_iter = num_finished_this_call - games_finished_before_iter
-            # if games_finished_in_iter > 0:
-            #     pbar.update(games_finished_in_iter)
-
-        # pbar.close()
         logger.debug(
-            f"Actor {self.actor_id}: Finished collecting {num_finished_this_call} games."
+            f"Actor {self.actor_id}: Finished collecting {num_finished_this_call} games "
+            f"(Total finished by worker: {self.num_finished_games_total})."
         )
         return self.all_experiences_collected
-
-    # --- Core loop methods adapted from SelfPlayManager ---
 
     def _run_one_iter(self):
         self._start_needed_searches()
