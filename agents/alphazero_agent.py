@@ -31,15 +31,11 @@ class ReplayBufferDataset(Dataset):
 
     def __getitem__(self, idx):
         state_dict, policy_target, value_target = self.buffer_list[idx]
-        # Flatten state here before returning
         flat_state = self.network._flatten_state(state_dict)
-        # Return flattened state, policy target, value target as tensors
         return (
             flat_state,
             torch.tensor(policy_target, dtype=torch.float32),
-            torch.tensor(
-                [value_target], dtype=torch.float32
-            ),  # Ensure value is shape [1]
+            torch.tensor([value_target], dtype=torch.float32),
         )
 
 
@@ -68,7 +64,6 @@ class AlphaZeroAgent(Agent):
             env: The environment instance.
             config: Configuration object with AlphaZero parameters.
             training_config: Configuration object with general training parameters.
-            profiler: An optional MCTSProfiler instance for collecting timing data.
         """
         self.env = env
         self.config = config
@@ -89,7 +84,6 @@ class AlphaZeroAgent(Agent):
         self.mcts = AlphaZeroMCTS(
             env=self.env,
             config=config,
-            network=self.network,
         )
 
         # Learning:
@@ -147,7 +141,7 @@ class AlphaZeroAgent(Agent):
         # The 'env' passed to search should be at the correct 'state'
         # We assume self.env is correctly representing the current state for act()
         # If not, we'd need env.set_state(state) first. Let's assume env is correct.
-        chosen_action, policy_target = self.mcts.search(self.env, state, train=train)
+        chosen_action, policy_target = self.mcts.search(self.env, state)
 
         if chosen_action is None:
             logger.error("MCTS search in act() returned no action. Choosing random.")
@@ -172,88 +166,7 @@ class AlphaZeroAgent(Agent):
                     logger.debug(f"  - {action}: {visits}")
             logger.debug(f"[DEBUG Act Eval] Chosen Action: {chosen_action}")
 
-        # Return only the action for evaluation/play
         return chosen_action
-
-    def _calculate_policy_target(self, root_node, actions, visit_counts) -> np.ndarray:
-        """Calculates the policy target vector based on MCTS visit counts."""
-        if self.network:
-            policy_size = self.network._calculate_policy_size(self.env)
-        else:
-            try:
-                policy_size = self.env.policy_vector_size
-            except AttributeError:
-                logger.error(
-                    "Cannot determine policy size without network or env.policy_vector_size"
-                )
-                return np.array([])  # Return empty array on error
-
-        policy_target = np.zeros(policy_size, dtype=np.float32)
-        total_visits = np.sum(visit_counts)
-
-        # Log visit counts for debugging, especially if total_visits is 0
-        if self.config.debug_mode or total_visits == 0:
-            visit_dict = {str(a): v for a, v in zip(actions, visit_counts)}
-            logger.debug(f"[DEBUG PolicyTarget] Visit Counts: {visit_dict}")
-            logger.debug(f"[DEBUG PolicyTarget] Total Visits: {total_visits}")
-
-        if total_visits > 0:
-            # --- Calculate policy based on visit counts ---
-            logger.debug(
-                "[DEBUG PolicyTarget] Calculating policy based on VISIT COUNTS."
-            )
-            # Use the network's action mapping if available
-            if self.network:
-                for i, action in enumerate(actions):
-                    action_key = tuple(action) if isinstance(action, list) else action
-                    # Get index from the network
-                    action_idx = self.network.get_action_index(action_key)
-
-                    if action_idx is not None and 0 <= action_idx < policy_size:
-                        policy_target[action_idx] = visit_counts[i] / total_visits
-                    else:
-                        logger.warning(
-                            f"Action {action_key} could not be mapped to index during policy target calculation."
-                        )
-            else:
-                # Fallback if no network: Assume actions are indices directly? Risky.
-                # Or try mapping via env if available?
-                if hasattr(self.env, "map_action_to_policy_index"):
-                    for i, action in enumerate(actions):
-                        action_key = (
-                            tuple(action) if isinstance(action, list) else action
-                        )
-                        action_idx = self.env.map_action_to_policy_index(action_key)
-                        if action_idx is not None and 0 <= action_idx < policy_size:
-                            policy_target[action_idx] = visit_counts[i] / total_visits
-                        else:
-                            logger.warning(
-                                f"Action {action_key} could not be mapped via env during policy target calculation."
-                            )
-                else:
-                    logger.error(
-                        "Cannot calculate policy target without network or env mapping."
-                    )
-
-        else:
-            # Handle case with no visits - return None to signal failure.
-            logger.warning(
-                "No visits recorded in MCTS root. Cannot calculate policy target."
-            )
-            return None  # Return None to indicate failure
-
-        # Ensure policy target sums to 1 (handle potential float issues)
-        current_sum = policy_target.sum()
-        if current_sum > 1e-6:  # Avoid division by zero
-            policy_target /= current_sum
-        elif policy_target.size > 0:
-            # If sum is zero but size > 0, distribute uniformly as a last resort?
-            logger.warning(
-                f"Policy target sum is near zero ({current_sum}). Setting uniform distribution."
-            )
-            policy_target.fill(1.0 / policy_target.size)
-
-        return policy_target
 
     def process_finished_episode(
         self,

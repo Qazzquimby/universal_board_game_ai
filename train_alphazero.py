@@ -647,21 +647,18 @@ def run_training(config: AppConfig, env_name_override: str = None):
         # 1. Self-Play Phase
         if agent.network:
             agent.network.eval()
-        if agent.network:
-            agent.network.eval()  # Ensure main agent network is in eval mode
 
         logger.info("Collecting self-play data using remote inference actor...")
 
         # --- Create Inference Actor ---
-        network_state_ref = None
         if agent.network:
             # Send weights to CPU before putting in object store / sending to actor
             network_state_dict = {
                 k: v.cpu() for k, v in agent.network.state_dict().items()
             }
-            network_state_ref = network_state_dict  # Pass the dict directly
+            network_state_ref = network_state_dict
         else:
-            network_state_ref = {}  # Empty dict if no network
+            network_state_ref = {}
 
         # Create the single inference actor
         inference_actor = InferenceActor.remote(
