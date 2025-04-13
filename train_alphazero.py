@@ -515,10 +515,12 @@ class SelfPlayManager:
 
         for game_idx in completed_game_indices:
             mcts = self.mcts_instances[game_idx]
-            action, policy = mcts.get_result()
+            action, action_visits = mcts.get_result()
+            policy = self._calculate_policy(action_visits, self.envs[game_idx])
 
-            # todo, can this be moved earlier inside get_result()
+            # If this triggers, see if it can be moved into get_result()
             current_legal_actions = self.envs[game_idx].get_legal_actions()
+            assert action is not None
             assert (
                 action in current_legal_actions
             ), f"Illegal action chosen by MCTS! Action: {action}, Legal: {current_legal_actions}, State: {self.observations[game_idx]}"
@@ -549,49 +551,58 @@ class SelfPlayManager:
             (s, a, p) for s, a, p in self.histories[game_idx] if p is not None
         ]
 
-        # Need access to agent.process_finished_episode or replicate logic
-        self._handle_finished_game_local(game_idx)  # Use local version
+        assert valid_history
+        logged_history_for_saving = []
+        for i, (state, action, policy) in enumerate(valid_history):
+            value_target = final_outcome
+            self.all_experiences.append((state, policy, value_target))
+            logged_history_for_saving.append((state, action, policy, value_target))
+
         save_game_log(
-            logged_history=episode_result.logged_history,
+            logged_history=logged_history_for_saving,
             iteration=self.iteration,
             game_index=self.num_finished_games + 1,
             env_name=self.env_name,
         )
 
-        self.num_finished_games += 1
         self.observations[game_idx] = self.envs[game_idx].reset()
         self.histories[game_idx] = []
 
         if game_idx in self.mcts_instances:
             del self.mcts_instances[game_idx]
-
-    # Need a local version of _handle_finished_game as agent is not directly available
-    def _handle_finished_game_local(self, game_idx):
-        winner = self.envs[game_idx].get_winning_player()
-        final_outcome = 1.0 if winner == 0 else -1.0 if winner == 1 else 0.0
-        valid_history = [
-            (s, a, p) for s, a, p in self.histories[game_idx] if p is not None
-        ]
-
-        if valid_history:
-            # Replicate simple value assignment logic from AlphaZeroAgent.process_finished_episode
-            # This needs to match the actual logic used by the agent's learn step!
-            num_steps = len(valid_history)
-            for i, (state, _, policy) in enumerate(valid_history):
-                # Simplistic final outcome assignment - REPLACE if agent uses N-step returns etc.
-                value_target = final_outcome
-                self.all_experiences.append((state, policy, value_target))
-
-            # Log saving can still happen here if desired
-            # save_game_log(...) # Needs access to logged_history if different from valid_history
-        else:
-            logger.warning(f"Game {game_idx} finished with no valid history steps.")
-
         self.num_finished_games += 1
-        self.observations[game_idx] = self.envs[game_idx].reset()
-        self.histories[game_idx] = []
-        if game_idx in self.mcts_instances:
-            del self.mcts_instances[game_idx]
+
+    def _calculate_policy(
+        self, action_visits: Dict[ActionType, int], env: BaseEnvironment
+    ) -> np.ndarray:
+        """Calculates the policy target vector from visit counts."""
+        policy_size = env.policy_vector_size
+
+        policy_target = np.zeros(policy_size, dtype=np.float32)
+        total_visits = sum(action_visits.values())
+        assert total_visits
+
+        for action, visits in action_visits.items():
+            action_key = tuple(action) if isinstance(action, list) else action
+            action_idx = env.map_action_to_policy_index(action_key)
+            assert action_idx is not None and 0 <= action_idx < policy_size
+            policy_target[action_idx] = visits / total_visits
+
+        # Normalize policy target (important if some actions couldn't be mapped)
+        current_sum = policy_target.sum()
+        if abs(current_sum - 1.0) > 1e-5:
+            if current_sum > 1e-6:
+                policy_target /= current_sum
+            elif policy_target.size > 0:
+                logger.warning(
+                    f"Policy target sum is near zero ({current_sum}). Setting uniform."
+                )
+                policy_target.fill(1.0 / policy_target.size)
+            else:
+                logger.error("Cannot normalize zero-size policy target.")
+                assert False
+
+        return policy_target
 
 
 def run_training(config: AppConfig, env_name_override: str = None):

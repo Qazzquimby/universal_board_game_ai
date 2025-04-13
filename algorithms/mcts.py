@@ -356,7 +356,6 @@ class AlphaZeroMCTS(MCTS):
         self,
         env: BaseEnvironment,
         config: AlphaZeroConfig,
-        network: Optional[AlphaZeroNet] = None,
         network_cache: Optional[Dict] = None,
     ):
         super().__init__(
@@ -364,10 +363,9 @@ class AlphaZeroMCTS(MCTS):
             num_simulations=config.num_simulations,
         )
         self.config = config
-        self.network = network if network is not None else DummyAlphaZeroNet(env)
         self.network_cache = network_cache if network_cache is not None else {}
 
-        self.env = env
+        self.env = env  # Store base env for action mapping and config
         self.current_leaf_node = None
         self.current_leaf_env = None
         self.sim_count = 0
@@ -416,54 +414,31 @@ class AlphaZeroMCTS(MCTS):
             np.ndarray
         ] = None,  # not actually optional, just matching type
     ) -> None:
-        """
-        Expand the leaf node. Uses network policy priors if provided, otherwise uniform.
-
-        Args:
-            node: The node to expand.
-            env_state: The environment state at the node (used for legal actions).
-            policy_priors_np: Optional numpy array of policy probabilities from the network.
-        """
         assert policy_priors_np is not None
 
         if node.is_expanded() or env_state.is_game_over():
             return
 
         legal_actions = env_state.get_legal_actions()
-        if not legal_actions:
-            return  # Cannot expand if no legal actions
+        assert legal_actions, "Expanding from state with no legal actions"
 
         action_priors_dict = {}
 
         for action in legal_actions:
             action_key = tuple(action) if isinstance(action, list) else action
-            action_index = self.network.get_action_index(action_key)
+            action_index = self.env.map_action_to_policy_index(action_key)
 
-            policy_len = len(policy_priors_np) if policy_priors_np is not None else -1
-            # logger.trace(f"  Expand Check: Action={action_key}, Index={action_index}, PolicyLen={policy_len}")
-
-            if action_index is not None and 0 <= action_index < policy_len:
-                try:
-                    prior = policy_priors_np[action_index]
-                    action_priors_dict[action_key] = prior
-                except IndexError as e:
-                    logger.error(
-                        f"  Expand Error: IndexError accessing policy_priors_np[{action_index}] (len={policy_len}). Action={action_key}. Error: {e}",
-                        exc_info=True,
-                    )
-                    action_priors_dict[action_key] = 0.0  # Assign 0 prior on error
-                except Exception as e:
-                    logger.error(
-                        f"  Expand Error: Unexpected error accessing policy_priors_np[{action_index}]. Action={action_key}. Error: {e}",
-                        exc_info=True,
-                    )
-                    action_priors_dict[action_key] = 0.0  # Assign 0 prior on error
+            if action_index is not None and 0 <= action_index < len(policy_priors_np):
+                prior = policy_priors_np[action_index]
+                action_priors_dict[action_key] = prior
             else:
-                # Assign 0 prior if action is illegal according to network mapping or out of bounds
+                # Assign 0 prior if action is illegal or unmappable
                 action_priors_dict[action_key] = 0.0
-        node.expand(action_priors_dict)
+                logger.warning(
+                    f"Action {action_key} (index {action_index}) invalid or out of policy bounds ({len(policy_priors_np)}) during expand."
+                )
 
-        # If priors were provided and non-zero, children should have been created.
+        node.expand(action_priors_dict)
         if action_priors_dict and any(p > 0 for p in action_priors_dict.values()):
             assert (
                 node.children
@@ -582,12 +557,16 @@ class AlphaZeroMCTS(MCTS):
         self.last_request_state = None
         return None
 
-    def get_result(self) -> Tuple[ActionType, np.ndarray]:
+    def get_result(self) -> Tuple[ActionType, Dict[ActionType, int]]:
+        """
+        :return: chosen_action, action_visits
+        """
         assert self.root.children, "MCTS Error: Root node has no children after search."
 
-        visit_counts = np.array(
-            [child.visit_count for child in self.root.children.values()]
-        )
+        action_visits = {
+            action: child.visit_count for action, child in self.root.children.items()
+        }
+        visit_counts = np.array(list(action_visits.values()))
         actions = list(self.root.children.keys())
 
         total_visits = np.sum(visit_counts)
@@ -609,10 +588,7 @@ class AlphaZeroMCTS(MCTS):
             chosen_action_index = np.argmax(visit_counts)
             chosen_action = actions[chosen_action_index]
 
-        policy_target = self._calculate_policy_target(
-            self.root, actions, visit_counts, self.env
-        )
-        return chosen_action, policy_target
+        return chosen_action, action_visits
 
     # Modify signature to accept env directly
     def _select_leaf(
@@ -657,48 +633,3 @@ class AlphaZeroMCTS(MCTS):
             child.prior = (
                 1 - self.config.dirichlet_epsilon
             ) * child.prior + self.config.dirichlet_epsilon * noise[i]
-
-    def _calculate_policy_target(
-        self, root_node, actions, visit_counts, env: BaseEnvironment
-    ) -> Optional[np.ndarray]:
-        """Calculates the policy target vector based on MCTS visit counts."""
-        # Requires env access if network isn't available or doesn't have size info
-        if self.network:
-            policy_size = self.network._calculate_policy_size(env)
-        else:
-            try:
-                policy_size = env.policy_vector_size
-            except AttributeError:
-                logger.error(
-                    "Cannot determine policy size without network or env.policy_vector_size"
-                )
-                return None
-
-        policy_target = np.zeros(policy_size, dtype=np.float32)
-        total_visits = np.sum(visit_counts)
-
-        if total_visits <= 0:
-            assert False, "No visits"
-
-        for i, action in enumerate(actions):
-            action_key = tuple(action) if isinstance(action, list) else action
-            action_idx = self.network.get_action_index(action_key)
-            assert (
-                action_idx is not None and 0 <= action_idx < policy_size
-            ), f"Action {action_key} (from MCTS children) could not be mapped to policy index."
-            policy_target[action_idx] = visit_counts[i] / total_visits
-
-        # Normalize policy target
-        current_sum = policy_target.sum()
-        assert (
-            abs(current_sum - 1.0) < 1e-5
-        ), f"Policy target sum is {current_sum}, expected ~1.0"
-        if current_sum > 1e-6:
-            policy_target /= current_sum
-        elif policy_target.size > 0:
-            logger.warning(
-                f"Policy target sum is near zero ({current_sum}). Setting uniform distribution."
-            )
-            policy_target.fill(1.0 / policy_target.size)
-
-        return policy_target
