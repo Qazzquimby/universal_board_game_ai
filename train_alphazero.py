@@ -1,6 +1,5 @@
 import sys
 import json
-import datetime
 from typing import (
     Tuple,
     List,
@@ -11,66 +10,19 @@ from typing import (
 import numpy as np
 from tqdm import tqdm
 from loguru import logger
-import ray
 
-from core.config import AppConfig, DATA_DIR, AlphaZeroConfig
+from core.config import AppConfig, AlphaZeroConfig
+from core.serialization import LOG_DIR, save_game_log
 from environments.base import BaseEnvironment, StateType, ActionType
+import math
 from agents.alphazero_agent import AlphaZeroAgent
 from factories import get_environment, get_agents
+import os
+import ray
 from utils.plotting import plot_losses
 from algorithms.mcts import AlphaZeroMCTS, get_state_key, MCTSNode, PredictResult
 from actors.inference_actor import InferenceActor
-
-LOG_DIR = DATA_DIR / "game_logs"
-
-
-def _default_serializer(obj):
-    """JSON serializer for objects not serializable by default json code"""
-    if isinstance(obj, np.ndarray):
-        return obj.tolist()  # Convert numpy arrays to lists
-    # Add other custom types here if needed
-    # Example: if isinstance(obj, SomeCustomClass): return obj.to_dict()
-    try:
-        return obj.__dict__  # Fallback for simple objects
-    except AttributeError:
-        raise TypeError(
-            f"Object of type {obj.__class__.__name__} is not JSON serializable"
-        )
-
-
-def save_game_log(
-    logged_history: List[Tuple[StateType, ActionType, np.ndarray, float]],
-    iteration: int,
-    game_index: int,
-    env_name: str,
-):
-    """Saves the processed game history to a JSON file."""
-    try:
-        LOG_DIR.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        filename = f"{env_name}_game{game_index:04d}_{timestamp}.json"
-        filepath = LOG_DIR / filename
-
-        # Prepare data for JSON
-        serializable_log = []
-        for state, action, policy, value in logged_history:
-            # Ensure state and action are serializable
-            serializable_log.append(
-                {
-                    "state": state,
-                    "action": action,
-                    "policy_target": policy.tolist(),  # Convert numpy array
-                    "value_target": value,
-                }
-            )
-
-        with open(filepath, "w") as f:
-            json.dump(serializable_log, f, indent=2, default=_default_serializer)
-
-    except Exception as e:
-        logger.error(
-            f"Error saving game log for iter {iteration}, game {game_index}: {e}"
-        )
+from actors.self_play_manager_actor import SelfPlayWorkerActor
 
 
 def load_game_logs_into_buffer(agent: AlphaZeroAgent, env_name: str, buffer_limit: int):
@@ -163,17 +115,11 @@ def _initialize_parallel_games(num_parallel_games: int, env_factory: callable) -
         i: [] for i in range(num_parallel_games)
     }
     game_is_done = [False] * num_parallel_games
-    # Track games needing an action search
     games_needing_action: List[int] = list(range(num_parallel_games))
-    # Store MCTS intermediate results between phases
-    # Updated mcts_pending_sims structure
     mcts_pending_sims: Dict[int, Dict[str, List[MCTSNode]]] = {}
-    mcts_root_keys: Dict[int, str] = {}  # Store root key per game
-    # Store pending network requests aggregated across all games, mapping key to list of game_idx
+    mcts_root_keys: Dict[int, str] = {}
     pending_requests: Dict[str, Tuple[StateType, List[int]]] = {}
-    # Store completed actions and policy targets after phase 2
     completed_actions: Dict[int, Tuple[Optional[ActionType], Optional[np.ndarray]]] = {}
-    # Store state before MCTS search for replay buffer
     states_before_action: Dict[int, StateType] = {}
 
     return {
@@ -394,7 +340,7 @@ def _process_finished_games(
 
 # Experience = Tuple[StateType, np.ndarray, float]
 
-
+# FLAGGED FOR REMOVAL
 class SelfPlayManager:
     def __init__(
         self,
@@ -407,6 +353,7 @@ class SelfPlayManager:
         env_name: str,
         network_cache: Dict,
     ):
+        assert False
         self.num_games_to_collect = num_games_to_collect
         self.num_parallel_games = num_parallel_games
         self.network_cache = network_cache
@@ -673,33 +620,91 @@ def run_training(config: AppConfig, env_name_override: str = None):
         if agent.network:
             agent.network.eval()
 
-        logger.info("Collecting self-play data...")
-        if inference_actor:
-            logger.info("(Using remote inference actor)")
+        logger.info("Collecting self-play data using parallel workers...")
+
+        # --- Parallel Self-Play Setup ---
+        num_games_total = config.training.num_games_per_iteration
+        total_parallel_games_across_workers = config.alpha_zero.num_parallel_games
+
+        # Determine number of workers
+        if config.alpha_zero.num_self_play_workers > 0:
+            num_workers = config.alpha_zero.num_self_play_workers
         else:
-            logger.warning("(No remote inference actor; MCTS will use DummyNet)")
+            num_workers = os.cpu_count() or 1  # Default to CPU count, fallback to 1
+        # Ensure we don't use more workers than total parallel games needed
+        num_workers = min(num_workers, total_parallel_games_across_workers)
+        logger.info(f"Using {num_workers} self-play workers.")
 
-        # --- Run SelfPlayManager ---
-        env_factory = lambda: get_environment(config.env)
-        network_cache = {}
+        if num_workers <= 0:
+            logger.error("Number of self-play workers must be > 0.")
+            if ray.is_initialized():
+                ray.shutdown()
+            return
 
-        # Pass inference actor handle to SelfPlayManager
-        manager = SelfPlayManager(
-            env_factory=env_factory,
-            inference_actor_handle=inference_actor,  # Pass handle
-            agent_config=config.alpha_zero,  # Pass agent config
-            num_games_to_collect=config.training.num_games_per_iteration,
-            num_parallel_games=config.alpha_zero.num_parallel_games,
-            iteration=iteration + 1,
-            env_name=config.env.name,
-            network_cache=network_cache,  # Pass the cache (cleared each iteration)
+        # Distribute work among workers
+        games_per_worker = math.ceil(num_games_total / num_workers)
+        # Distribute the *concurrent* games each worker manages internally
+        internal_parallel_games_per_worker = math.ceil(
+            total_parallel_games_across_workers / num_workers
         )
-        self_play_experiences = manager.run()
+        logger.info(f"  Total concurrent games: {total_parallel_games_across_workers}")
+        logger.info(
+            f"  Internal concurrent games per worker: ~{internal_parallel_games_per_worker}"
+        )
+        logger.info(f"  Total games to collect per worker: ~{games_per_worker}")
+
+        # Create worker actors
+        workers = [
+            SelfPlayWorkerActor.remote(
+                actor_id=i,
+                env_config=config.env,
+                agent_config=config.alpha_zero,
+                inference_actor_handle=inference_actor,  # Pass handle to central inference
+                num_internal_parallel_games=internal_parallel_games_per_worker,
+                iteration=iteration + 1,
+            )
+            for i in range(num_workers)
+        ]
+
+        # Launch tasks
+        tasks = [w.collect_n_games.remote(games_per_worker) for w in workers]
+
+        # Collect results
+        all_experiences_iteration = []
+        # Use ray.get with tqdm for progress visualization
+        results = []
+        # Correct total for tqdm might be tricky if games_per_worker isn't exact
+        with tqdm(
+            total=num_games_total, desc="Self-Play Games (Workers)", unit="game"
+        ) as pbar:
+            while tasks:
+                ready, tasks = ray.wait(tasks, num_returns=1)
+                if not ready:
+                    break
+                try:
+                    result_experiences = ray.get(ready[0])
+                    results.append(result_experiences)
+                    # Update progress bar by the number of experiences returned
+                    # This assumes one experience per step, not per game.
+                    # A better approach might be for actor to return game count.
+                    # For now, approximate based on average game length? Or just update by 1 game?
+                    # Let's update by games_per_worker / num_workers for simplicity, though inaccurate.
+                    # A fixed update based on games_per_worker is better if actor returns when done.
+                    pbar.update(
+                        len(result_experiences) if result_experiences else 0
+                    )  # Update by steps/experiences
+                except ray.exceptions.RayTaskError as e:
+                    logger.error(f"Self-play worker task failed: {e}")
+                    # Potentially handle failure (e.g., relaunch worker?)
+
+        # Aggregate experiences
+        for exp_list in results:
+            all_experiences_iteration.extend(exp_list)
 
         # --- Add experiences to buffer ---
-        agent.add_experiences_to_buffer(self_play_experiences)
+        agent.add_experiences_to_buffer(all_experiences_iteration)
         logger.info(
-            f"Collected and added {len(self_play_experiences)} total experiences to replay buffer."
+            f"Collected and added {len(all_experiences_iteration)} total experiences to replay buffer."
         )
 
         # --- Optional: Update Inference Actor Weights ---

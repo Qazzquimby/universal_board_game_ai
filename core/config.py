@@ -49,7 +49,8 @@ class AlphaZeroConfig:
     # Number of game steps before reducing temperature
     temperature_decay_steps: int = 30
     # Parallel Self-Play & Batching
-    num_parallel_games: int = 32  # Number of games to run in parallel during self-play
+    num_parallel_games: int = 32  # TOTAL number of games simulated concurrently across all workers
+    num_self_play_workers: int = 0 # Number of parallel CPU workers for self-play. 0 = use os.cpu_count()
     inference_batch_size: int = 32  # Max batch size for network inference
     # --- Dirichlet Noise for Exploration during Self-Play ---
     dirichlet_alpha: float = 0.3  # Shape parameter for noise (typical value 0.3)
