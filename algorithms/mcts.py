@@ -15,6 +15,42 @@ import torch.nn as nn
 from core.config import AlphaZeroConfig
 from environments.base import ActionType, StateType, BaseEnvironment
 
+
+# Helper function moved outside class for potential reuse
+def get_state_key(s: StateType) -> str:
+    """Creates a hashable key from a state dictionary."""
+    try:
+        parts = []
+        for k, v in sorted(s.items()):
+            if isinstance(v, np.ndarray):
+                # Use hash of bytes for numpy arrays
+                parts.append(f"{k}:{hash(v.tobytes())}")
+            elif isinstance(v, (list, tuple)):
+                # Convert lists to tuples for hashing
+                try:
+                    parts.append(f"{k}:{hash(tuple(v))}")
+                except TypeError: # Handle unhashable elements within list/tuple if necessary
+                     parts.append(f"{k}:{repr(v)}") # Fallback to repr
+            elif isinstance(v, dict):
+                 # Recursively handle nested dicts (or use repr as fallback)
+                 parts.append(f"{k}:{get_state_key(v)}") # Simple recursive call
+            else:
+                # Use repr for other hashable types
+                 try:
+                     hash(v) # Check if hashable
+                     parts.append(f"{k}:{repr(v)}")
+                 except TypeError:
+                     logger.warning(f"Unhashable type in state key generation: {type(v)} for key {k}. Using repr().")
+                     parts.append(f"{k}:{repr(v)}") # Fallback for unhashable non-list/array types
+        return "|".join(parts)
+    except Exception as e: # Catch broader exceptions during key generation
+        logger.warning(
+            f"State key generation failed unexpectedly: {e}. Falling back to simple str(). State: {s}"
+        )
+        # Fallback to string representation if complex hashing fails
+        return str(s)
+
+
 PredictResult = Tuple[np.ndarray, float]
 
 
@@ -121,23 +157,7 @@ class DummyAlphaZeroNet(nn.Module):
         return policy_list, value_list
 
 
-def get_state_key(s: StateType) -> str:
-    """Creates a hashable key from a state dictionary."""
-    try:
-        parts = []
-        for k, v in sorted(s.items()):
-            if isinstance(v, np.ndarray):
-                parts.append(f"{k}:{hash(v.tobytes())}")
-            elif isinstance(v, list):
-                parts.append(f"{k}:{tuple(v)}")
-            else:
-                parts.append(f"{k}:{repr(v)}")
-        return "|".join(parts)
-    except TypeError as e:
-        logger.warning(
-            f"State key generation failed with TypeError: {e}. Falling back to simple str(). State: {s}"
-        )
-        return str(s)
+# get_state_key moved above DummyAlphaZeroNet
 
 
 class MCTSNode:

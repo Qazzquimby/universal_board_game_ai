@@ -14,7 +14,7 @@ from loguru import logger
 
 from core.agent_interface import Agent
 from environments.base import BaseEnvironment, StateType, ActionType
-from algorithms.mcts import AlphaZeroMCTS, DummyAlphaZeroNet
+from algorithms.mcts import AlphaZeroMCTS, DummyAlphaZeroNet, get_state_key
 from models.networks import AlphaZeroNet
 from core.config import AlphaZeroConfig, DATA_DIR, TrainingConfig
 
@@ -67,8 +67,7 @@ class AlphaZeroAgent(Agent):
         """
         self.env = env
         self.config = config
-        self.training_config = training_config  # Store training config
-        # self.profiler = profiler # Profiler removed
+        self.training_config = training_config
 
         if self.config.should_use_network:
             self.network = AlphaZeroNet(
@@ -81,9 +80,11 @@ class AlphaZeroAgent(Agent):
             self.network = None
             self.device = torch.device("cpu")
 
+        self.network_cache = {}
         self.mcts = AlphaZeroMCTS(
             env=self.env,
             config=config,
+            network_cache=self.network_cache,  # Pass the cache
         )
 
         # Learning:
@@ -101,12 +102,6 @@ class AlphaZeroAgent(Agent):
             )
         else:
             self.optimizer = None
-        # # Learning Rate Scheduler
-        # self.scheduler = StepLR(
-        #     self.optimizer,
-        #     step_size=config.lr_scheduler_step_size,
-        #     gamma=config.lr_scheduler_gamma,
-        # )
 
     def act(self, state: StateType, train: bool = False) -> ActionType:
         """
@@ -119,13 +114,11 @@ class AlphaZeroAgent(Agent):
                    If False, choose the most visited node (greedy).
 
         Choose an action using MCTS guided by the neural network.
-        This simplified version is primarily for evaluation/playing against the agent.
-        It performs a full synchronous MCTS search with immediate network predictions.
-        The training loop uses a different mechanism (`collect_parallel_self_play_data`).
+        Performs a full synchronous MCTS search with direct network predictions.
 
         Args:
-            state: The current environment state observation.
-            train: If True, use temperature sampling (IGNORED in this simplified version).
+            state: The current environment state observation dictionary.
+            train: If True, use temperature sampling and Dirichlet noise for exploration.
                    If False, choose the most visited node (greedy).
 
         Returns:
@@ -136,36 +129,54 @@ class AlphaZeroAgent(Agent):
 
         # Ensure network is in evaluation mode for inference
         self.network.eval()
+        self.network.to(self.device)
 
-        # --- Perform Synchronous MCTS Search using the new search method ---
-        # The 'env' passed to search should be at the correct 'state'
-        # We assume self.env is correctly representing the current state for act()
-        # If not, we'd need env.set_state(state) first. Let's assume env is correct.
-        chosen_action, policy_target = self.mcts.search(self.env, state)
+        search_env = self.env.copy()
+        search_env.set_state(state)
 
-        if chosen_action is None:
-            logger.error("MCTS search in act() returned no action. Choosing random.")
-            # Fallback to random action if MCTS fails
-            legal_actions = self.env.get_legal_actions()
-            return random.choice(legal_actions) if legal_actions else None
+        self.mcts.reset_root()
+        self.mcts.prepare_for_next_search(train=train)
 
-        # --- Optional Debug Print: MCTS Results ---
-        if self.config.debug_mode:
-            # Access root node via self.mcts after search completion
-            final_root_node = self.mcts.root
-            if final_root_node and final_root_node.children:
-                visit_counts = np.array(
-                    [child.visit_count for child in final_root_node.children.values()]
-                )
-                actions = list(final_root_node.children.keys())
-                logger.debug(f"[DEBUG Act Eval] MCTS Visit Counts:")
-                sorted_visits = sorted(
-                    zip(actions, visit_counts), key=lambda item: item[1], reverse=True
-                )
-                for action, visits in sorted_visits:
-                    logger.debug(f"  - {action}: {visits}")
-            logger.debug(f"[DEBUG Act Eval] Chosen Action: {chosen_action}")
+        for sim_num in range(self.config.num_simulations):
+            # 1. Selection: Find a leaf node using PUCT score
+            leaf_node, leaf_env, _ = self.mcts._select_leaf(self.mcts.root, search_env)
 
+            # 2. Evaluation: Get value of the leaf node
+            if leaf_env.is_game_over():
+                value = self.mcts.get_terminal_value(leaf_env)
+            else:
+                leaf_state_obs = leaf_env.get_observation()
+                state_key = get_state_key(leaf_state_obs)
+
+                cached_result = self.mcts.network_cache.get(state_key)
+                if cached_result:
+                    policy_np, value = cached_result
+                else:
+                    # Cache miss: Predict with network
+                    policy_np, value = self.network.predict(leaf_state_obs)
+                    self.mcts.network_cache[state_key] = (policy_np, value)
+
+                # 3. Expansion: Expand the leaf node using network policy priors
+                assert policy_np is not None
+                self.mcts._expand(leaf_node, leaf_env, policy_np)
+
+                if (
+                    leaf_node == self.mcts.root
+                    and train
+                    and self.config.dirichlet_epsilon > 0
+                    and sim_num == 0
+                ):
+                    self.mcts._apply_dirichlet_noise()
+
+            # 4. Backpropagation: Update nodes along the path
+            self.mcts._backpropagate(leaf_node, value)
+
+        (
+            chosen_action,
+            action_visits,
+        ) = self.mcts.get_result()
+
+        assert chosen_action is not None
         return chosen_action
 
     def process_finished_episode(
