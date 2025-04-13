@@ -310,11 +310,7 @@ class MCTS:
         """Run MCTS search from the given state using UCB1 and random rollouts."""
         self.reset_root()
 
-        # logger.debug(f"--- MCTS Search Start: State={state} ---")
-
         for sim_num in range(self.num_simulations):
-            # logger.debug(f" Simulation {sim_num+1}/{self.num_simulations}")
-            # Start from the root node and a copy of the environment set to the initial state
             sim_env = env.copy()
             sim_env.set_state(state)
 
@@ -323,18 +319,9 @@ class MCTS:
 
             # 2. Evaluation: Get the value of the leaf node.
             if not leaf_env_state.is_game_over():
-                # Standard MCTS would expand and rollout here.
-                # This base class search is likely unused now, AlphaZeroMCTS overrides.
-                # If used, it needs its own evaluation method (e.g., rollout or dummy).
-                # For now, assume it's not directly called in the AlphaZero context.
-                # If expansion is needed, it should happen before evaluation.
                 if not leaf_node.is_expanded():
                     self._expand(leaf_node, leaf_env_state)
-                # Placeholder: Base MCTS needs an evaluation strategy if used.
-                value = 0.0  # Or raise NotImplementedError
-                logger.warning(
-                    "Base MCTS search called without a specific evaluation method (like rollout or network). Returning 0."
-                )
+                value = self._rollout(leaf_env_state)
 
             else:
                 # Game ended during selection. Determine the outcome.
@@ -597,7 +584,6 @@ class AlphaZeroMCTS(MCTS):
 
         return chosen_action, action_visits
 
-    # Modify signature to accept env directly
     def _select_leaf(
         self, root_node: MCTSNode, env: BaseEnvironment
     ) -> Tuple[MCTSNode, BaseEnvironment, List[MCTSNode]]:
