@@ -342,9 +342,12 @@ def run_sanity_checks(env: BaseEnvironment, agent: AlphaZeroAgent):
 
         try:
             policy_np, value_np = agent.network.predict(check_case.state)
-            logger.info(
-                f"  Value: Expected={check_case.expected_value:.1f}, Predicted={value_np:.4f}"
-            )
+            if check_case.expected_value is None:
+                logger.info(f"  Value: Predicted={value_np:.4f}")
+            else:
+                logger.info(
+                    f"  Value: Expected={check_case.expected_value:.1f}, Predicted={value_np:.4f}"
+                )
 
             temp_env = env.copy()
             temp_env.set_state(check_case.state)

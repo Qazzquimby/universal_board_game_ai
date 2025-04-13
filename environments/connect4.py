@@ -462,7 +462,7 @@ class Connect4(BaseEnvironment):
                 state=env4.get_observation(),
                 # Player 0 *must* block, but doesn't guarantee a win. Outcome unclear. Use 0.0
                 # Alternatively, could argue it's slightly negative as P1 forced the block? Let's use 0.0 for simplicity.
-                expected_value=0.0,  # Blocking doesn't guarantee win/loss
+                # expected_value=0.0,  # Blocking doesn't guarantee win/loss
                 expected_action=6,
             )
         )
