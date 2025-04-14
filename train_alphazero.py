@@ -238,15 +238,43 @@ def run_training(config: AppConfig, env_name_override: str = None):
 
         # Aggregate experiences
         for exp_list in results:
-            all_experiences_iteration.extend(exp_list)
+            all_experiences_iteration.extend(exp_list) # exp_list is now List[Tuple[raw_history, final_outcome]]
 
-        # --- Add experiences to buffer ---
-        agent.add_experiences_to_buffer(all_experiences_iteration)
+        # --- Process collected game results and add to buffer ---
+        total_experiences_added = 0
+        total_games_processed = 0
+        game_log_index_offset = iteration * config.training.num_games_per_iteration # Base index for this iteration
+
+        logger.info(f"Processing {len(all_experiences_iteration)} collected game results...")
+        for i, (raw_history, final_outcome) in enumerate(all_experiences_iteration):
+            if not raw_history:
+                logger.warning(f"Skipping game {i} with empty raw history.")
+                continue
+
+            # Process the raw history using the agent to get buffer experiences and loggable history
+            episode_result = agent.process_finished_episode(raw_history, final_outcome)
+
+            # Add processed experiences to the central replay buffer
+            agent.add_experiences_to_buffer(episode_result.buffer_experiences)
+            total_experiences_added += len(episode_result.buffer_experiences)
+
+            # Save the processed game log (now includes value targets)
+            # Use a unique game index across the entire training run
+            current_game_log_index = game_log_index_offset + total_games_processed + 1
+            save_game_log(
+                logged_history=episode_result.logged_history,
+                iteration=iteration + 1,
+                game_index=current_game_log_index,
+                env_name=config.env.name,
+            )
+            total_games_processed += 1
+
         logger.info(
-            f"Collected and added {len(all_experiences_iteration)} total experiences to replay buffer."
+            f"Processed {total_games_processed} games, adding {total_experiences_added} experiences to replay buffer."
         )
 
-        # --- Optional: Update Inference Actor Weights ---
+
+        # --- Update Inference Actor Weights ---
         # If the network was updated during the learning phase (which happens next),
         # you might want to update the inference actor's weights before the *next*
         # self-play iteration. This can be done here or at the start of the next iteration.

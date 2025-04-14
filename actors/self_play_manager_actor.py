@@ -42,15 +42,20 @@ class SelfPlayWorkerActor:
         # Game state tracking for games managed by this worker
         self.all_experiences_collected: List[Tuple[StateType, np.ndarray, float]] = []
         self.num_finished_games_total = 0
+        self.num_finished_games_this_call = 0
         self.num_steps_taken = 0
         self.envs: List[BaseEnvironment] = []
         self.observations: List[StateType] = []
         self.histories: Dict[int, List[Tuple[StateType, ActionType, np.ndarray]]] = {}
         self.states_before_action: Dict[int, StateType] = {}
         self.mcts_instances: Dict[int, AlphaZeroMCTS] = {}
-        self.pending_requests: Dict[
-            int, StateType
-        ] = {}  # game_idx (local) -> state_dict
+
+        # game index to state dict
+        self.pending_requests: Dict[int, StateType] = {}
+
+        self.finished_game_results: List[
+            Tuple[List[Tuple[StateType, ActionType, np.ndarray]], float]
+        ] = []
 
         # Initialize internal game states
         self._initialize_internal_games()
@@ -65,30 +70,25 @@ class SelfPlayWorkerActor:
         self.states_before_action = {}
         self.mcts_instances = {}
         self.pending_requests = {}
-        # Reset experience list for the new collection task
-        self.all_experiences_collected = []
+
+        self.finished_game_results = []
+        self.num_finished_games_this_call = 0
 
     def collect_n_games(
         self, num_games_to_collect_this_call: int
-    ) -> List[Tuple[StateType, np.ndarray, float]]:
-        """Runs the self-play loop until N games are completed by this worker."""
+    ) -> List[Tuple[List[Tuple[StateType, ActionType, np.ndarray]], float]]:
+        """
+        Runs the self-play loop until N games are completed by this worker.
+        Returns a list of tuples: (raw_game_history, final_outcome_for_player_0).
+        """
         logger.debug(
             f"Actor {self.actor_id}: Starting collection of {num_games_to_collect_this_call} games."
         )
         self._initialize_internal_games()  # Reset state for this collection task
-        num_finished_this_call = 0
 
-        while num_finished_this_call < num_games_to_collect_this_call:
-            finished_before_iter = self.num_finished_games_total
+        while self.num_finished_games_this_call < num_games_to_collect_this_call:
             self._run_one_iter()
-            finished_after_iter = self.num_finished_games_total
-            num_finished_this_call += finished_after_iter - finished_before_iter
-
-        logger.debug(
-            f"Actor {self.actor_id}: Finished collecting {num_finished_this_call} games "
-            f"(Total finished by worker: {self.num_finished_games_total})."
-        )
-        return self.all_experiences_collected
+        return self.finished_game_results
 
     def _run_one_iter(self):
         self._start_needed_searches()
@@ -216,9 +216,8 @@ class SelfPlayWorkerActor:
                 del self.states_before_action[game_idx]
 
             if done:
-                # Pass the total finished count offset for unique game logging index
-                self._handle_finished_game(game_idx, self.num_finished_games_total)
-                self.num_finished_games_total += 1  # Increment worker's total count
+                self._handle_finished_game(game_idx)
+                self.num_finished_games_total += 1
             elif action is not None:
                 mcts.advance_root(action)
                 mcts.env = self.envs[game_idx].copy()
@@ -226,37 +225,29 @@ class SelfPlayWorkerActor:
                 if game_idx in self.mcts_instances:
                     del self.mcts_instances[game_idx]  # Reset MCTS
 
-    def _handle_finished_game(self, game_idx, finished_game_offset):
-        # Processes a finished game and adds experiences to the worker's list
+    def _handle_finished_game(self, game_idx: int):
+        """
+        Processes a finished game: determines outcome, collects raw history,
+        and adds the result to the worker's finished_game_results list.
+        Resets the environment slot for a new game.
+        """
         winner = self.envs[game_idx].get_winning_player()
+        # Determine outcome from player 0's perspective
         final_outcome = 1.0 if winner == 0 else -1.0 if winner == 1 else 0.0
-        valid_history = [
-            (s, a, p) for s, a, p in self.histories[game_idx] if p is not None
+
+        # Collect the raw history (state, action, policy) for this game
+        raw_history = [
+            (state, action, policy)
+            for state, action, policy in self.histories[game_idx]
+            if policy is not None
         ]
 
-        if valid_history:
-            num_steps = len(valid_history)
-            logged_history_for_saving = []
-            for i, (state, action, policy) in enumerate(valid_history):
-                value_target = final_outcome  # Simplistic assignment
-                # Add to the list that will be returned by this actor
-                self.all_experiences_collected.append((state, policy, value_target))
-                logged_history_for_saving.append((state, action, policy, value_target))
+        assert raw_history
+        self.finished_game_results.append((raw_history, final_outcome))
+        logger.trace(
+            f"Actor {self.actor_id}: Game {game_idx} finished. Outcome: {final_outcome}, Steps: {len(raw_history)}"
+        )
 
-            # Logging from actors can be tricky, consider using Ray logging
-            save_game_log(
-                logged_history=logged_history_for_saving,
-                iteration=self.iteration,
-                # Use offset for a potentially unique index across all workers
-                game_index=finished_game_offset + 1,
-                env_name=self.env_name,
-            )
-        else:
-            logger.warning(
-                f"Actor {self.actor_id} Game {game_idx}: Finished with no valid history."
-            )
-
-        # Reset environment and history for this game index *within the worker*
         self.observations[game_idx] = self.envs[game_idx].reset()
         self.histories[game_idx] = []
         if game_idx in self.mcts_instances:

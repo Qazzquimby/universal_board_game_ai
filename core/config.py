@@ -49,8 +49,8 @@ class AlphaZeroConfig:
     # Number of game steps before reducing temperature
     temperature_decay_steps: int = 30
     # Parallel Self-Play & Batching
-    num_parallel_games: int = 32  # TOTAL number of games simulated concurrently across all workers
-    num_self_play_workers: int = 0 # Number of parallel CPU workers for self-play. 0 = use os.cpu_count()
+    num_parallel_games: int = 32
+    num_self_play_workers: int = 2
     inference_batch_size: int = 32  # Max batch size for network inference
     # --- Dirichlet Noise for Exploration during Self-Play ---
     dirichlet_alpha: float = 0.3  # Shape parameter for noise (typical value 0.3)
@@ -62,7 +62,7 @@ class AlphaZeroConfig:
     dynamic_simulations_enabled: bool = True  # Set to True to enable early stopping
     dynamic_simulations_min_visits: int = 30  # Min total visits before stopping early
     dynamic_simulations_visit_delta: int = (
-        50  # Required visit diff between best/second best
+        75  # Required visit diff between best/second best
     )
     debug_mode: bool = False
     should_use_network: bool = True

@@ -35,7 +35,7 @@ def save_game_log(
     try:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        filename = f"{env_name}_game{game_index:04d}_{timestamp}.json"
+        filename = f"{env_name}_game_{timestamp}_{game_index:04d}.json"
         filepath = LOG_DIR / filename
 
         # Prepare data for JSON
