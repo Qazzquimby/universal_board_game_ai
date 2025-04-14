@@ -45,7 +45,7 @@ class AlphaZeroConfig:
     replay_buffer_size: int = 10000
     batch_size: int = 64
     # Weight for value loss (default 1.0, try increasing)
-    value_loss_weight: float = 2.0
+    value_loss_weight: float = 1.0
     # Number of game steps before reducing temperature
     temperature_decay_steps: int = 30
     # Parallel Self-Play & Batching
@@ -62,8 +62,9 @@ class AlphaZeroConfig:
     dynamic_simulations_enabled: bool = True  # Set to True to enable early stopping
     dynamic_simulations_min_visits: int = 30  # Min total visits before stopping early
     dynamic_simulations_visit_delta: int = (
-        75  # Required visit diff between best/second best
+        100  # Required visit diff between best/second best
     )
+    # todo use more mature early sim system.
     debug_mode: bool = False
     should_use_network: bool = True
 

@@ -5,13 +5,12 @@ import ray
 from loguru import logger
 
 from core.config import AlphaZeroConfig
-from core.serialization import save_game_log
 from environments.base import BaseEnvironment, StateType, ActionType
 from algorithms.mcts import AlphaZeroMCTS, get_state_key
 from factories import get_environment
 
 
-@ray.remote
+@ray.remote(num_cpus=1)
 class SelfPlayWorkerActor:
     """
     Ray actor managing self-play for a subset of games and interacting
@@ -41,8 +40,7 @@ class SelfPlayWorkerActor:
 
         # Game state tracking for games managed by this worker
         self.all_experiences_collected: List[Tuple[StateType, np.ndarray, float]] = []
-        self.num_finished_games_total = 0
-        self.num_finished_games_this_call = 0
+        self.num_finished_games = 0
         self.num_steps_taken = 0
         self.envs: List[BaseEnvironment] = []
         self.observations: List[StateType] = []
@@ -72,7 +70,7 @@ class SelfPlayWorkerActor:
         self.pending_requests = {}
 
         self.finished_game_results = []
-        self.num_finished_games_this_call = 0
+        self.num_finished_games = 0
 
     def collect_n_games(
         self, num_games_to_collect_this_call: int
@@ -86,7 +84,7 @@ class SelfPlayWorkerActor:
         )
         self._initialize_internal_games()  # Reset state for this collection task
 
-        while self.num_finished_games_this_call < num_games_to_collect_this_call:
+        while self.num_finished_games < num_games_to_collect_this_call:
             self._run_one_iter()
         return self.finished_game_results
 
@@ -217,7 +215,7 @@ class SelfPlayWorkerActor:
 
             if done:
                 self._handle_finished_game(game_idx)
-                self.num_finished_games_total += 1
+                self.num_finished_games += 1
             elif action is not None:
                 mcts.advance_root(action)
                 mcts.env = self.envs[game_idx].copy()

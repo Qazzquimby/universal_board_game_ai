@@ -8,7 +8,7 @@ from loguru import logger
 import ray
 
 from core.config import AppConfig
-from core.serialization import LOG_DIR
+from core.serialization import LOG_DIR, save_game_log
 from environments.base import BaseEnvironment
 from agents.alphazero_agent import AlphaZeroAgent
 from factories import get_environment, get_agents
@@ -131,9 +131,13 @@ def run_training(config: AppConfig, env_name_override: str = None):
     # --- Ray Initialization ---
     # Ensure Ray is initialized (or initialize it)
     if not ray.is_initialized():
-        ray.init(ignore_reinit_error=True, log_to_driver=config.alpha_zero.debug_mode)
-    else:
-        logger.warning("Ray already initialized. Using existing context.")
+        context = ray.init(
+            ignore_reinit_error=True,
+            log_to_driver=config.alpha_zero.debug_mode,
+            include_dashboard=True,
+            # local_mode=True,
+        )
+        print(f"Dashboard at {context.dashboard_url}")
 
     if agent.network:
         network_state_dict = {k: v.cpu() for k, v in agent.network.state_dict().items()}
@@ -238,14 +242,20 @@ def run_training(config: AppConfig, env_name_override: str = None):
 
         # Aggregate experiences
         for exp_list in results:
-            all_experiences_iteration.extend(exp_list) # exp_list is now List[Tuple[raw_history, final_outcome]]
+            all_experiences_iteration.extend(
+                exp_list
+            )  # exp_list is now List[Tuple[raw_history, final_outcome]]
 
         # --- Process collected game results and add to buffer ---
         total_experiences_added = 0
         total_games_processed = 0
-        game_log_index_offset = iteration * config.training.num_games_per_iteration # Base index for this iteration
+        game_log_index_offset = (
+            iteration * config.training.num_games_per_iteration
+        )  # Base index for this iteration
 
-        logger.info(f"Processing {len(all_experiences_iteration)} collected game results...")
+        logger.info(
+            f"Processing {len(all_experiences_iteration)} collected game results..."
+        )
         for i, (raw_history, final_outcome) in enumerate(all_experiences_iteration):
             if not raw_history:
                 logger.warning(f"Skipping game {i} with empty raw history.")
@@ -272,7 +282,6 @@ def run_training(config: AppConfig, env_name_override: str = None):
         logger.info(
             f"Processed {total_games_processed} games, adding {total_experiences_added} experiences to replay buffer."
         )
-
 
         # --- Update Inference Actor Weights ---
         # If the network was updated during the learning phase (which happens next),
