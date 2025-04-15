@@ -50,7 +50,7 @@ class AlphaZeroConfig:
     temperature_decay_steps: int = 30
     # Parallel Self-Play & Batching
     num_self_play_workers: int = 2
-    inference_batch_size: int = 64  # Max batch size for network inference
+    inference_batch_size: int = 32  # Max batch size for network inference
     # --- Dirichlet Noise for Exploration during Self-Play ---
     dirichlet_alpha: float = 0.3  # Shape parameter for noise (typical value 0.3)
     dirichlet_epsilon: float = 0.25  # Weight of noise vs. priors (typical value 0.25)
@@ -91,15 +91,13 @@ class MuZeroConfig:
 class TrainingConfig:
     # Specific to AlphaZero/MuZero training loops
     num_iterations: int = 1000  # Total training iterations
-    num_games_per_iteration: int = 256
+    num_games_per_iteration: int = 128
     # Number of epochs (passes over replay buffer) per learning phase
-    num_epochs_per_iteration: int = 4  # Increased epochs
+    num_epochs_per_iteration: int = 4
     # How often (in iterations) to run sanity checks (0=only at end, 1=every iteration)
     sanity_check_frequency: int = 5  # Run every 5 iterations
     # MCTS Profiling configuration
     enable_mcts_profiling: bool = True
-    # How often (in iterations) to report MCTS profiling stats (0=only at end)
-    mcts_profiling_report_frequency: int = 10
 
 
 # --- Evaluation Configuration ---
