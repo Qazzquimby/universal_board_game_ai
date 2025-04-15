@@ -398,23 +398,35 @@ class AlphaZeroAgent(Agent):
         filename = f"alphazero_net_{env_type_name}.pth"
         return DATA_DIR / filename
 
+    def _get_optimizer_save_path(self) -> Path:
+        """Constructs the save file path for the optimizer state."""
+        env_type_name = type(self.env).__name__
+        filename = f"alphazero_optimizer_{env_type_name}.pth"
+        return DATA_DIR / filename
+
     def save(self) -> None:
-        """Save the neural network weights."""
-        if not self.network:
-            logger.warning("Cannot save: Network not initialized.")
+        """Save the neural network weights and optimizer state."""
+        if not self.network or not self.optimizer:
+            logger.warning("Cannot save: Network or optimizer not initialized.")
             return
         filepath = self._get_save_path()
         try:
             DATA_DIR.mkdir(parents=True, exist_ok=True)
             torch.save(self.network.state_dict(), filepath)
             logger.info(f"AlphaZero network saved to {filepath}")
+
+            # Save optimizer state
+            optimizer_filepath = self._get_optimizer_save_path()
+            torch.save(self.optimizer.state_dict(), optimizer_filepath)
+            logger.info(f"AlphaZero optimizer state saved to {optimizer_filepath}")
+
         except Exception as e:
-            logger.error(f"Error saving AlphaZero network to {filepath}: {e}")
+            logger.error(f"Error saving AlphaZero network or optimizer: {e}")
 
     def load(self) -> bool:
-        """Load the neural network weights."""
-        if not self.network:
-            logger.warning("Cannot load: Network not initialized.")
+        """Load the neural network weights and optimizer state."""
+        if not self.network or not self.optimizer:
+            logger.warning("Cannot load: Network or optimizer not initialized.")
             return False
         filepath = self._get_save_path()
         try:
@@ -426,16 +438,37 @@ class AlphaZeroAgent(Agent):
                 )
                 # Ensure model is on the correct device after loading (should be redundant if map_location works)
                 self.network.to(self.device)
-                self.network.eval()  # Set to evaluation mode after loading
+                self.network.eval()
                 logger.info(
                     f"AlphaZero network loaded from {filepath} to {self.device}"
                 )
-                return True
+
+                # Load optimizer state
+                optimizer_filepath = self._get_optimizer_save_path()
+                if optimizer_filepath.exists():
+                    try:
+                        self.optimizer.load_state_dict(
+                            torch.load(optimizer_filepath, map_location=map_location)
+                        )
+                        logger.info(
+                            f"AlphaZero optimizer state loaded from {optimizer_filepath}"
+                        )
+                    except Exception as opt_e:
+                        logger.error(
+                            f"Error loading AlphaZero optimizer state from {optimizer_filepath}: {opt_e}"
+                        )
+                        # Decide if failure to load optimizer should prevent network load (currently doesn't)
+                else:
+                    logger.info(
+                        f"Optimizer state file not found: {optimizer_filepath}. Optimizer not loaded."
+                    )
+
+                return True  # Network loaded successfully, even if optimizer didn't
             else:
                 logger.info(f"Network weights file not found: {filepath}")
                 return False
-        except Exception as e:
-            logger.error(f"Error loading AlphaZero network from {filepath}: {e}")
+        except Exception as net_e:
+            logger.error(f"Error loading AlphaZero network from {filepath}: {net_e}")
             return False
 
     def reset(self) -> None:
