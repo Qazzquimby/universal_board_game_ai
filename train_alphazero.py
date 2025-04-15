@@ -180,7 +180,7 @@ def run_training(config: AppConfig, env_name_override: str = None):
 
         # --- Parallel Self-Play Setup ---
         num_games_total = config.training.num_games_per_iteration
-        total_parallel_games_across_workers = config.alpha_zero.num_parallel_games
+        total_parallel_games_across_workers = config.training.num_games_per_iteration
 
         # Determine number of workers
         if config.alpha_zero.num_self_play_workers > 0:

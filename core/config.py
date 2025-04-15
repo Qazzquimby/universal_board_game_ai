@@ -38,20 +38,19 @@ class MCTSConfig:
 class AlphaZeroConfig:
     num_simulations: int = 400  # MCTS simulations per move
     cpuct: float = 1.0  # Exploration constant in PUCT formula
-    learning_rate: float = 0.001
+    learning_rate: float = 0.01
     weight_decay: float = 0.0001
     hidden_layer_size: int = 128  # Size for the MLP hidden layers
     num_hidden_layers: int = 2  # Number of hidden layers in the MLP
-    replay_buffer_size: int = 10000
-    batch_size: int = 64
+    replay_buffer_size: int = 500_000  # 10000
+    batch_size: int = 256
     # Weight for value loss (default 1.0, try increasing)
     value_loss_weight: float = 1.0
     # Number of game steps before reducing temperature
     temperature_decay_steps: int = 30
     # Parallel Self-Play & Batching
-    num_parallel_games: int = 32
     num_self_play_workers: int = 2
-    inference_batch_size: int = 32  # Max batch size for network inference
+    inference_batch_size: int = 64  # Max batch size for network inference
     # --- Dirichlet Noise for Exploration during Self-Play ---
     dirichlet_alpha: float = 0.3  # Shape parameter for noise (typical value 0.3)
     dirichlet_epsilon: float = 0.25  # Weight of noise vs. priors (typical value 0.25)
@@ -90,13 +89,9 @@ class MuZeroConfig:
 # --- Training Configuration ---
 @dataclass
 class TrainingConfig:
-    # Specific to Q-learning training loop in factories.py
-    num_episodes: int = 5000
-    plot_window: int = 200
-
     # Specific to AlphaZero/MuZero training loops
     num_iterations: int = 1000  # Total training iterations
-    num_games_per_iteration: int = 32
+    num_games_per_iteration: int = 256
     # Number of epochs (passes over replay buffer) per learning phase
     num_epochs_per_iteration: int = 4  # Increased epochs
     # How often (in iterations) to run sanity checks (0=only at end, 1=every iteration)
