@@ -27,7 +27,7 @@ class MCTSConfig:
 
 @dataclass
 class AlphaZeroConfig:
-    num_simulations: int = 2  # MCTS simulations per move
+    num_simulations: int = 400  # MCTS simulations per move
     cpuct: float = 1.0  # Exploration constant in PUCT formula
     learning_rate: float = 0.01
     weight_decay: float = 0.0001
@@ -40,8 +40,8 @@ class AlphaZeroConfig:
     # Number of game steps before reducing temperature
     temperature_decay_steps: int = 30
     # Parallel Self-Play & Batching
-    num_self_play_workers: int = 1
-    inference_batch_size: int = 1  # Max batch size for network inference
+    num_self_play_workers: int = 2
+    inference_batch_size: int = 32  # Max batch size for network inference
     # --- Dirichlet Noise for Exploration during Self-Play ---
     dirichlet_alpha: float = 0.3  # Shape parameter for noise (typical value 0.3)
     dirichlet_epsilon: float = 0.25  # Weight of noise vs. priors (typical value 0.25)
@@ -79,7 +79,7 @@ class MuZeroConfig:
 class TrainingConfig:
     # Specific to AlphaZero/MuZero training loops
     num_iterations: int = 1000  # Total training iterations
-    num_games_per_iteration: int = 2
+    num_games_per_iteration: int = 128
     # Number of epochs (passes over replay buffer) per learning phase
     num_epochs_per_iteration: int = 4
     # How often (in iterations) to run sanity checks (0=only at end, 1=every iteration)
@@ -104,11 +104,11 @@ class WandBConfig:
 # --- Evaluation Configuration ---
 @dataclass
 class EvaluationConfig:
-    num_games: int = 2
-    benchmark_mcts_simulations: int = 2
+    num_games: int = 50
+    benchmark_mcts_simulations: int = 400
     run_periodic_evaluation: bool = True
-    periodic_eval_frequency: int = 2
-    periodic_eval_num_games: int = 2
+    periodic_eval_frequency: int = 5
+    periodic_eval_num_games: int = 30
 
 
 # --- Main Application Configuration ---
