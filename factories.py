@@ -61,3 +61,17 @@ def get_agents(env: BaseEnvironment, config: AppConfig) -> Dict[str, Agent]:
     }
 
     return agents
+
+
+def get_benchmark_mcts_agent(env: BaseEnvironment, config: AppConfig) -> MCTSAgent:
+    """Creates the benchmark MCTS agent for evaluation."""
+    benchmark_sims = config.evaluation.benchmark_mcts_simulations
+    logger.info(f"Creating benchmark MCTSAgent with {benchmark_sims} simulations.")
+    return MCTSAgent(
+        env,
+        num_simulations=benchmark_sims,
+        exploration_constant=config.mcts.exploration_constant, # Use same exploration constant for now
+    )
+
+
+# TODO: Add factory for MuZero agent when implemented

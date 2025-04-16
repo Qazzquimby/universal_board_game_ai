@@ -105,8 +105,8 @@ class WandBConfig:
 # --- Evaluation Configuration ---
 @dataclass
 class EvaluationConfig:
-    num_games: int = 50  # Number of games per matchup
-    # Elo parameters removed
+    num_games: int = 50
+    benchmark_mcts_simulations: int = 400
 
 
 # --- Main Application Configuration ---
