@@ -324,9 +324,11 @@ def run_training(config: AppConfig, env_name_override: str = None):
             logger.info("Learning Time: Skipped (buffer too small)")
 
         # 3. Save Checkpoint Periodically
-        # TODO: Make save frequency configurable
-        if (iteration + 1) % 10 == 0:  # Save every 10 iterations
-            logger.info("Saving agent checkpoint...")
+        if (
+            config.training.save_checkpoint_frequency > 0
+            and (iteration + 1) % config.training.save_checkpoint_frequency == 0
+        ):
+            logger.info(f"Saving agent checkpoint (Iteration {iteration + 1})...")
             agent.save()
 
         buffer_size = len(agent.replay_buffer)

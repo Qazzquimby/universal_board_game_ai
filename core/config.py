@@ -86,7 +86,9 @@ class TrainingConfig:
     # Number of epochs (passes over replay buffer) per learning phase
     num_epochs_per_iteration: int = 4
     # How often (in iterations) to run sanity checks (0=only at end, 1=every iteration)
-    sanity_check_frequency: int = 5  # Run every 5 iterations
+    sanity_check_frequency: int = 5
+    # How often (in iterations) to save agent checkpoints (0=only at end)
+    save_checkpoint_frequency: int = 2
     # MCTS Profiling configuration
     enable_mcts_profiling: bool = True
 
@@ -109,7 +111,7 @@ class EvaluationConfig:
     benchmark_mcts_simulations: int = 400
     run_periodic_evaluation: bool = True
     periodic_eval_frequency: int = 5
-    periodic_eval_num_games: int = 20
+    periodic_eval_num_games: int = 30
 
 
 # --- Main Application Configuration ---
