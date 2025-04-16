@@ -9,14 +9,18 @@ from loguru import logger
 import ray
 import wandb
 
-from core.config import AppConfig
+from core.config import AppConfig, WANDB_KEY
 from core.serialization import LOG_DIR, save_game_log
 from environments.base import BaseEnvironment
 from agents.alphazero_agent import AlphaZeroAgent
-from agents.mcts_agent import MCTSAgent # Import MCTSAgent for type hint
-from factories import get_environment, get_agents, get_benchmark_mcts_agent # Import benchmark factory
+from agents.mcts_agent import MCTSAgent  # Import MCTSAgent for type hint
+from factories import (
+    get_environment,
+    get_agents,
+    get_benchmark_mcts_agent,
+)  # Import benchmark factory
 from utils.plotting import plot_losses
-import evaluation # Import evaluation module
+import evaluation  # Import evaluation module
 from actors.inference_actor import InferenceActor
 from actors.self_play_manager_actor import SelfPlayWorkerActor
 
@@ -128,14 +132,12 @@ def run_training(config: AppConfig, env_name_override: str = None):
     # --- WandB Initialization ---
     if config.wandb.enabled:
         try:
+            wandb.login(key=WANDB_KEY)
             wandb.init(
                 project=config.wandb.project_name,
-                entity=config.wandb.entity or None,  # Pass None if empty string
-                name=config.wandb.run_name or None,  # Pass None if empty string
+                entity=config.wandb.entity or None,
+                name=config.wandb.run_name or None,
                 config=config.to_dict()
-                if config.wandb.log_config
-                else None,  # Log config if enabled
-                reinit=True,  # Allow re-initialization if running multiple times in one script
                 # mode="disabled" # Uncomment for debugging without logging online
             )
             logger.info("WandB initialized successfully.")
@@ -143,7 +145,7 @@ def run_training(config: AppConfig, env_name_override: str = None):
             logger.error(
                 f"Failed to initialize WandB: {e}. Disabling WandB for this run."
             )
-            config.wandb.enabled = False  # Disable if init fails
+            config.wandb.enabled = False
 
     # --- Ray Initialization ---
     # Ensure Ray is initialized (or initialize it)
@@ -362,22 +364,27 @@ def run_training(config: AppConfig, env_name_override: str = None):
             except Exception as e:
                 logger.warning(f"Failed to log metrics to WandB: {e}")
 
-
         # 4. Periodic Evaluation against Benchmark MCTS
         if (
             config.evaluation.run_periodic_evaluation
             and (iteration + 1) % config.evaluation.periodic_eval_frequency == 0
         ):
-            logger.info(f"\n--- Running Periodic Evaluation (Iteration {iteration + 1}) ---")
+            logger.info(
+                f"\n--- Running Periodic Evaluation (Iteration {iteration + 1}) ---"
+            )
             if not agent.network:
-                logger.warning("Skipping periodic evaluation: AlphaZero agent has no network.")
+                logger.warning(
+                    "Skipping periodic evaluation: AlphaZero agent has no network."
+                )
             else:
                 # Ensure agent is in eval mode for the test games
                 agent.network.eval()
 
                 # Create benchmark agent
                 benchmark_agent = get_benchmark_mcts_agent(env, config)
-                benchmark_agent_name = f"MCTS_{config.evaluation.benchmark_mcts_simulations}"
+                benchmark_agent_name = (
+                    f"MCTS_{config.evaluation.benchmark_mcts_simulations}"
+                )
 
                 # Run games
                 eval_results = evaluation.run_test_games(
@@ -392,19 +399,27 @@ def run_training(config: AppConfig, env_name_override: str = None):
                 # Log results to WandB if enabled
                 if config.wandb.enabled:
                     wandb_eval_log = {
-                        f"eval_vs_{benchmark_agent_name}/win_rate": eval_results.get("AlphaZero_win_rate", 0.0),
-                        f"eval_vs_{benchmark_agent_name}/loss_rate": eval_results.get(f"{benchmark_agent_name}_win_rate", 0.0),
-                        f"eval_vs_{benchmark_agent_name}/draw_rate": eval_results.get("draw_rate", 0.0),
-                        "iteration": iteration + 1 # Log iteration for easier x-axis mapping
+                        f"eval_vs_{benchmark_agent_name}/win_rate": eval_results.get(
+                            "AlphaZero_win_rate", 0.0
+                        ),
+                        f"eval_vs_{benchmark_agent_name}/loss_rate": eval_results.get(
+                            f"{benchmark_agent_name}_win_rate", 0.0
+                        ),
+                        f"eval_vs_{benchmark_agent_name}/draw_rate": eval_results.get(
+                            "draw_rate", 0.0
+                        ),
+                        "iteration": iteration
+                        + 1,  # Log iteration for easier x-axis mapping
                     }
                     try:
                         wandb.log(wandb_eval_log)
                         logger.info(f"Logged periodic evaluation results to WandB.")
                     except Exception as e:
-                        logger.warning(f"Failed to log evaluation results to WandB: {e}")
+                        logger.warning(
+                            f"Failed to log evaluation results to WandB: {e}"
+                        )
 
                 # Note: agent.learn() will put the network back in train mode if needed
-
 
         # 5. Run Sanity Checks Periodically (and not on first iteration if frequency > 1)
         if (

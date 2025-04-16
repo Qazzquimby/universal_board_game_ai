@@ -140,6 +140,8 @@ for parent in PROJECT_ROOT:
 
 DATA_DIR = PROJECT_ROOT / "data"
 
+WANDB_KEY = (PROJECT_ROOT / "wandb_key").read_text()
+
 # Example usage:
 # config = AppConfig()
 # config.env.name = "Nim"
