@@ -112,7 +112,22 @@ def run_test_games(
     print(f"{agent2_name} total wins: {results[agent2_name]}")
     print(f"Total draws: {results['draws']}")
     print("-" * (len(f"--- Testing {agent1_name} vs {agent2_name} ---") + 5))
-    return results
+
+    # Calculate rates
+    total_games = sum(results.values())
+    if total_games == 0:
+        return {
+            f"{agent1_name}_win_rate": 0.0,
+            f"{agent2_name}_win_rate": 0.0,
+            "draw_rate": 0.0,
+        }
+
+    rates = {
+        f"{agent1_name}_win_rate": results[agent1_name] / total_games,
+        f"{agent2_name}_win_rate": results[agent2_name] / total_games,
+        "draw_rate": results["draws"] / total_games,
+    }
+    return rates
 
 
 def run_evaluation(env: BaseEnvironment, agents: Dict[str, Agent], config: AppConfig):

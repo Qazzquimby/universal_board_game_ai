@@ -107,6 +107,9 @@ class WandBConfig:
 class EvaluationConfig:
     num_games: int = 50
     benchmark_mcts_simulations: int = 400
+    run_periodic_evaluation: bool = True
+    periodic_eval_frequency: int = 5
+    periodic_eval_num_games: int = 20
 
 
 # --- Main Application Configuration ---

@@ -13,8 +13,10 @@ from core.config import AppConfig
 from core.serialization import LOG_DIR, save_game_log
 from environments.base import BaseEnvironment
 from agents.alphazero_agent import AlphaZeroAgent
-from factories import get_environment, get_agents
+from agents.mcts_agent import MCTSAgent # Import MCTSAgent for type hint
+from factories import get_environment, get_agents, get_benchmark_mcts_agent # Import benchmark factory
 from utils.plotting import plot_losses
+import evaluation # Import evaluation module
 from actors.inference_actor import InferenceActor
 from actors.self_play_manager_actor import SelfPlayWorkerActor
 
@@ -358,7 +360,51 @@ def run_training(config: AppConfig, env_name_override: str = None):
             except Exception as e:
                 logger.warning(f"Failed to log metrics to WandB: {e}")
 
-        # 4. Run Sanity Checks Periodically (and not on first iteration if frequency > 1)
+
+        # 4. Periodic Evaluation against Benchmark MCTS
+        if (
+            config.evaluation.run_periodic_evaluation
+            and (iteration + 1) % config.evaluation.periodic_eval_frequency == 0
+        ):
+            logger.info(f"\n--- Running Periodic Evaluation (Iteration {iteration + 1}) ---")
+            if not agent.network:
+                logger.warning("Skipping periodic evaluation: AlphaZero agent has no network.")
+            else:
+                # Ensure agent is in eval mode for the test games
+                agent.network.eval()
+
+                # Create benchmark agent
+                benchmark_agent = get_benchmark_mcts_agent(env, config)
+                benchmark_agent_name = f"MCTS_{config.evaluation.benchmark_mcts_simulations}"
+
+                # Run games
+                eval_results = evaluation.run_test_games(
+                    env=env,
+                    agent1_name="AlphaZero",
+                    agent1=agent,
+                    agent2_name=benchmark_agent_name,
+                    agent2=benchmark_agent,
+                    num_games=config.evaluation.periodic_eval_num_games,
+                )
+
+                # Log results to WandB if enabled
+                if config.wandb.enabled:
+                    wandb_eval_log = {
+                        f"eval_vs_{benchmark_agent_name}/win_rate": eval_results.get("AlphaZero_win_rate", 0.0),
+                        f"eval_vs_{benchmark_agent_name}/loss_rate": eval_results.get(f"{benchmark_agent_name}_win_rate", 0.0),
+                        f"eval_vs_{benchmark_agent_name}/draw_rate": eval_results.get("draw_rate", 0.0),
+                        "iteration": iteration + 1 # Log iteration for easier x-axis mapping
+                    }
+                    try:
+                        wandb.log(wandb_eval_log)
+                        logger.info(f"Logged periodic evaluation results to WandB.")
+                    except Exception as e:
+                        logger.warning(f"Failed to log evaluation results to WandB: {e}")
+
+                # Note: agent.learn() will put the network back in train mode if needed
+
+
+        # 5. Run Sanity Checks Periodically (and not on first iteration if frequency > 1)
         if (
             config.training.sanity_check_frequency > 0
             and (iteration + 1) % config.training.sanity_check_frequency == 0
