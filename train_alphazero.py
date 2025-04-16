@@ -1,11 +1,13 @@
 import math
 import sys
 import json
+import time
 
 import numpy as np
 from tqdm import tqdm
 from loguru import logger
 import ray
+import wandb
 
 from core.config import AppConfig
 from core.serialization import LOG_DIR, save_game_log
@@ -98,17 +100,12 @@ def load_game_logs_into_buffer(agent: AlphaZeroAgent, env_name: str, buffer_limi
     )
 
 
-# Experience = Tuple[StateType, np.ndarray, float]
-
-
 def run_training(config: AppConfig, env_name_override: str = None):
     """Runs the AlphaZero training process."""
 
-    # --- Environment Selection ---
     if env_name_override:
         config.env.name = env_name_override
 
-    # --- Instantiation ---
     env = get_environment(config.env)
     agents = get_agents(env, config)
     agent = agents.get("AlphaZero")
@@ -122,11 +119,29 @@ def run_training(config: AppConfig, env_name_override: str = None):
     )
 
     logger.info(
-        f"Starting AlphaZero training for {config.training.num_iterations} iterations..."
-    )
-    logger.info(
+        f"Starting AlphaZero training for {config.training.num_iterations} iterations...\n"
         f"({config.training.num_games_per_iteration} self-play games per iteration)"
     )
+
+    # --- WandB Initialization ---
+    if config.wandb.enabled:
+        try:
+            wandb.init(
+                project=config.wandb.project_name,
+                entity=config.wandb.entity or None,  # Pass None if empty string
+                name=config.wandb.run_name or None,  # Pass None if empty string
+                config=config.to_dict()
+                if config.wandb.log_config
+                else None,  # Log config if enabled
+                reinit=True,  # Allow re-initialization if running multiple times in one script
+                # mode="disabled" # Uncomment for debugging without logging online
+            )
+            logger.info("WandB initialized successfully.")
+        except Exception as e:
+            logger.error(
+                f"Failed to initialize WandB: {e}. Disabling WandB for this run."
+            )
+            config.wandb.enabled = False  # Disable if init fails
 
     # --- Ray Initialization ---
     # Ensure Ray is initialized (or initialize it)
@@ -166,6 +181,7 @@ def run_training(config: AppConfig, env_name_override: str = None):
     policy_losses = []
 
     outer_loop_iterator = range(config.training.num_iterations)
+    start_time = time.time()
 
     for iteration in outer_loop_iterator:
         logger.info(
@@ -322,6 +338,26 @@ def run_training(config: AppConfig, env_name_override: str = None):
         else:
             logger.info("  Latest Losses: (No learning step occurred)")
 
+        # --- WandB Logging ---
+        if config.wandb.enabled and (iteration + 1) % config.wandb.log_freq == 0:
+            log_data = {
+                "iteration": iteration + 1,
+                "buffer_size": buffer_size,
+                "wall_clock_time_s": time.time() - start_time,
+            }
+            if loss_results:
+                log_data.update(
+                    {
+                        "total_loss": total_losses[-1],
+                        "value_loss": value_losses[-1],
+                        "policy_loss": policy_losses[-1],
+                    }
+                )
+            try:
+                wandb.log(log_data)
+            except Exception as e:
+                logger.warning(f"Failed to log metrics to WandB: {e}")
+
         # 4. Run Sanity Checks Periodically (and not on first iteration if frequency > 1)
         if (
             config.training.sanity_check_frequency > 0
@@ -350,6 +386,11 @@ def run_training(config: AppConfig, env_name_override: str = None):
             logger.info("InferenceActor terminated.")
         ray.shutdown()
         print("Ray shut down.")
+
+    # --- Finish WandB Run ---
+    if config.wandb.enabled and wandb.run is not None:
+        wandb.finish()
+        logger.info("WandB run finished.")
 
 
 # --- Sanity Check Function ---

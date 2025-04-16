@@ -1,6 +1,7 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import List
+from typing import List, Dict, Any
+
 
 # --- Environment Configuration ---
 @dataclass
@@ -90,6 +91,17 @@ class TrainingConfig:
     enable_mcts_profiling: bool = True
 
 
+# --- WandB Configuration ---
+@dataclass
+class WandBConfig:
+    enabled: bool = True  # Enable/disable WandB logging
+    project_name: str = "board_game_ai"
+    entity: str = ""  # Your WandB username or team name (optional)
+    run_name: str = ""  # Optional: Set a specific run name, otherwise auto-generated
+    log_freq: int = 1  # Log metrics every N iterations
+    log_config: bool = True  # Log the entire AppConfig to WandB
+
+
 # --- Evaluation Configuration ---
 @dataclass
 class EvaluationConfig:
@@ -106,8 +118,13 @@ class AppConfig:
     muzero: MuZeroConfig = field(default_factory=MuZeroConfig)  # Add MuZero config
     training: TrainingConfig = field(default_factory=TrainingConfig)
     evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
+    wandb: WandBConfig = field(default_factory=WandBConfig)
     # Flag to indicate if running in smoke test mode (can be set by test runner)
     smoke_test: bool = False
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Converts the dataclass instance to a dictionary, handling nested dataclasses."""
+        return asdict(self)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents
