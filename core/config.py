@@ -17,21 +17,11 @@ class EnvConfig:
         self.max_steps = self.width * self.height + 1
 
 
-# --- Agent-Specific Configurations ---
-@dataclass
-class QLearningConfig:
-    learning_rate: float = 0.1
-    discount_factor: float = 0.95
-    exploration_rate: float = 1.0  # Initial exploration
-    exploration_decay: float = 0.999
-    min_exploration: float = 0.01
-
-
 @dataclass
 class MCTSConfig:
     exploration_constant: float = 1.41
     discount_factor: float = 1.0  # Discount within the search tree
-    num_simulations: int = 100  # Default simulations for the benchmark MCTS
+    num_simulations: int = 400
 
 
 @dataclass
@@ -61,7 +51,7 @@ class AlphaZeroConfig:
     dynamic_simulations_enabled: bool = True  # Set to True to enable early stopping
     dynamic_simulations_min_visits: int = 30  # Min total visits before stopping early
     dynamic_simulations_visit_delta: int = (
-        100  # Required visit diff between best/second best
+        10000  # Required visit diff between best/second best
     )
     # todo use more mature early sim system.
     debug_mode: bool = False
@@ -111,7 +101,6 @@ class EvaluationConfig:
 @dataclass
 class AppConfig:
     env: EnvConfig = field(default_factory=EnvConfig)
-    q_learning: QLearningConfig = field(default_factory=QLearningConfig)
     mcts: MCTSConfig = field(default_factory=MCTSConfig)
     alpha_zero: AlphaZeroConfig = field(default_factory=AlphaZeroConfig)
     muzero: MuZeroConfig = field(default_factory=MuZeroConfig)  # Add MuZero config

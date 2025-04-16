@@ -3,6 +3,12 @@ board game, up to and including extremely complex board games like MtG.
 The engine then automatically designs, parameterizes, and trains a powerful AI model to play the
 game.
 
+
+- Add wandb tracking. Want to keep current setup and allow slotting in new changes
+- replace network for connect4 with resnet and compare
+
+
+
 The current focus is on validating the AI generation part of the process.
 The current unvalidated plan is to
 
