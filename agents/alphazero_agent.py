@@ -1,4 +1,3 @@
-import random
 from pathlib import Path
 from collections import deque
 from typing import List, Tuple, Optional
@@ -287,9 +286,9 @@ class AlphaZeroAgent(Agent):
             logger.warning("Cannot learn: Network or optimizer not initialized.")
             return None
 
-        if len(self.replay_buffer) < self.config.batch_size:
+        if len(self.replay_buffer) < self.config.training_batch_size:
             logger.info(
-                f"Skipping learn step: Buffer size {len(self.replay_buffer)} < Batch size {self.config.batch_size}"
+                f"Skipping learn step: Buffer size {len(self.replay_buffer)} < Batch size {self.config.training_batch_size}"
             )
             return None  # Indicate no learning happened
 
@@ -297,7 +296,7 @@ class AlphaZeroAgent(Agent):
         dataset = ReplayBufferDataset(self.replay_buffer, self.network)
         data_loader = DataLoader(
             dataset,
-            batch_size=self.config.batch_size,
+            batch_size=self.config.training_batch_size,
             shuffle=True,
             num_workers=0,
             drop_last=True,

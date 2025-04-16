@@ -37,7 +37,7 @@ class TestSmoke(unittest.TestCase):
         # AlphaZero settings
         config.alpha_zero.num_simulations = 2
         config.alpha_zero.replay_buffer_size = 10
-        config.alpha_zero.batch_size = 4
+        config.alpha_zero.training_batch_size = 4
 
         # Training settings
         config.training.num_episodes = 2  # Q-learning episodes

@@ -148,13 +148,12 @@ def run_training(config: AppConfig, env_name_override: str = None):
             config.wandb.enabled = False
 
     # --- Ray Initialization ---
-    # Ensure Ray is initialized (or initialize it)
     if not ray.is_initialized():
         context = ray.init(
             ignore_reinit_error=True,
             log_to_driver=config.alpha_zero.debug_mode,
             include_dashboard=True,
-            # local_mode=True,
+            local_mode=True,
         )
         print(f"Dashboard at {context.dashboard_url}")
 
