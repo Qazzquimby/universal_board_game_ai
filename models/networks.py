@@ -24,7 +24,7 @@ class AlphaZeroNet(nn.Module):
     ):
         super().__init__()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.to(self.device)  # Move the model itself to the device
+        self.to(self.device)
 
         self.env = env
 
@@ -57,6 +57,10 @@ class AlphaZeroNet(nn.Module):
             nn.Linear(hidden_layer_size, 1),
             nn.Tanh(),  # Value prediction between -1 and 1
         )
+
+        # Apparently if this isn't done at the end it doesn't update the layers.
+        # currently its at the start and end.
+        self.to(self.device)
 
         print(f"Initialized AlphaZeroNet on device: {self.device}")
         print(f"  Input size: {input_size}")

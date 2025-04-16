@@ -344,7 +344,7 @@ def run_training(config: AppConfig, env_name_override: str = None):
             logger.info("  Latest Losses: (No learning step occurred)")
 
         # --- WandB Logging ---
-        if config.wandb.enabled and (iteration + 1) % config.wandb.log_freq == 0:
+        if config.wandb.enabled:  # and (iteration + 1) % config.wandb.log_freq == 0:
             log_data = {
                 "iteration": iteration + 1,
                 "buffer_size": buffer_size,
