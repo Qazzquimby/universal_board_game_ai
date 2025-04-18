@@ -153,7 +153,7 @@ def run_training(config: AppConfig, env_name_override: str = None):
             ignore_reinit_error=True,
             log_to_driver=config.alpha_zero.debug_mode,
             include_dashboard=True,
-            local_mode=True,
+            local_mode=True,  # oh boy need to remember to turn this off
         )
         print(f"Dashboard at {context.dashboard_url}")
 

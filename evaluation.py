@@ -171,7 +171,7 @@ def run_evaluation(env: BaseEnvironment, agents: Dict[str, Agent], config: AppCo
         agent1,
         agent2_name,
         agent2,
-        num_games=config.evaluation.num_games,  # Use EvaluationConfig field
+        num_games=config.evaluation.full_eval_num_games,
     )
 
     print("\n--- Agent Evaluation Complete ---")

@@ -217,10 +217,15 @@ class AlphaZeroAgent(Agent):
                 )
                 value_target = 0.0
 
-            if i < 5:  # Print for first few steps
-                logger.debug(
-                    f"[DEBUG finish_episode] Step {i}: Player={player_at_step}, FinalOutcome(P0)={final_outcome}, AssignedValue={value_target}"
+            # --- Detailed Debug Logging for Value Target Assignment ---
+            if i < 5 or i > num_steps - 6:  # Log first 5 and last 5 steps
+                log_prefix = f"[VALUE_TARGET_DEBUG] Ep {self.training_config.num_iterations if hasattr(self, 'training_config') else 'N/A'} Step {i}/{num_steps-1}:"
+                logger.warning(
+                    f"{log_prefix} Player={player_at_step}, FinalOutcome(P0)={final_outcome:.1f} -> AssignedValue={value_target:.1f}"
                 )
+                # Optionally log state representation if needed, keep it concise
+                # logger.debug(f"{log_prefix} State: {state_repr}")
+            # --- End Detailed Debug Logging ---
 
             # --- Standardize state before adding to buffer ---
             # Ensure board/piles are numpy arrays for consistent network input processing

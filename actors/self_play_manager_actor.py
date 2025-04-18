@@ -135,7 +135,10 @@ class SelfPlayWorkerActor:
 
     def _repeatedly_handle_pending_requests(self):
         # This worker sends requests to the central InferenceActor
-        while len(self.pending_requests) >= self.inference_batch_size:
+        while (
+            len(self.pending_requests) >= self.inference_batch_size
+            or len(self.pending_requests) == self.num_internal_parallel_games
+        ):
             batch_size = min(self.inference_batch_size, len(self.pending_requests))
             # Use local game indices
             local_game_indices = list(self.pending_requests.keys())[:batch_size]

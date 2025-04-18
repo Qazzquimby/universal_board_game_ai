@@ -25,7 +25,7 @@ class TestSmoke(unittest.TestCase):
         config.smoke_test = True  # Set the smoke test flag
 
         # Evaluation settings
-        config.evaluation.num_games = 2
+        config.evaluation.full_eval_num_games = 2
         config.evaluation.elo_iterations = 2
 
         # MCTS settings
