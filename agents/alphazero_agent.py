@@ -258,6 +258,38 @@ class AlphaZeroAgent(Agent):
         self, policy_logits, value_preds, policy_targets, value_targets
     ):
         """Calculates the combined loss for AlphaZero."""
+
+        # --- Add Temporary Debug Logging (using WARNING level) ---
+        # Log ~10% of batches, showing first 8 samples
+        try:
+            targets_np = value_targets.flatten().cpu().detach().numpy()[:8]
+            preds_np = value_preds.flatten().cpu().detach().numpy()[:8]
+            logger.warning(f"[Loss Debug] Value Targets: {targets_np}")
+            logger.warning(f"[Loss Debug] Value Preds  : {preds_np}")
+            # Check if any target is +1.0 and corresponding pred is <= 0
+            positive_targets_mask = targets_np > 0.99
+            if np.any(positive_targets_mask):
+                negative_problematic_preds = preds_np[positive_targets_mask]
+                if np.any(negative_problematic_preds <= 0.3):
+                    logger.warning(
+                        f"[Loss Debug] Problematic Negative Preds (Target=1.0, Pred<=0): {negative_problematic_preds[negative_problematic_preds <= 0]}"
+                    )
+
+            negative_targets_mask = targets_np < 0.99
+            if np.any(negative_targets_mask):
+                positive_problematic_preds = preds_np[negative_targets_mask]
+                if np.any(positive_problematic_preds >= 0.3):
+                    logger.warning(
+                        f"[Loss Debug] Problematic Positive Preds (Target=1.0, Pred<=0): {positive_problematic_preds[positive_problematic_preds <= 0]}"
+                    )
+
+        except Exception as e:
+            # Added shape info to error log
+            logger.error(
+                f"Error during loss debug logging: {e}, Target shape: {value_targets.shape}, Pred shape: {value_preds.shape}"
+            )
+        # --- End Temporary Debug Logging ---
+
         # Value loss: Mean Squared Error
         value_loss = F.mse_loss(value_preds, value_targets)
 

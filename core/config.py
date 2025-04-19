@@ -52,7 +52,7 @@ class AlphaZeroConfig:
         10000  # Required visit diff between best/second best
     )
     # todo use more mature early sim system.
-    debug_mode: bool = False
+    debug_mode: bool = True
     should_use_network: bool = True
 
 
@@ -79,11 +79,11 @@ class MuZeroConfig:
 class TrainingConfig:
     # Specific to AlphaZero/MuZero training loops
     num_iterations: int = 1000  # Total training iterations
-    num_games_per_iteration: int = 128
+    num_games_per_iteration: int = 8
     # Number of epochs (passes over replay buffer) per learning phase
     num_epochs_per_iteration: int = 4
     # How often (in iterations) to run sanity checks (0=only at end, 1=every iteration)
-    sanity_check_frequency: int = 5
+    sanity_check_frequency: int = 1
     # How often (in iterations) to save agent checkpoints (0=only at end)
     save_checkpoint_frequency: int = 2
     # MCTS Profiling configuration
