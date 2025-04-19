@@ -83,16 +83,13 @@ class AlphaZeroAgent(Agent):
         self.mcts = AlphaZeroMCTS(
             env=self.env,
             config=config,
-            network_cache=self.network_cache,  # Pass the cache
+            network_cache=self.network_cache,
         )
 
         # Learning:
-
-        # Experience buffer for training (stores (state, policy_target, value))
         self.replay_buffer = deque(maxlen=config.replay_buffer_size)
         self._current_episode_history = []
 
-        # Optimizer (managed internally by the agent)
         if self.config.should_use_network:
             self.optimizer = optim.AdamW(
                 self.network.parameters(),
@@ -369,6 +366,9 @@ class AlphaZeroAgent(Agent):
                     value_targets_batch,
                 )
                 total_loss.backward()
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    self.network.parameters(), max_norm=1.0
+                )
                 self.optimizer.step()
 
                 total_loss_batches += total_loss.item()

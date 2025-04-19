@@ -51,12 +51,16 @@ class AlphaZeroNet(nn.Module):
 
         # Policy head
         self.policy_head = nn.Linear(hidden_layer_size, policy_size)
+        nn.init.zeros_(self.policy_head.weight)
+        nn.init.zeros_(self.policy_head.bias)
 
         # Value head
         self.value_head = nn.Sequential(
             nn.Linear(hidden_layer_size, 1),
             nn.Tanh(),  # Value prediction between -1 and 1
         )
+        nn.init.zeros_(self.value_head[0].weight)
+        nn.init.zeros_(self.value_head[0].bias)
 
         # Apparently if this isn't done at the end it doesn't update the layers.
         # currently its at the start and end.

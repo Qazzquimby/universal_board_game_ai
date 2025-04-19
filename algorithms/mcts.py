@@ -29,21 +29,25 @@ def get_state_key(s: StateType) -> str:
                 # Convert lists to tuples for hashing
                 try:
                     parts.append(f"{k}:{hash(tuple(v))}")
-                except TypeError: # Handle unhashable elements within list/tuple if necessary
-                     parts.append(f"{k}:{repr(v)}") # Fallback to repr
+                except TypeError:  # Handle unhashable elements within list/tuple if necessary
+                    parts.append(f"{k}:{repr(v)}")  # Fallback to repr
             elif isinstance(v, dict):
-                 # Recursively handle nested dicts (or use repr as fallback)
-                 parts.append(f"{k}:{get_state_key(v)}") # Simple recursive call
+                # Recursively handle nested dicts (or use repr as fallback)
+                parts.append(f"{k}:{get_state_key(v)}")  # Simple recursive call
             else:
                 # Use repr for other hashable types
-                 try:
-                     hash(v) # Check if hashable
-                     parts.append(f"{k}:{repr(v)}")
-                 except TypeError:
-                     logger.warning(f"Unhashable type in state key generation: {type(v)} for key {k}. Using repr().")
-                     parts.append(f"{k}:{repr(v)}") # Fallback for unhashable non-list/array types
+                try:
+                    hash(v)  # Check if hashable
+                    parts.append(f"{k}:{repr(v)}")
+                except TypeError:
+                    logger.warning(
+                        f"Unhashable type in state key generation: {type(v)} for key {k}. Using repr()."
+                    )
+                    parts.append(
+                        f"{k}:{repr(v)}"
+                    )  # Fallback for unhashable non-list/array types
         return "|".join(parts)
-    except Exception as e: # Catch broader exceptions during key generation
+    except Exception as e:  # Catch broader exceptions during key generation
         logger.warning(
             f"State key generation failed unexpectedly: {e}. Falling back to simple str(). State: {s}"
         )
@@ -501,7 +505,7 @@ class AlphaZeroMCTS(MCTS):
         """Calculates the value of a terminal leaf node."""
         player_at_leaf = leaf_env_state.get_current_player()
         winner = leaf_env_state.get_winning_player()
-        if winner is None:
+        if winner is None:  # todo backwards?
             value = 0.0
         elif winner == player_at_leaf:
             value = 1.0
@@ -626,7 +630,7 @@ class AlphaZeroMCTS(MCTS):
             child_scores = {
                 act: self._score_child(child, parent_visits)
                 for act, child in node.children.items()
-            }
+            }  # todo I see no tree reuse here?
             best_action = max(child_scores, key=child_scores.get)
             sim_env.step(best_action)
             node = node.children[best_action]
