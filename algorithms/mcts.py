@@ -10,11 +10,12 @@ from typing import (
 import torch
 from loguru import logger
 import numpy as np
+import abc
 import torch.nn as nn
 
 from core.config import AlphaZeroConfig
 from environments.base import ActionType, StateType, BaseEnvironment
-
+from typing import Protocol, Any
 
 # Helper function moved outside class for potential reuse
 def get_state_key(s: StateType) -> str:
@@ -55,7 +56,102 @@ def get_state_key(s: StateType) -> str:
         return str(s)
 
 
-PredictResult = Tuple[np.ndarray, float]
+class SelectionStrategy(abc.ABC):
+    @abc.abstractmethod
+    def select(
+        self, node: "MCTSNode", env: BaseEnvironment
+    ) -> Tuple[List["MCTSNode"], "MCTSNode", BaseEnvironment]:
+        """
+        Select a path from the given node down to a leaf node.
+
+        Args:
+            node: The starting node (usually the root).
+            env: A copy of the environment corresponding to the starting node's state.
+
+        Returns:
+            A tuple containing:
+            - path: List of nodes from the root to the leaf (inclusive).
+            - leaf_node: The selected leaf node.
+            - leaf_env: The environment state corresponding to the leaf node.
+        """
+        pass
+
+
+class ExpansionStrategy(abc.ABC):
+    @abc.abstractmethod
+    def expand(
+        self,
+        node: "MCTSNode",
+        env: BaseEnvironment,
+        network_output: Optional[Any] = None,
+    ) -> None:
+        """
+        Expand a leaf node by adding children based on legal actions.
+        May use network output (e.g., policy priors) if provided.
+
+        Args:
+            node: The leaf node to expand.
+            env: The environment state corresponding to the leaf node.
+            network_output: Optional output from the evaluation strategy (e.g., policy priors).
+        """
+        pass
+
+
+class EvaluationStrategy(abc.ABC):
+    @abc.abstractmethod
+    def evaluate(self, node: "MCTSNode", env: BaseEnvironment) -> Any:
+        """
+        Evaluate a leaf node to estimate its value.
+        May also return other information needed for expansion (e.g., policy priors).
+
+        Args:
+            node: The leaf node to evaluate.
+            env: The environment state corresponding to the leaf node.
+
+        Returns:
+            The evaluation result (e.g., float value, or tuple like (value, priors)).
+            The exact type depends on the concrete strategy.
+        """
+        pass
+
+
+class BackpropagationStrategy(abc.ABC):
+    @abc.abstractmethod
+    def backpropagate(
+        self, path: List["MCTSNode"], value: float, player_at_leaf: int
+    ) -> None:
+        """
+        Update statistics of nodes along the path based on the evaluation result.
+
+        Args:
+            path: The list of nodes from the root to the evaluated leaf (inclusive).
+            value: The value obtained from the evaluation (e.g., rollout result or network value).
+                   This value should be from the perspective of the player whose turn it was at the leaf node.
+            player_at_leaf: The player whose turn it was at the leaf node.
+        """
+        pass
+
+
+class NetworkInterface(Protocol):
+    """Defines the interface for network predictions needed by MCTS strategies."""
+
+    def predict(self, state_dict: StateType) -> Tuple[np.ndarray, float]:
+        """Predict policy probabilities and value for a single state."""
+        ...
+
+    def predict_batch(
+        self, state_dicts: List[StateType]
+    ) -> Tuple[List[np.ndarray], List[float]]:
+        """Predict policy probabilities and values for a batch of states."""
+        ...
+
+
+# --- End Interfaces ---
+
+
+PredictResult = Tuple[
+    np.ndarray, float
+]  # Keep for now, might be superseded by EvaluationStrategy output type
 
 
 class DummyAlphaZeroNet(nn.Module):
@@ -367,6 +463,186 @@ class MCTS:
         return self.root
 
 
+class MCTSOrchestrator:
+    """
+    Orchestrates the MCTS process using pluggable strategies.
+    Does not contain algorithm-specific logic (like UCB1, PUCT, rollouts).
+    """
+
+    def __init__(
+        self,
+        selection_strategy: SelectionStrategy,
+        expansion_strategy: ExpansionStrategy,
+        evaluation_strategy: EvaluationStrategy,
+        backpropagation_strategy: BackpropagationStrategy,
+        num_simulations: int,
+        discount_factor: float = 1.0,  # May be used by some strategies
+        # Add other core MCTS config as needed (e.g., tree reuse flag)
+    ):
+        self.selection_strategy = selection_strategy
+        self.expansion_strategy = expansion_strategy
+        self.evaluation_strategy = evaluation_strategy
+        self.backpropagation_strategy = backpropagation_strategy
+        self.num_simulations = num_simulations
+
+        self.root: MCTSNode = MCTSNode()
+
+    def reset_root(self):
+        """Resets the root node."""
+        self.root = MCTSNode()
+
+    def advance_root(self, action: ActionType):
+        """Advances the root node down the tree based on the chosen action."""
+        action_key = tuple(action) if isinstance(action, list) else action
+        if action_key in self.root.children:
+            self.root = self.root.children[action_key]
+            self.root.parent = None  # Detach from old parent
+        else:
+            # Action not found, likely means we need to start a fresh search
+            logger.warning(
+                f"Action {action_key} not found in root children during advance_root. Resetting root."
+            )
+            self.reset_root()
+
+    def search(self, env: BaseEnvironment, state: StateType) -> MCTSNode:
+        """
+        Run the MCTS search for a specified number of simulations.
+
+        Args:
+            env: The *current* environment instance (used for copying).
+            state: The current state dictionary corresponding to the env.
+
+        Returns:
+            The root node of the search tree after simulations.
+        """
+        # Ensure the root node corresponds to the initial state if reusing tree
+        # (More complex logic needed here if root state doesn't match `state`)
+        # For now, assume `advance_root` was called correctly or we start fresh.
+
+        for _ in range(self.num_simulations):
+            # Start each simulation with a fresh copy of the environment
+            # set to the state corresponding to the *current* root node.
+            # This assumes the root node *is* the state we want to search from.
+            sim_env = env.copy()
+            # TODO: If tree reuse is active, ensure sim_env matches root node's conceptual state.
+            # For now, assume env passed to search IS the root state.
+            sim_env.set_state(state)  # Set the copy to the state we are searching from
+
+            # 1. Selection
+            path, leaf_node, leaf_env = self.selection_strategy.select(
+                self.root, sim_env
+            )
+
+            # 2. Evaluation & Expansion
+            value = 0.0  # Default value
+            player_at_leaf = (
+                leaf_env.get_current_player()
+            )  # Player whose turn it is at the leaf
+
+            if leaf_env.is_game_over():
+                # Game ended during selection or leaf is terminal
+                winner = leaf_env.get_winning_player()
+                if winner is None:
+                    value = 0.0
+                # Value is from the perspective of the player whose turn it *was* at the leaf
+                elif winner == player_at_leaf:
+                    value = 1.0
+                else:
+                    value = -1.0
+            else:
+                # If node hasn't been expanded before (check needed?)
+                # Evaluate the leaf node using the evaluation strategy
+                # The evaluation strategy might return just value, or (value, priors)
+                eval_output = self.evaluation_strategy.evaluate(leaf_node, leaf_env)
+
+                # TODO: Standardize the output format of evaluate()
+                # For now, assume it might be float or tuple (value, priors)
+                priors = None
+                if isinstance(eval_output, tuple):
+                    value, priors = eval_output  # Assumes (value, priors) format
+                elif isinstance(eval_output, (float, int)):
+                    value = float(eval_output)
+                else:
+                    raise TypeError(
+                        f"Unexpected evaluation output type: {type(eval_output)}"
+                    )
+
+                # Expand the node using the expansion strategy (priors are optional)
+                # Only expand if the node isn't already terminal
+                if not leaf_node.is_expanded():  # Avoid re-expanding
+                    self.expansion_strategy.expand(leaf_node, leaf_env, priors)
+
+            # 3. Backpropagation
+            # Value must be from the perspective of the player at the leaf node
+            self.backpropagation_strategy.backpropagate(path, value, player_at_leaf)
+
+        return self.root
+
+    def get_policy(
+        self, temperature: float = 1.0
+    ) -> Tuple[Optional[ActionType], Dict[ActionType, float], Dict[ActionType, int]]:
+        """
+        Calculates the final action policy based on root children visits.
+
+        Args:
+            temperature: Controls the exploration/exploitation trade-off in action selection.
+                         temp=0 -> deterministic (choose best), temp=1 -> proportional to visits^1.
+
+        Returns:
+            Tuple: (chosen_action, action_probabilities, action_visits)
+                   Returns (None, {}, {}) if root has no children.
+        """
+        if not self.root.children:
+            logger.warning("MCTS get_policy: Root has no children.")
+            return None, {}, {}
+
+        action_visits = {
+            action: child.visit_count for action, child in self.root.children.items()
+        }
+        actions = list(action_visits.keys())
+        visits = np.array(
+            list(action_visits.values()), dtype=np.float32
+        )  # Use float for calculations
+
+        if not actions:  # Should be redundant with the check above, but safe
+            return None, {}, {}
+
+        if temperature == 0:
+            # Deterministic: choose the action with the highest visit count
+            best_action_index = np.argmax(visits)
+            chosen_action = actions[best_action_index]
+            # Probabilities are 1 for the best action, 0 otherwise
+            probabilities = {
+                act: (1.0 if i == best_action_index else 0.0)
+                for i, act in enumerate(actions)
+            }
+
+        else:
+            # Temperature sampling
+            # Add small epsilon to prevent division by zero if temperature is very high and visits are 0? No, visits should be > 0 if children exist.
+            # Ensure visits are positive before exponentiation if temp is not integer
+            visits_temp = visits ** (1.0 / temperature)
+            total_visits_temp = np.sum(visits_temp)
+
+            if total_visits_temp == 0:
+                # Fallback if all temp-adjusted visits are zero (e.g., large temp, small visits)
+                # Use uniform probability
+                probs = np.ones_like(visits) / len(visits)
+            else:
+                probs = visits_temp / total_visits_temp
+
+            # Ensure probabilities sum to 1 (handle potential floating point inaccuracies)
+            probs /= np.sum(probs)
+
+            # Choose action based on calculated probabilities
+            chosen_action_index = np.random.choice(len(actions), p=probs)
+            chosen_action = actions[chosen_action_index]
+            probabilities = {act: prob for act, prob in zip(actions, probs)}
+
+        return chosen_action, probabilities, action_visits
+
+
+# Todo refactor into strategies
 class AlphaZeroMCTS(MCTS):
     """MCTS algorithm adapted for AlphaZero (PUCT + Network Evaluation)."""
 
