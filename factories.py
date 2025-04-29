@@ -1,6 +1,7 @@
 from typing import Dict
 from loguru import logger
 
+from agents.mcts_agent_old import MCTSAgent_Old
 from core.agent_interface import Agent
 from core.config import (
     AppConfig,
@@ -10,7 +11,6 @@ from environments.base import BaseEnvironment
 from environments.connect4 import Connect4
 from environments.nim_env import NimEnv
 from agents.mcts_agent import MCTSAgent
-from agents.alphazero_agent import AlphaZeroAgent
 
 
 def get_environment(env_config: EnvConfig) -> BaseEnvironment:
@@ -34,30 +34,38 @@ def get_environment(env_config: EnvConfig) -> BaseEnvironment:
 def get_agents(env: BaseEnvironment, config: AppConfig) -> Dict[str, Agent]:
     """Factory function to create agent instances for the given environment."""
 
-    az_agent = AlphaZeroAgent(
-        env=env,
-        config=config.alpha_zero,
-        training_config=config.training,
-    )
-    if not az_agent.load():
-        logger.warning(
-            "Could not load pre-trained AlphaZero weights. Agent will play randomly/poorly."
-        )
-    else:
-        logger.info("Loaded pre-trained AlphaZero agent.")
-    if az_agent.network:
-        az_agent.network.eval()
+    # az_agent = AlphaZeroAgent(
+    #     env=env,
+    #     config=config.alpha_zero,
+    #     training_config=config.training,
+    # )
+    # if not az_agent.load():
+    #     logger.warning(
+    #         "Could not load pre-trained AlphaZero weights. Agent will play randomly/poorly."
+    #     )
+    # else:
+    #     logger.info("Loaded pre-trained AlphaZero agent.")
+    # if az_agent.network:
+    #     az_agent.network.eval()
 
     mcts_agent_name = f"MCTS_{config.mcts.num_simulations}"
     mcts_agent = MCTSAgent(
-        env,
+        env=env,
+        num_simulations=config.mcts.num_simulations,
+        exploration_constant=config.mcts.exploration_constant,
+    )
+
+    mcts_agent_old_name = f"MCTS_old_{config.mcts.num_simulations}"
+    mcts_agent_old = MCTSAgent_Old(
+        env=env,
         num_simulations=config.mcts.num_simulations,
         exploration_constant=config.mcts.exploration_constant,
     )
 
     agents = {
-        "AlphaZero": az_agent,
+        # "AlphaZero": az_agent,
         mcts_agent_name: mcts_agent,
+        mcts_agent_old_name: mcts_agent_old,
     }
 
     return agents
@@ -70,7 +78,7 @@ def get_benchmark_mcts_agent(env: BaseEnvironment, config: AppConfig) -> MCTSAge
     return MCTSAgent(
         env,
         num_simulations=benchmark_sims,
-        exploration_constant=config.mcts.exploration_constant, # Use same exploration constant for now
+        exploration_constant=config.mcts.exploration_constant,  # Use same exploration constant for now
     )
 
 

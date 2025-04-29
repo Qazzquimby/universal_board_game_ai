@@ -12,10 +12,9 @@ from loguru import logger
 import numpy as np
 import abc
 import torch.nn as nn
+from dataclasses import dataclass
 
-from core.config import AlphaZeroConfig
 from environments.base import ActionType, StateType, BaseEnvironment
-from typing import Protocol, Any
 
 # Helper function moved outside class for potential reuse
 def get_state_key(s: StateType) -> str:
@@ -77,11 +76,18 @@ class MCTSNode:
         return bool(self.children)
 
 
+@dataclass
+class SelectionResult:
+    """Holds the results of the MCTS selection phase."""
+
+    path: List["MCTSNode"]
+    leaf_node: "MCTSNode"
+    leaf_env: BaseEnvironment
+
+
 class SelectionStrategy(abc.ABC):
     @abc.abstractmethod
-    def select(
-        self, node: "MCTSNode", env: BaseEnvironment
-    ) -> Tuple[List["MCTSNode"], "MCTSNode", BaseEnvironment]:
+    def select(self, node: "MCTSNode", env: BaseEnvironment) -> SelectionResult:
         """
         Select a path from the given node down to a leaf node.
 
@@ -90,10 +96,8 @@ class SelectionStrategy(abc.ABC):
             env: A copy of the environment corresponding to the starting node's state.
 
         Returns:
-            A tuple containing:
-            - path: List of nodes from the root to the leaf (inclusive).
-            - leaf_node: The selected leaf node.
-            - leaf_env: The environment state corresponding to the leaf node.
+            A SelectionResult dataclass instance containing the path, leaf node,
+            and the environment state corresponding to the leaf node.
         """
         pass
 
@@ -260,29 +264,72 @@ class UCB1Selection(SelectionStrategy):
             raise ValueError("Exploration constant cannot be negative.")
         self.exploration_constant = exploration_constant
 
-    def select(
-        self, node: MCTSNode, env: BaseEnvironment
-    ) -> Tuple[List[MCTSNode], MCTSNode, BaseEnvironment]:
+    def _score_child(self, child: MCTSNode, parent_visits: int) -> float:
+        """Calculates the UCB1 score for a child node."""
+        if child.visit_count == 0:
+            # Encourage exploration of unvisited nodes
+            return float("inf")
+        if (
+            parent_visits == 0
+        ):  # Should ideally not happen if root is visited before selection
+            parent_visits = 1  # Avoid log(0) or division by zero
+
+        # UCB Score = -Q(child) + C * P(child) * sqrt(log(N(parent)) / N(child))
+        # We use -Q(child) because child.value is from the perspective of the player
+        # at the child state. We need the value from the parent's perspective.
+        exploitation_term = -child.value
+        exploration_term = (
+            self.exploration_constant
+            * child.prior
+            * math.sqrt(math.log(parent_visits) / child.visit_count)
+        )
+        # logger.trace(f"    Scoring Child: Visits={child.visit_count}, Value={child.value:.3f}, Prior={child.prior:.3f} -> Score={exploitation_term + exploration_term:.3f} (Exploit={exploitation_term:.3f}, Explore={exploration_term:.3f})")
+        return exploitation_term + exploration_term
+
+    def select(self, node: MCTSNode, env: BaseEnvironment) -> SelectionResult:
         """Select child node with highest UCB score until a leaf node is reached."""
         path = [node]
         current_node = node
         sim_env = env  # We modify the passed env directly (it's a copy)
 
         while current_node.is_expanded() and not sim_env.is_game_over():
-            action, next_node = current_node.select_child_ucb1(
-                self.exploration_constant
-            )
+            assert current_node.children
+
+            parent_visits = current_node.visit_count
+            # logger.trace(f"  Selecting child from node with {parent_visits} visits. Children: {list(current_node.children.keys())}")
+
+            best_score = -float("inf")
+            best_action = None
+            best_child_node = None
+
+            # Use deterministic tie-breaking for reproducibility if needed, otherwise random is fine
+            # actions = list(current_node.children.keys())
+            # random.shuffle(actions) # Optional: Shuffle for random tie-breaking
+
+            for action, child_node in current_node.children.items():
+                score = self._score_child(child_node, parent_visits)
+                if score > best_score:
+                    best_score = score
+                    best_action = action
+                    best_child_node = child_node
+                # Handle ties (e.g., choose randomly among tied best actions)
+                # If using shuffled keys, the first one encountered with the best score wins.
+
+            assert best_action is not None
+            assert best_child_node is not None
+
+            # logger.trace(f"  Selected Action: {best_action} with score {best_score:.3f}")
             _, _, done = sim_env.step(
-                action
+                best_action
             )  # Apply action to the simulation environment
-            current_node = next_node
+            current_node = best_child_node
             path.append(current_node)
             if done:  # Stop if the action ended the game
                 break
 
         # current_node is now the leaf node for this simulation
         # sim_env is the state corresponding to the leaf node
-        return path, current_node, sim_env
+        return SelectionResult(path=path, leaf_node=current_node, leaf_env=sim_env)
 
 
 class UniformExpansion(ExpansionStrategy):
@@ -477,9 +524,10 @@ class MCTSOrchestrator:
 
             # 1. Selection: Find a leaf node using the selection strategy.
             #    The strategy modifies sim_env to match the leaf node's state.
-            path, leaf_node, leaf_env = self.selection_strategy.select(
-                self.root, sim_env
-            )
+            selection_result = self.selection_strategy.select(self.root, sim_env)
+            path = selection_result.path
+            leaf_node = selection_result.leaf_node
+            leaf_env = selection_result.leaf_env
             # logger.trace(f"Selection finished. Path length: {len(path)}, Leaf node visits: {leaf_node.visit_count}")
 
             # 2. Expansion & Evaluation

@@ -142,36 +142,16 @@ def run_evaluation(env: BaseEnvironment, agents: Dict[str, Agent], config: AppCo
     print("\n--- Starting Agent Evaluation ---")
     agent_names = list(agents.keys())
 
-    # Ensure we have exactly the two agents we expect for the benchmark
-    if len(agent_names) != 2 or "AlphaZero" not in agents:
-        print(
-            f"Warning: Expected 'AlphaZero' and one 'MCTS_X' agent, but found: {agent_names}. Skipping evaluation."
-        )
-        return
-
-    # Identify the MCTS agent name dynamically
-    mcts_agent_name = next(
-        (name for name in agent_names if name.startswith("MCTS_")), None
-    )
-    if not mcts_agent_name:
-        print(
-            f"Warning: Could not find MCTS agent in agents: {agent_names}. Skipping evaluation."
-        )
-        return
-
-    agent1_name = "AlphaZero"
-    agent2_name = mcts_agent_name
+    agent1_name = agent_names[0]
+    agent2_name = agent_names[1]
     agent1 = agents[agent1_name]
     agent2 = agents[agent2_name]
 
-    # Run games between AlphaZero and the MCTS benchmark agent
     run_test_games(
-        env,
-        agent1_name,
-        agent1,
-        agent2_name,
-        agent2,
+        env=env,
+        agent1_name=agent1_name,
+        agent1=agent1,
+        agent2_name=agent2_name,
+        agent2=agent2,
         num_games=config.evaluation.full_eval_num_games,
     )
-
-    print("\n--- Agent Evaluation Complete ---")

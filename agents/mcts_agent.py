@@ -42,7 +42,7 @@ class MCTSAgent(Agent):
         if exploration_constant < 0:
             raise ValueError("Exploration constant cannot be negative.")
 
-        self.env = env  # Keep env reference mainly for copy() and state checks
+        self.env = env
         self.temperature = temperature
         self._tree_reuse = tree_reuse
 
@@ -61,7 +61,7 @@ class MCTSAgent(Agent):
             backpropagation_strategy=backpropagation_strategy,
             num_simulations=num_simulations,
         )
-        self.mcts_orchestrator._tree_reuse_enabled = tree_reuse  # Pass reuse flag
+        self.mcts_orchestrator._tree_reuse_enabled = tree_reuse
 
         self._last_action: Optional[ActionType] = None
 

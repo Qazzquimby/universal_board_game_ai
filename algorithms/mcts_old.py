@@ -5,13 +5,13 @@ from loguru import logger
 from environments.base import ActionType, BaseEnvironment, StateType
 
 
-class MCTSNode:
-    def __init__(self, parent: Optional["MCTSNode"] = None, prior: float = 1.0):
+class MCTSNode_Old:
+    def __init__(self, parent: Optional["MCTSNode_Old"] = None, prior: float = 1.0):
         self.parent = parent
         self.prior = prior  # P(s,a) - Prior probability from the network
         self.visit_count = 0
         self.total_value = 0.0  # W(s,a) - Total action value accumulated
-        self.children: Dict[ActionType, MCTSNode] = {}
+        self.children: Dict[ActionType, MCTSNode_Old] = {}
 
     @property
     def value(self) -> float:  # Q(s,a) - Mean action value
@@ -31,7 +31,7 @@ class MCTSNode:
             action_key = tuple(action) if isinstance(action, list) else action
             if action_key not in self.children:
                 # logger.trace(f"  Node.expand: Creating child for action {action_key} with prior {prior:.4f}")
-                self.children[action_key] = MCTSNode(parent=self, prior=prior)
+                self.children[action_key] = MCTSNode_Old(parent=self, prior=prior)
                 children_added += 1
             else:
                 logger.warning(
@@ -48,7 +48,7 @@ class MCTSNode:
             ), f"Node expansion failed: children dict empty despite non-zero priors. Priors: {action_priors}"
 
 
-class MCTS:
+class MCTS_Old:
     """Core MCTS algorithm implementation (UCB1 + Random Rollout)."""
 
     def __init__(
@@ -62,15 +62,15 @@ class MCTS:
             discount_factor  # Not used in standard UCB1 backprop here
         )
         self.num_simulations = num_simulations
-        self.root = MCTSNode()
+        self.root = MCTSNode_Old()
 
     def reset_root(self):
         """Resets the root node."""
-        self.root = MCTSNode()
+        self.root = MCTSNode_Old()
 
     def _select(
-        self, node: MCTSNode, sim_env: BaseEnvironment
-    ) -> Tuple[MCTSNode, BaseEnvironment]:
+        self, node: MCTSNode_Old, sim_env: BaseEnvironment
+    ) -> Tuple[MCTSNode_Old, BaseEnvironment]:
         """Select child node with highest UCB score until a leaf node is reached."""
         while node.is_expanded() and not sim_env.is_game_over():
             parent_visits = node.visit_count
@@ -90,7 +90,7 @@ class MCTS:
             sim_env.step(action)
         return node, sim_env
 
-    def _score_child(self, node: MCTSNode, parent_visits: int) -> float:
+    def _score_child(self, node: MCTSNode_Old, parent_visits: int) -> float:
         """Calculate UCB1 score."""
         if node.visit_count == 0:
             return float("inf")
@@ -100,7 +100,7 @@ class MCTS:
         q_value_for_parent = -node.value
         return q_value_for_parent + exploration_term
 
-    def _expand(self, node: MCTSNode, env: BaseEnvironment):
+    def _expand(self, node: MCTSNode_Old, env: BaseEnvironment):
         """Expand the leaf node by creating children for all legal actions."""
         if node.is_expanded() or env.is_game_over():
             return
@@ -150,7 +150,9 @@ class MCTS:
         # logger.debug(f"  Rollout: StartPlayer={player_at_rollout_start}, Winner={winner}, Value={value}")
         return value
 
-    def _backpropagate(self, leaf_node: MCTSNode, value_from_leaf_perspective: float):
+    def _backpropagate(
+        self, leaf_node: MCTSNode_Old, value_from_leaf_perspective: float
+    ):
         """
         Backpropagate the evaluated value up the tree, updating node statistics.
 
@@ -171,7 +173,7 @@ class MCTS:
             value_for_current_node *= -1
             current_node = current_node.parent
 
-    def search(self, env: BaseEnvironment, state: StateType) -> MCTSNode:
+    def search(self, env: BaseEnvironment, state: StateType) -> MCTSNode_Old:
         """Run MCTS search from the given state using UCB1 and random rollouts."""
         self.reset_root()
 

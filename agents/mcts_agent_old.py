@@ -1,13 +1,11 @@
 import random
 
-from loguru import logger
-
-from algorithms.mcts import MCTS
+from algorithms.mcts_old import MCTS_Old
 from core.agent_interface import Agent
 from environments.base import BaseEnvironment, StateType, ActionType
 
 
-class MCTSAgent(Agent):
+class MCTSAgent_Old(Agent):
     """Agent that uses MCTS to choose actions."""
 
     def __init__(
@@ -24,7 +22,7 @@ class MCTSAgent(Agent):
         """
         self.env = env  # Keep env reference mainly for copy()
         # Ensure MCTSAgent uses the base MCTS class with UCB1
-        self.mcts = MCTS(
+        self.mcts = MCTS_Old(
             num_simulations=num_simulations,
             exploration_constant=exploration_constant,
             discount_factor=1.0,
