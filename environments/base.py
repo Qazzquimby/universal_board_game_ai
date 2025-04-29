@@ -2,10 +2,8 @@ import abc
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, TypeVar, Tuple
 
-# Generic type for actions, can be Tuple[int, int], Tuple[int, int], int, etc.
 ActionType = TypeVar("ActionType")
-# Generic type for the state representation used by the agent (often a dict)
-StateType = Dict[str, Any]  # Keep as Dict for now, could be more generic later
+StateType = Dict[str, Any]
 
 
 @dataclass
