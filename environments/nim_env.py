@@ -72,30 +72,30 @@ class NimEnv(BaseEnvironment):
         num_piles = len(self.initial_piles)
         # Ensure max_removable is at least 1 if piles exist but are empty initially (edge case)
         if num_piles > 0 and max_removable == 0:
-             max_removable = 1 # Allow removing 0? No, action must remove >= 1. Size should be 0 if max=0.
-             # If max initial pile size is 0, no moves are possible. Policy size is 0.
-             return 0
+            max_removable = 1  # Allow removing 0? No, action must remove >= 1. Size should be 0 if max=0.
+            # If max initial pile size is 0, no moves are possible. Policy size is 0.
+            return 0
         return num_piles * max_removable
 
     def map_action_to_policy_index(self, action: ActionType) -> Optional[int]:
         """Maps a Nim action (pile_idx, num_removed) to a policy vector index."""
         if not isinstance(action, tuple) or len(action) != 2:
-            return None # Action must be a tuple (pile_idx, num_removed)
+            return None  # Action must be a tuple (pile_idx, num_removed)
 
         pile_idx, num_removed = action
         num_piles = len(self.initial_piles)
 
-        if not self.initial_piles: # No piles, no actions
-             return None
+        if not self.initial_piles:  # No piles, no actions
+            return None
 
         max_removable = max(self.initial_piles)
-        if max_removable == 0: # No items initially, no valid actions
+        if max_removable == 0:  # No items initially, no valid actions
             return None
 
         # Validate the action components against the *potential* maximums
         if not (0 <= pile_idx < num_piles and 1 <= num_removed <= max_removable):
             # print(f"Warning: Action {action} is outside the bounds defined by initial_piles for index mapping.")
-            return None # Action is fundamentally invalid based on initial setup
+            return None  # Action is fundamentally invalid based on initial setup
 
         # Map (pile_idx, num_removed) to a flat index
         # index = pile_idx * max_removable + (num_removed - 1)
@@ -108,10 +108,10 @@ class NimEnv(BaseEnvironment):
             # Index is out of the calculated bounds
             return None
 
-        if not self.initial_piles: # No piles, no actions
-             return None
+        if not self.initial_piles:  # No piles, no actions
+            return None
         max_removable = max(self.initial_piles)
-        if max_removable == 0: # No items initially, no valid actions
+        if max_removable == 0:  # No items initially, no valid actions
             return None
 
         pile_idx = index // max_removable
@@ -160,17 +160,15 @@ class NimEnv(BaseEnvironment):
         # Game ends if all piles are empty
         if np.sum(self.piles) == 0:
             self.done = True
-            # The player who just made the move (current_player) took the last object and wins.
-            self.winner = self.current_player
-            reward = 1.0
+            self.winner = (self.current_player + 1) % self._num_players
         else:
-            # Game continues, switch player
+            # Game continues
             self.done = False
             self.winner = None
-            reward = 0.0
         self.current_player = (self.current_player + 1) % self._num_players
 
-        return self.get_observation(), reward, self.done
+        # reward is always 0. Terminal is determined by evaluation from winner.
+        return self.get_observation(), 0, self.done
 
     def _is_valid_action(self, action: NimActionType) -> bool:
         """Check if an action is valid given the current piles."""
