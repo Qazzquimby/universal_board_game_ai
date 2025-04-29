@@ -85,37 +85,18 @@ class MCTSAgent(Agent):
         if not self._tree_reuse:
             self.reset()
 
-        # Run the search starting from the provided state
         # The environment passed should match the state
-        root_node = self.mcts_orchestrator.search(self.env, state)
-
-        # Get the policy (chosen action, probabilities, visits)
-        # Use temperature=0 for deterministic play, or self.temperature if set > 0
+        self.mcts_orchestrator.search(self.env, state)
         current_temp = self.temperature  # Could be overridden by `train` flag if needed
         chosen_action, _, action_visits = self.mcts_orchestrator.get_policy(
             temperature=current_temp
         )
+        assert chosen_action
 
-        if chosen_action is None:
-            logger.warning(
-                "MCTS search resulted in no valid action. Trying random choice from legal actions."
-            )
-            # Fallback: Choose randomly from legal moves in the current state
-            temp_env = self.env.copy()
-            temp_env.set_state(state)
-            legal_actions = temp_env.get_legal_actions()
-            if legal_actions:
-                chosen_action = random.choice(legal_actions)
-                logger.warning(f"Falling back to random action: {chosen_action}")
-            else:
-                logger.error("MCTS fallback failed: No legal actions available.")
-                return None  # No action possible
-
-        # If tree reuse is enabled, advance the root based on the action *we* just chose
         if self._tree_reuse and chosen_action is not None:
             self.mcts_orchestrator.advance_root(chosen_action)
 
-        self._last_action = chosen_action  # Store for potential future use/debugging
+        self._last_action = chosen_action
         return chosen_action
 
     def reset(self) -> None:

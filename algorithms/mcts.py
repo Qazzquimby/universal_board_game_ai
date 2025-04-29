@@ -319,9 +319,7 @@ class UCB1Selection(SelectionStrategy):
             assert best_child_node is not None
 
             # logger.trace(f"  Selected Action: {best_action} with score {best_score:.3f}")
-            _, _, done = sim_env.step(
-                best_action
-            )  # Apply action to the simulation environment
+            _, _, done = sim_env.step(best_action)
             current_node = best_child_node
             path.append(current_node)
             if done:  # Stop if the action ended the game
@@ -345,17 +343,13 @@ class UniformExpansion(ExpansionStrategy):
             # logger.debug(f"Expansion attempted on node with no legal actions (likely terminal). State: {env.get_observation()}")
             return
 
-        # Use uniform prior probability for standard MCTS
-        # Prior isn't strictly used by UCB1 selection but is good practice
         num_legal_actions = len(legal_actions)
         uniform_prior = 1.0 / num_legal_actions if num_legal_actions > 0 else 0.0
 
         for action in legal_actions:
             action_key = tuple(action) if isinstance(action, list) else action
-            if action_key not in node.children:
-                node.children[action_key] = MCTSNode(parent=node, prior=uniform_prior)
-            # else: # Should not happen if expand is called correctly only once per node
-            #     logger.warning(f"Child for action {action_key} already exists during UniformExpansion.")
+            assert action_key not in node.children
+            node.children[action_key] = MCTSNode(parent=node, prior=uniform_prior)
 
 
 class RandomRolloutEvaluation(EvaluationStrategy):
@@ -509,15 +503,14 @@ class MCTSOrchestrator:
         Returns:
             The root node of the search tree after simulations.
         """
-        # TODO: Add optional check: env.get_observation() == state ?
+        # todo remove
+        assert env.get_observation() == state
 
         for sim_idx in range(self.num_simulations):
             # Start each simulation with a fresh copy of the environment
             # set to the state corresponding to the *current* root node.
             sim_env = env.copy()
-            sim_env.set_state(
-                state
-            )  # Ensure the simulation starts from the correct state
+            sim_env.set_state(state)
 
             # logger.trace(f"\n--- Simulation {sim_idx+1}/{self.num_simulations} ---")
             # logger.trace(f"Starting search from root: Visits={self.root.visit_count}, Value={self.root.value:.3f}")
@@ -531,11 +524,7 @@ class MCTSOrchestrator:
             # logger.trace(f"Selection finished. Path length: {len(path)}, Leaf node visits: {leaf_node.visit_count}")
 
             # 2. Expansion & Evaluation
-            value = 0.0  # Default value if terminal
-            player_at_leaf = (
-                leaf_env.get_current_player()
-            )  # Player whose turn it is at the leaf
-
+            player_at_leaf = leaf_env.get_current_player()
             if leaf_env.is_game_over():
                 # Game ended during selection, or the selected leaf is inherently terminal.
                 winner = leaf_env.get_winning_player()

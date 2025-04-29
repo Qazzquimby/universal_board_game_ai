@@ -20,36 +20,26 @@ def _play_one_game(env: BaseEnvironment, agent0: Agent, agent1: Agent) -> Option
     """
     state = env.get_observation()  # Get initial state from env
     done = False
-    winner = None
 
     while not done:
         current_player_idx = env.get_current_player()
         if current_player_idx == 0:
             action = agent0.act(state)
-            agent_name = type(agent0).__name__  # For logging
+            agent_name = type(agent0).__name__
         else:
             action = agent1.act(state)
-            agent_name = type(agent1).__name__  # For logging
+            agent_name = type(agent1).__name__
 
         if action is None:
             print(
                 f"Warning: Agent {agent_name} (Player {current_player_idx}) returned None action. Treating as loss."
             )
-            winner = 1 - current_player_idx  # Opponent wins
-            break  # End game
+            break
 
-        try:
-            state, _, done = env.step(action)
-            winner = env.get_winning_player()  # Get winner after step
-        except ValueError as e:
-            print(
-                f"Warning: Invalid action {action} during testing by Player {current_player_idx} ({agent_name}). Error: {e}"
-            )
-            winner = 1 - current_player_idx  # Opponent wins due to invalid move
-            done = True  # Ensure loop terminates on error
+        state, _, done = env.step(action)
 
         if done:
-            break  # Exit loop immediately if done is set
+            break
 
     final_winner = env.get_winning_player()
     return final_winner
