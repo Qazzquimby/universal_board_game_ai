@@ -298,15 +298,9 @@ class UCB1Selection(SelectionStrategy):
             assert current_node.children
 
             parent_visits = current_node.visit_count
-            # logger.trace(f"  Selecting child from node with {parent_visits} visits. Children: {list(current_node.children.keys())}")
-
             best_score = -float("inf")
             best_action = None
             best_child_node = None
-
-            # Use deterministic tie-breaking for reproducibility if needed, otherwise random is fine
-            # actions = list(current_node.children.keys())
-            # random.shuffle(actions) # Optional: Shuffle for random tie-breaking
 
             for action, child_node in current_node.children.items():
                 score = self._score_child(child_node, parent_visits)
@@ -314,8 +308,6 @@ class UCB1Selection(SelectionStrategy):
                     best_score = score
                     best_action = action
                     best_child_node = child_node
-                # Handle ties (e.g., choose randomly among tied best actions)
-                # If using shuffled keys, the first one encountered with the best score wins.
 
             if DEBUG:
                 assert (
@@ -330,7 +322,6 @@ class UCB1Selection(SelectionStrategy):
                 assert (
                     action_key in current_node.children
                 ), f"Selected action {action_key} not in node children {list(current_node.children.keys())}"
-
             _, _, done = sim_env.step(best_action)
             if DEBUG:
                 assert (
@@ -372,12 +363,16 @@ class UniformExpansion(ExpansionStrategy):
             action_key = tuple(action) if isinstance(action, list) else action
 
             if DEBUG:
+                if hasattr(env, "_is_valid_action"):
+                    assert env._is_valid_action(
+                        action
+                    ), f"Action {action} from get_legal_actions() is considered invalid by _is_valid_action() in state {env.get_observation()}"
                 assert (
                     action_key in legal_action_keys
-                ), f"Action {action_key} intended for expansion not found in legal actions {legal_action_keys}"
+                ), f"Action key {action_key} (from action {action}) not found in the initially generated legal action keys {legal_action_keys}. State: {env.get_observation()}"
                 assert (
                     action_key not in node.children
-                ), f"Attempting to expand action {action_key} which already exists as a child."
+                ), f"Attempting to expand action {action_key} which already exists as a child. State: {env.get_observation()}"
 
             child_node = MCTSNode(parent=node, prior=uniform_prior)
             node.children[action_key] = child_node
@@ -389,6 +384,11 @@ class UniformExpansion(ExpansionStrategy):
                 assert (
                     node.children[action_key] is child_node
                 ), f"Incorrect child node added for action {action_key}"
+
+        if DEBUG:
+            assert (
+                len(node.children) == num_legal_actions
+            ), f"Number of children created ({len(node.children)}) does not match the number of legal actions ({num_legal_actions}). Legal actions: {legal_actions}, Children keys: {list(node.children.keys())}. State: {env.get_observation()}"
 
 
 class RandomRolloutEvaluation(EvaluationStrategy):
