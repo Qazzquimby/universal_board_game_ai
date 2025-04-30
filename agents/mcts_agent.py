@@ -65,13 +65,12 @@ class MCTSAgent(Agent):
 
         self._last_action: Optional[ActionType] = None
 
-    def act(self, state: StateType, train: bool = False) -> Optional[ActionType]:
+    def act(self, state: StateType) -> Optional[ActionType]:
         """
         Perform MCTS search and choose the best action.
 
         Args:
             state: The current environment state observation.
-            train: If True, uses temperature sampling for action selection. (Not used in pure MCTS agent currently)
 
         Returns:
             The chosen action, or None if no action is possible.

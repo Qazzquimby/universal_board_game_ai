@@ -503,9 +503,6 @@ class MCTSOrchestrator:
         Returns:
             The root node of the search tree after simulations.
         """
-        # todo remove
-        assert env.get_observation() == state
-
         for sim_idx in range(self.num_simulations):
             # Start each simulation with a fresh copy of the environment
             # set to the state corresponding to the *current* root node.
@@ -526,29 +523,16 @@ class MCTSOrchestrator:
             # 2. Expansion & Evaluation
             player_at_leaf = leaf_env.get_current_player()
             if leaf_env.is_game_over():
-                # Game ended during selection, or the selected leaf is inherently terminal.
                 winner = leaf_env.get_winning_player()
-                # logger.trace(f"Leaf node is terminal. Winner: {winner}, Player at leaf: {player_at_leaf}")
                 if winner is None:
                     value = 0.0
-                # Value is from the perspective of the player whose turn it *is* at the leaf
                 else:
+                    # Value is from the perspective of the player whose is next to play at the leaf
                     value = 1.0 if winner == player_at_leaf else -1.0
             else:
-                # If the leaf node hasn't been expanded yet, expand it.
                 if not leaf_node.is_expanded():
-                    # logger.trace("Leaf node not expanded. Expanding...")
-                    # Expansion strategy now takes only node and env
                     self.expansion_strategy.expand(leaf_node, leaf_env)
-                    # logger.trace(f"Expansion done. Children count: {len(leaf_node.children)}")
-                    # After expansion, the node is usually evaluated (e.g., via rollout or network).
-
-                # Evaluate the leaf node using the evaluation strategy.
-                # logger.trace("Evaluating leaf node...")
-                # Evaluation strategy now returns only float value
                 value = self.evaluation_strategy.evaluate(leaf_node, leaf_env)
-                # logger.trace(f"Evaluation result: {value:.4f}")
-                # Ensure value is float
                 value = float(value)
 
             # 3. Backpropagation
