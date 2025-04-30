@@ -16,7 +16,25 @@ from dataclasses import dataclass, field
 
 from environments.base import ActionType, StateType, BaseEnvironment
 
+import numpy as np
+
 DEBUG = True
+
+
+def assert_states_are_equal(state1: StateType, state2: StateType) -> bool:
+    """Compares two state dictionaries, handling NumPy arrays correctly."""
+    if state1.keys() != state2.keys():
+        assert False
+    for key in state1:
+        val1 = state1[key]
+        val2 = state2[key]
+        if isinstance(val1, np.ndarray) and isinstance(val2, np.ndarray):
+            if not np.array_equal(val1, val2):
+                assert False
+        elif val1 != val2:
+            # Use standard equality for non-ndarray types
+            assert False
+
 
 # Helper function moved outside class for potential reuse
 def get_state_key(s: StateType) -> str:
@@ -84,22 +102,25 @@ class SelectionResult:
 
     path: List["MCTSNode"]
     leaf_node: "MCTSNode"
-    leaf_env: BaseEnvironment
+    leaf_state: StateType  # State corresponding to the leaf node
 
 
 class SelectionStrategy(abc.ABC):
     @abc.abstractmethod
-    def select(self, node: "MCTSNode", env: BaseEnvironment) -> SelectionResult:
+    def select(
+        self, node: "MCTSNode", initial_state: StateType, base_env: BaseEnvironment
+    ) -> SelectionResult:
         """
         Select a path from the given node down to a leaf node.
 
         Args:
             node: The starting node (usually the root).
-            env: A copy of the environment corresponding to the starting node's state.
+            initial_state: The state dictionary corresponding to the starting node.
+            base_env: A base environment instance (used only for copying).
 
         Returns:
             A SelectionResult dataclass instance containing the path, leaf node,
-            and the environment state corresponding to the leaf node.
+            and the state dictionary corresponding to the leaf node.
         """
         pass
 
@@ -109,28 +130,33 @@ class ExpansionStrategy(abc.ABC):
     def expand(
         self,
         node: "MCTSNode",
-        env: BaseEnvironment,
+        state: StateType,
+        base_env: BaseEnvironment,
     ) -> None:
         """
         Expand a leaf node by adding children based on legal actions.
 
         Args:
             node: The leaf node to expand.
-            env: The environment state corresponding to the leaf node.
+            state: The state dictionary corresponding to the leaf node.
+            base_env: A base environment instance (used only for copying).
         """
         pass
 
 
 class EvaluationStrategy(abc.ABC):
     @abc.abstractmethod
-    def evaluate(self, node: "MCTSNode", env: BaseEnvironment) -> float:
+    def evaluate(
+        self, node: "MCTSNode", state: StateType, base_env: BaseEnvironment
+    ) -> float:
         """
         Evaluate a leaf node to estimate its value.
         The value should be from the perspective of the player whose turn it is at the leaf node.
 
         Args:
             node: The leaf node to evaluate.
-            env: The environment state corresponding to the leaf node.
+            state: The state dictionary corresponding to the leaf node.
+            base_env: A base environment instance (used only for copying).
 
         Returns:
             The estimated value (float).
@@ -288,11 +314,15 @@ class UCB1Selection(SelectionStrategy):
         # logger.trace(f"    Scoring Child: Visits={child.visit_count}, Value={child.value:.3f}, Prior={child.prior:.3f} -> Score={exploitation_term + exploration_term:.3f} (Exploit={exploitation_term:.3f}, Explore={exploration_term:.3f})")
         return exploitation_term + exploration_term
 
-    def select(self, node: MCTSNode, env: BaseEnvironment) -> SelectionResult:
+    def select(
+        self, node: MCTSNode, initial_state: StateType, base_env: BaseEnvironment
+    ) -> SelectionResult:
         """Select child node with highest UCB score until a leaf node is reached."""
         path = [node]
         current_node = node
-        sim_env = env  # We modify the passed env directly (it's a copy)
+        # Create a dedicated environment copy for this selection process
+        sim_env = base_env.copy()
+        sim_env.set_state(initial_state)
 
         while current_node.is_expanded() and not sim_env.is_game_over():
             assert current_node.children
@@ -322,7 +352,18 @@ class UCB1Selection(SelectionStrategy):
                 assert (
                     action_key in current_node.children
                 ), f"Selected action {action_key} not in node children {list(current_node.children.keys())}"
+                # Verify the chosen action is legal
+                legal_actions_before_step = sim_env.get_legal_actions()
+                legal_action_keys_before_step = {
+                    tuple(a) if isinstance(a, list) else a
+                    for a in legal_actions_before_step
+                }
+                assert (
+                    action_key in legal_action_keys_before_step
+                ), f"Selected best action {action_key} is not in legal actions {legal_action_keys_before_step} before step. State: {sim_env.get_observation()}"
+
             _, _, done = sim_env.step(best_action)
+
             if DEBUG:
                 assert (
                     done == sim_env.is_game_over()
@@ -334,22 +375,38 @@ class UCB1Selection(SelectionStrategy):
                 break
 
         # current_node is now the leaf node for this simulation
-        # sim_env is the state corresponding to the leaf node
-        return SelectionResult(path=path, leaf_node=current_node, leaf_env=sim_env)
+        # Return the state dictionary of the leaf node
+        leaf_state = sim_env.get_observation()
+        return SelectionResult(path=path, leaf_node=current_node, leaf_state=leaf_state)
 
 
 class UniformExpansion(ExpansionStrategy):
     """Expands a node by creating children for all legal actions with uniform priors."""
 
-    def expand(self, node: MCTSNode, env: BaseEnvironment) -> None:
+    def expand(
+        self, node: MCTSNode, state: StateType, base_env: BaseEnvironment
+    ) -> None:
+        # Create a temporary environment for this expansion operation
+        env = base_env.copy()
+        env.set_state(state)
+        if DEBUG:
+            assert_states_are_equal(
+                env.get_observation(), state
+            ), f"State mismatch in expand after set_state. Expected: {state}, Got: {env.get_observation()}"
+
         if node.is_expanded() or env.is_game_over():
             return  # Cannot expand already expanded or terminal nodes
 
         legal_actions = env.get_legal_actions()
         if not legal_actions:
             # This can happen if the game ends exactly at this node after the parent's action
-            # logger.debug(f"Expansion attempted on node with no legal actions (likely terminal). State: {env.get_observation()}")
+            # logger.debug(f"Expansion attempted on node with no legal actions (likely terminal). State: {state}")
             return
+
+        # Assertion: Double-check env state hasn't become terminal unexpectedly (redundant with above but safe)
+        assert (
+            not env.is_game_over()
+        ), f"Expansion called on a node corresponding to a terminal state. State: {state}"
 
         num_legal_actions = len(legal_actions)
         uniform_prior = 1.0 / num_legal_actions if num_legal_actions > 0 else 0.0
@@ -363,16 +420,19 @@ class UniformExpansion(ExpansionStrategy):
             action_key = tuple(action) if isinstance(action, list) else action
 
             if DEBUG:
+                # Use the temporary env for validation checks
                 if hasattr(env, "_is_valid_action"):
                     assert env._is_valid_action(
                         action
-                    ), f"Action {action} from get_legal_actions() is considered invalid by _is_valid_action() in state {env.get_observation()}"
+                    ), f"Action {action} from get_legal_actions() is considered invalid by _is_valid_action() in state {state}"
+                # Assertion: Check key conversion and presence in the initial set
                 assert (
                     action_key in legal_action_keys
-                ), f"Action key {action_key} (from action {action}) not found in the initially generated legal action keys {legal_action_keys}. State: {env.get_observation()}"
+                ), f"Action key {action_key} (from action {action}) not found in the initially generated legal action keys {legal_action_keys}. State: {state}"
+                # Assertion: Ensure we are not overwriting an existing child
                 assert (
                     action_key not in node.children
-                ), f"Attempting to expand action {action_key} which already exists as a child. State: {env.get_observation()}"
+                ), f"Attempting to expand action {action_key} which already exists as a child. State: {state}"
 
             child_node = MCTSNode(parent=node, prior=uniform_prior)
             node.children[action_key] = child_node
@@ -385,10 +445,11 @@ class UniformExpansion(ExpansionStrategy):
                     node.children[action_key] is child_node
                 ), f"Incorrect child node added for action {action_key}"
 
+        # Assertion: Ensure the number of children created matches the number of legal actions reported.
         if DEBUG:
             assert (
                 len(node.children) == num_legal_actions
-            ), f"Number of children created ({len(node.children)}) does not match the number of legal actions ({num_legal_actions}). Legal actions: {legal_actions}, Children keys: {list(node.children.keys())}. State: {env.get_observation()}"
+            ), f"Number of children created ({len(node.children)}) does not match the number of legal actions ({num_legal_actions}). Legal actions: {legal_actions}, Children keys: {list(node.children.keys())}. State: {state}"
 
 
 class RandomRolloutEvaluation(EvaluationStrategy):
@@ -398,19 +459,30 @@ class RandomRolloutEvaluation(EvaluationStrategy):
         self.max_rollout_depth = max_rollout_depth
         self.discount_factor = discount_factor  # Usually 1.0 for MCTS terminal rewards
 
-    def evaluate(self, node: MCTSNode, env: BaseEnvironment) -> float:
-        """Simulate game from current state using random policy."""
+    def evaluate(
+        self, node: MCTSNode, state: StateType, base_env: BaseEnvironment
+    ) -> float:
+        """Simulate game from the given state using random policy."""
+        # Create a temporary environment for this evaluation operation
+        env = base_env.copy()
+        env.set_state(state)
+        if DEBUG:
+            assert_states_are_equal(
+                env.get_observation(), state
+            ), f"State mismatch in evaluate after set_state. Expected: {state}, Got: {env.get_observation()}"
+
         if env.is_game_over():
-            # If the node itself is terminal, determine the outcome directly
+            # If the state itself is terminal, determine the outcome directly
             player_at_leaf = env.get_current_player()  # Player whose turn it *would* be
             winner = env.get_winning_player()
             if winner is None:
-                return 0.0
-            # Value is from the perspective of the player whose turn it is at the leaf
+                return 0.0  # Draw
+            # Value is from the perspective of the player whose turn it *would* be at the leaf
             return 1.0 if winner == player_at_leaf else -1.0
 
         player_at_rollout_start = env.get_current_player()
-        sim_env = env.copy()  # Work on a copy for the rollout
+        # Start the rollout simulation from a copy of the evaluation env
+        sim_env = env.copy()
         steps = 0
 
         while not sim_env.is_game_over() and steps < self.max_rollout_depth:
@@ -576,48 +648,55 @@ class MCTSOrchestrator:
         Returns:
             The root node of the search tree after simulations.
         """
+        # The 'env' passed here is the canonical environment at the root state.
+        # We use it only for copying.
+        if DEBUG:
+            # Verify the passed env matches the state before starting search
+            current_env_state = env.get_observation()
+            assert_states_are_equal(
+                current_env_state, state
+            ), f"Initial env state mismatch in search. Expected: {state}, Got: {current_env_state}"
+
         for sim_idx in range(self.num_simulations):
-            # Start each simulation with a fresh copy of the environment
-            # set to the state corresponding to the *current* root node.
             sim_env = env.copy()
             sim_env.set_state(state)
 
-            # logger.trace(f"\n--- Simulation {sim_idx+1}/{self.num_simulations} ---")
-            # logger.trace(f"Starting search from root: Visits={self.root.visit_count}, Value={self.root.value:.3f}")
-
             # 1. Selection: Find a leaf node using the selection strategy.
-            #    The strategy modifies sim_env to match the leaf node's state.
-            selection_result = self.selection_strategy.select(self.root, sim_env)
+            #    Requires the root state and the base env for copying.
+            selection_result = self.selection_strategy.select(
+                node=self.root, initial_state=state, base_env=sim_env
+            )
             path = selection_result.path
             leaf_node = selection_result.leaf_node
-            leaf_env = selection_result.leaf_env
+            leaf_state = selection_result.leaf_state  # State dictionary of the leaf
             # logger.trace(f"Selection finished. Path length: {len(path)}, Leaf node visits: {leaf_node.visit_count}")
 
-            # 2. Expansion & Evaluation
-            player_at_leaf = leaf_env.get_current_player()
-            if leaf_env.is_game_over():
-                winner = leaf_env.get_winning_player()
+            # Need player at leaf for backprop value perspective and terminal check
+            # Create a temporary env just to get player and check terminal state
+            temp_leaf_env = env.copy()
+            temp_leaf_env.set_state(leaf_state)
+            if DEBUG:
+                assert_states_are_equal(
+                    temp_leaf_env.get_observation(), leaf_state
+                ), f"Leaf state mismatch before expansion/evaluation. Expected: {leaf_state}, Got: {temp_leaf_env.get_observation()}"
+
+            # Expansion & Evaluation
+            player_at_leaf = temp_leaf_env.get_current_player()
+            if temp_leaf_env.is_game_over():
+                winner = temp_leaf_env.get_winning_player()
                 if winner is None:
                     value = 0.0
                 else:
-                    # Value is from the perspective of the player whose is next to play at the leaf
+                    # Value is from the perspective of the player whose turn it *would* be at the leaf
                     value = 1.0 if winner == player_at_leaf else -1.0
             else:
                 if not leaf_node.is_expanded():
-                    self.expansion_strategy.expand(leaf_node, leaf_env)
-                value = self.evaluation_strategy.evaluate(leaf_node, leaf_env)
-                value = float(value)
+                    self.expansion_strategy.expand(leaf_node, leaf_state, env)
+                value = float(
+                    self.evaluation_strategy.evaluate(leaf_node, leaf_state, env)
+                )
 
-            # 3. Backpropagation
-            # The value should be from the perspective of the player whose turn it was at the leaf node.
-            # logger.trace(f"Backpropagating value {value:.4f} up path of length {len(path)}")
             self.backpropagation_strategy.backpropagate(path, value, player_at_leaf)
-            # logger.trace(f"Backpropagation finished. Root visits: {self.root.visit_count}, Root value: {self.root.value:.3f}")
-
-        # logger.trace(f"\n--- Search Finished ({self.num_simulations} simulations) ---")
-        # logger.trace(f"Final Root Node: Visits={self.root.visit_count}, Value={self.root.value:.3f}, Children={len(self.root.children)}")
-        # for action, child in self.root.children.items():
-        #     logger.trace(f"  Action: {action}, Visits: {child.visit_count}, Value: {child.value:.3f} (Q for parent: {-child.value:.3f})")
 
         return self.root
 

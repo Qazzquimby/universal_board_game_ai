@@ -140,17 +140,7 @@ class NimEnv(BaseEnvironment):
         pile_index, num_to_remove = action
         self.last_action = action
 
-        # --- Validate Action ---
-        if not self._is_valid_action(action):
-            # Invalid move: Penalize current player, game continues (but state doesn't change)
-            # Note: In a real game, an invalid move might forfeit the game.
-            # Here, we penalize and let the same player try again or handle differently.
-            # For simplicity now, let's assume agents only choose legal moves.
-            # If an invalid move *is* passed, we could raise an error or handle as below.
-            # Let's raise an error for now to enforce agent correctness.
-            raise ValueError(f"Invalid action {action} for piles {self.piles.tolist()}")
-            # reward = -10.0
-            # return self.get_observation(), reward, self.done
+        assert self._is_valid_action(action)
 
         # --- Apply Action ---
         self.piles[pile_index] -= num_to_remove

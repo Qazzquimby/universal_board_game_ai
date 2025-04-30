@@ -80,6 +80,8 @@ class MCTSAgent(Agent):
         # having called `notify_opponent_action` or similar if tree reuse is desired.
         # For now, we assume the root is either fresh or correctly advanced externally.
 
+        self.env.set_state(state)
+
         # If not reusing the tree, reset it before every search
         if not self._tree_reuse:
             self.reset()

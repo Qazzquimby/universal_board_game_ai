@@ -175,7 +175,7 @@ class MCTS_Old:
 
     def search(self, env: BaseEnvironment, state: StateType) -> MCTSNode_Old:
         """Run MCTS search from the given state using UCB1 and random rollouts."""
-        self.reset_root()
+        self.reset_root()  # I think this prevents tree reuse
 
         for sim_num in range(self.num_simulations):
             sim_env = env.copy()
