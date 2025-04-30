@@ -86,10 +86,8 @@ class MCTSAgent(Agent):
 
         # The environment passed should match the state
         self.mcts_orchestrator.search(self.env, state)
-        current_temp = self.temperature  # Could be overridden by `train` flag if needed
-        chosen_action, _, action_visits = self.mcts_orchestrator.get_policy(
-            temperature=current_temp
-        )
+        policy_result = self.mcts_orchestrator.get_policy(temperature=self.temperature)
+        chosen_action = policy_result.chosen_action
         assert chosen_action
 
         if self._tree_reuse:

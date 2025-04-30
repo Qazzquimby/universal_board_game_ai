@@ -12,9 +12,11 @@ from loguru import logger
 import numpy as np
 import abc
 import torch.nn as nn
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from environments.base import ActionType, StateType, BaseEnvironment
+
+DEBUG = True
 
 # Helper function moved outside class for potential reuse
 def get_state_key(s: StateType) -> str:
@@ -315,23 +317,26 @@ class UCB1Selection(SelectionStrategy):
                 # Handle ties (e.g., choose randomly among tied best actions)
                 # If using shuffled keys, the first one encountered with the best score wins.
 
-            assert (
-                best_action is not None
-            ), "UCB1Selection failed to find a best action."
-            assert (
-                best_child_node is not None
-            ), "UCB1Selection failed to find a best child node."
-            # Ensure the selected action actually exists as a child (basic sanity check)
-            action_key = (
-                tuple(best_action) if isinstance(best_action, list) else best_action
-            )
-            assert (
-                action_key in current_node.children
-            ), f"Selected action {action_key} not in node children {list(current_node.children.keys())}"
-
-            # logger.trace(f"  Selected Action: {best_action} with score {best_score:.3f}")
+            if DEBUG:
+                assert (
+                    best_action is not None
+                ), "UCB1Selection failed to find a best action."
+                assert (
+                    best_child_node is not None
+                ), "UCB1Selection failed to find a best child node."
+                action_key = (
+                    tuple(best_action) if isinstance(best_action, list) else best_action
+                )
+                assert (
+                    action_key in current_node.children
+                ), f"Selected action {action_key} not in node children {list(current_node.children.keys())}"
 
             _, _, done = sim_env.step(best_action)
+            if DEBUG:
+                assert (
+                    done == sim_env.is_game_over()
+                ), f"Environment 'done' flag ({done}) inconsistent with is_game_over() ({sim_env.is_game_over()}) after action {best_action}"
+
             current_node = best_child_node
             path.append(current_node)
             if done:  # Stop if the action ended the game
@@ -365,14 +370,25 @@ class UniformExpansion(ExpansionStrategy):
 
         for action in legal_actions:
             action_key = tuple(action) if isinstance(action, list) else action
-            # Assert that the action we are about to add is one we got from get_legal_actions
-            assert (
-                action_key in legal_action_keys
-            ), f"Action {action_key} intended for expansion not found in legal actions {legal_action_keys}"
-            assert (
-                action_key not in node.children
-            ), f"Attempting to expand action {action_key} which already exists as a child."
-            node.children[action_key] = MCTSNode(parent=node, prior=uniform_prior)
+
+            if DEBUG:
+                assert (
+                    action_key in legal_action_keys
+                ), f"Action {action_key} intended for expansion not found in legal actions {legal_action_keys}"
+                assert (
+                    action_key not in node.children
+                ), f"Attempting to expand action {action_key} which already exists as a child."
+
+            child_node = MCTSNode(parent=node, prior=uniform_prior)
+            node.children[action_key] = child_node
+
+            if DEBUG:
+                assert (
+                    action_key in node.children
+                ), f"Failed to add child node for action {action_key}"
+                assert (
+                    node.children[action_key] is child_node
+                ), f"Incorrect child node added for action {action_key}"
 
 
 class RandomRolloutEvaluation(EvaluationStrategy):
@@ -404,6 +420,19 @@ class RandomRolloutEvaluation(EvaluationStrategy):
                 # Treat as draw or assign penalty? Draw seems safer.
                 return 0.0
             action = random.choice(legal_actions)
+
+            if DEBUG:
+                # Convert action to tuple if it's a list for consistent checking
+                action_key_rollout = (
+                    tuple(action) if isinstance(action, list) else action
+                )
+                legal_action_keys_rollout = {
+                    tuple(a) if isinstance(a, list) else a for a in legal_actions
+                }
+                assert (
+                    action_key_rollout in legal_action_keys_rollout
+                ), f"Rollout chose action {action_key_rollout} which is not in legal actions {legal_action_keys_rollout}"
+
             _, _, done = sim_env.step(action)
             steps += 1
             # Apply discount factor here if needed for non-terminal rewards
@@ -446,17 +475,38 @@ class StandardBackpropagation(BackpropagationStrategy):
         # The value passed in `value` is from the perspective of the player AT THE LEAF.
         value_for_node = value
 
-        while current_node is not None:
-            current_node.visit_count += 1
+        for i, node_in_path in enumerate(reversed(path)):
+            visits_before = node_in_path.visit_count
+            value_before = node_in_path.total_value
+            node_in_path.visit_count += 1
+
             # Add the value from the perspective of the player whose turn it was *at this node*.
-            # Since value_for_node is currently from the perspective of the *child* node's player,
-            # and we assume zero-sum, the value for the parent is the negative of the child's value.
-            current_node.total_value += value_for_node
-            # logger.trace(f"  Backprop: Node (Parent={current_node.parent is not None}), Visits={current_node.visit_count}, TotalValue={current_node.total_value:.3f} (added {value_for_node:.3f})")
+            # value_for_node starts as the value from the leaf's perspective.
+            # For the leaf's parent, the value is flipped (-1). For the grandparent, flipped again (+1), etc.
+            # The value added should be value_for_node * (-1)^depth_difference
+            # Alternatively, just flip value_for_node on each step up.
+            node_in_path.total_value += value_for_node
+
+            if DEBUG:
+                assert (
+                    node_in_path.visit_count == visits_before + 1
+                ), f"Visit count did not increment correctly during backprop (Node {len(path)-1-i}). Before: {visits_before}, After: {node_in_path.visit_count}"
+                # Check total_value update (allow for floating point issues)
+                assert math.isclose(
+                    node_in_path.total_value, value_before + value_for_node
+                ), f"Total value did not update correctly during backprop (Node {len(path)-1-i}). Before: {value_before}, Added: {value_for_node}, After: {node_in_path.total_value}"
 
             # Flip the value perspective for the next node up (the parent).
             value_for_node *= -1.0
-            current_node = current_node.parent
+
+
+@dataclass
+class PolicyResult:
+    """Holds the results of the MCTS policy calculation."""
+
+    chosen_action: ActionType
+    action_probabilities: Dict[ActionType, float] = field(default_factory=dict)
+    action_visits: Dict[ActionType, int] = field(default_factory=dict)
 
 
 class MCTSOrchestrator:
@@ -571,9 +621,7 @@ class MCTSOrchestrator:
 
         return self.root
 
-    def get_policy(
-        self, temperature: float = 1.0
-    ) -> Tuple[Optional[ActionType], Dict[ActionType, float], Dict[ActionType, int]]:
+    def get_policy(self, temperature: float = 1.0) -> PolicyResult:
         """
         Calculates the final action policy based on root children visits.
 
@@ -582,12 +630,14 @@ class MCTSOrchestrator:
                          temp=0 -> deterministic (choose best), temp=1 -> proportional to visits^(1/temp).
 
         Returns:
-            Tuple: (chosen_action, action_probabilities, action_visits)
-                   Returns (None, {}, {}) if root has no children or no visits.
+            A PolicyResult dataclass instance.
+
+        Raises:
+            ValueError: If the root node has no children or no child has visits > 0
+                        after simulations, indicating an issue (e.g., insufficient search
+                        or problem during MCTS phases).
         """
-        if not self.root.children:
-            logger.warning("MCTS get_policy: Root has no children.")
-            return None, {}, {}
+        assert self.root.children
 
         # Get all children and their visit counts
         action_visits = {
@@ -596,12 +646,7 @@ class MCTSOrchestrator:
 
         # Filter out actions with zero visits, as they shouldn't be chosen or have probability mass
         valid_actions_visits = {a: v for a, v in action_visits.items() if v > 0}
-
-        if not valid_actions_visits:
-            logger.error(
-                "MCTS get_policy: Root has children, but none have visits > 0. This indicates a problem (e.g., backpropagation failed)."
-            )
-            return None, {}, action_visits  # Return original visits for debugging
+        assert valid_actions_visits
 
         actions = list(valid_actions_visits.keys())
         visits = np.array(
@@ -609,7 +654,6 @@ class MCTSOrchestrator:
         )  # Use float64 for precision
 
         probabilities = {}
-        chosen_action = None
 
         if temperature == 0:
             # Deterministic: choose the action with the highest visit count
@@ -618,7 +662,6 @@ class MCTSOrchestrator:
             # Probabilities are 1 for the best action, 0 otherwise (among visited actions)
             for i, act in enumerate(actions):
                 probabilities[act] = 1.0 if i == best_action_index else 0.0
-
         else:
             # Temperature sampling
             if temperature <= 0:
@@ -665,12 +708,9 @@ class MCTSOrchestrator:
             if zero_visit_action not in probabilities:
                 probabilities[zero_visit_action] = 0.0
 
-        # Ensure chosen_action is not None if probabilities were assigned
-        if chosen_action is None and probabilities:
-            logger.error(
-                "Policy calculation resulted in probabilities but no chosen action. Falling back to max visits."
-            )
-            best_action_index = np.argmax(visits)
-            chosen_action = actions[best_action_index]
-
-        return chosen_action, probabilities, action_visits
+        assert chosen_action is not None
+        return PolicyResult(
+            chosen_action=chosen_action,
+            action_probabilities=probabilities,
+            action_visits=action_visits,
+        )

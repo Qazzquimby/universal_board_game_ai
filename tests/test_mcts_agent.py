@@ -1,6 +1,8 @@
 import pytest
 
 from agents.mcts_agent import MCTSAgent
+from agents.mcts_agent import MCTSAgent
+from algorithms.mcts import PolicyResult  # Import PolicyResult
 from environments.nim_env import NimEnv
 from environments.base import SanityCheckState
 
@@ -48,8 +50,10 @@ def test_mcts_agent_act_deterministic_simple_win(nim_env_simple):
     env = nim_env_simple
     agent = MCTSAgent(env=env, num_simulations=20, temperature=0.0, tree_reuse=False)
     state = env.get_observation()
-    action = agent.act(state)
+    policy_result = agent.act(state)  # act now returns PolicyResult or raises error
 
+    assert policy_result is not None  # Should not be None if act succeeds
+    action = policy_result  # act returns the chosen action directly now
     assert action is not None
     assert action in [(0, 1), (1, 1)]  # Should pick one of the two legal moves
 
@@ -65,7 +69,8 @@ def test_mcts_agent_act_deterministic_simple_win(nim_env_simple):
         }
     )
     state = env.get_observation()
-    action = agent.act(state)
+    policy_result = agent.act(state)
+    action = policy_result  # act returns the chosen action
     assert action == (0, 1)  # Must choose the only winning move
 
 
@@ -77,7 +82,8 @@ def test_mcts_agent_act_returns_legal_action(mcts_agent_nim_stochastic, nim_env_
 
     # Run act multiple times to check stochastic selection
     for _ in range(10):
-        chosen_action = mcts_agent_nim_stochastic.act(state)
+        policy_result = mcts_agent_nim_stochastic.act(state)
+        chosen_action = policy_result  # act returns the chosen action
         assert chosen_action is not None
         # Ensure the action chosen is hashable (tuple) for the check
         action_key = (
@@ -91,9 +97,14 @@ def test_mcts_agent_reset(mcts_agent_nim_deterministic, nim_env_simple):
     agent = mcts_agent_nim_deterministic
     state = nim_env_simple.get_observation()
     # Run search to populate the tree
-    agent.act(state)
-    assert agent.mcts_orchestrator.root.visit_count > 0
-    assert agent._last_action is not None
+    try:
+        agent.act(state)
+        assert agent.mcts_orchestrator.root.visit_count > 0
+        assert agent._last_action is not None
+    except ValueError:
+        # If act raises ValueError (e.g., from get_policy), the test might still pass
+        # if the goal is just to check reset. However, let's assume act should succeed here.
+        pytest.fail("MCTSAgent.act failed unexpectedly during setup for reset test.")
 
     # Reset the agent
     agent.reset()
