@@ -16,6 +16,13 @@ class SanityCheckState:
     expected_action: Optional[ActionType] = None
 
 
+@dataclass
+class ActionResult:
+    next_state: StateType  # The state observation after the action.
+    reward: float  #  The reward received by the player who just acted.
+    done: bool
+
+
 class BaseEnvironment(abc.ABC):
     """Abstract base class for game environments."""
 
@@ -52,18 +59,12 @@ class BaseEnvironment(abc.ABC):
         pass
 
     @abc.abstractmethod
-    def step(self, action: ActionType) -> Tuple[StateType, float, bool]:
+    def step(self, action: ActionType) -> ActionResult:
         """
         Take a step in the environment using the given action.
 
         Args:
             action: The action taken by the current player.
-
-        Returns:
-            A tuple containing:
-            - next_state: The state observation after the action.
-            - reward: The reward received by the player who just acted.
-            - done: Boolean indicating if the game has ended.
         """
         pass
 

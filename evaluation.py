@@ -7,7 +7,6 @@ from core.config import AppConfig
 from environments.base import BaseEnvironment
 
 
-# --- Helper for Single Game Simulation ---
 def _play_one_game(env: BaseEnvironment, agent0: Agent, agent1: Agent) -> Optional[int]:
     """
     Plays a single game from the current env state.
@@ -18,25 +17,18 @@ def _play_one_game(env: BaseEnvironment, agent0: Agent, agent1: Agent) -> Option
     Returns:
         The index of the winning player (0 or 1), or None for a draw.
     """
-    state = env.get_observation()  # Get initial state from env
     done = False
 
     while not done:
         current_player_idx = env.get_current_player()
         if current_player_idx == 0:
-            action = agent0.act(state)
-            agent_name = type(agent0).__name__
+            action = agent0.act(env=env)
         else:
-            action = agent1.act(state)
-            agent_name = type(agent1).__name__
+            action = agent1.act(env=env)
+        assert action is not None
 
-        if action is None:
-            print(
-                f"Warning: Agent {agent_name} (Player {current_player_idx}) returned None action. Treating as loss."
-            )
-            break
-
-        state, _, done = env.step(action)
+        result = env.step(action)
+        done = result.done
 
         if done:
             break
@@ -71,12 +63,10 @@ def run_test_games(
     results = {agent1_name: 0, agent2_name: 0, "draws": 0}
 
     for i in tqdm(range(num_games), desc=f"{agent1_name} (P0) vs {agent2_name} (P1)"):
-        game_env = env.copy()  # Use a fresh copy for each game
+        game_env = env.copy()
         game_env.reset()
         if i % 2 == 0:
-            winner = _play_one_game(
-                game_env, agent1, agent2
-            )  # agent1 is P0, agent2 is P1
+            winner = _play_one_game(game_env, agent1, agent2)
 
             if winner == 0:
                 results[agent1_name] += 1
@@ -85,14 +75,10 @@ def run_test_games(
             else:
                 results["draws"] += 1
         else:
-            winner = _play_one_game(
-                game_env, agent2, agent1
-            )  # agent2 is P0, agent1 is P1
-
-            # Adjust win recording based on who was player 0 in this game
-            if winner == 0:  # agent2 (P0) won
+            winner = _play_one_game(game_env, agent2, agent1)
+            if winner == 0:
                 results[agent2_name] += 1
-            elif winner == 1:  # agent1 (P1) won
+            elif winner == 1:
                 results[agent1_name] += 1
             else:
                 results["draws"] += 1
@@ -103,7 +89,6 @@ def run_test_games(
     print(f"Total draws: {results['draws']}")
     print("-" * (len(f"--- Testing {agent1_name} vs {agent2_name} ---") + 5))
 
-    # Calculate rates
     total_games = sum(results.values())
     if total_games == 0:
         return {

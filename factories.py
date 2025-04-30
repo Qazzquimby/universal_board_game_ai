@@ -50,7 +50,6 @@ def get_agents(env: BaseEnvironment, config: AppConfig) -> Dict[str, Agent]:
 
     mcts_agent_name = f"MCTS_{config.mcts.num_simulations}"
     mcts_agent = MCTSAgent(
-        env=env,
         num_simulations=config.mcts.num_simulations,
         exploration_constant=config.mcts.exploration_constant,
     )

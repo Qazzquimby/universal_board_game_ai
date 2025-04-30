@@ -44,19 +44,20 @@ class MCTSAgent_Old(Agent):
         self.reset()  # Reset the tree for a fresh search from the current state
 
         root_node = self.mcts.search(self.env, state)
+        assert root_node.children
 
-        if not root_node.children:
-            # If root has no children after search (e.g., immediate terminal state or no legal moves)
-            # Need a fallback strategy. Choosing randomly from legal moves is one option.
-            print("Warning: MCTS root has no children after search. Falling back.")
-            temp_env = self.env.copy()
-            temp_env.set_state(state)
-            legal_actions = temp_env.get_legal_actions()
-            if legal_actions:
-                return random.choice(legal_actions)
-            else:
-                # Return None if no action is possible, let caller handle it
-                return None
+        # if not root_node.children:
+        #     # If root has no children after search (e.g., immediate terminal state or no legal moves)
+        #     # Need a fallback strategy. Choosing randomly from legal moves is one option.
+        #     print("Warning: MCTS root has no children after search. Falling back.")
+        #     temp_env = self.env.copy()
+        #     temp_env.set_state(state)
+        #     legal_actions = temp_env.get_legal_actions()
+        #     if legal_actions:
+        #         return random.choice(legal_actions)
+        #     else:
+        #         # Return None if no action is possible, let caller handle it
+        #         return None
 
         # Choose the action leading to the most visited child node
         child_visits = {

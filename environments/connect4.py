@@ -1,4 +1,4 @@
-from typing import Dict, List, Tuple, Any, Optional
+from typing import List, Tuple, Optional
 
 import numpy as np
 
@@ -7,9 +7,9 @@ from environments.base import (
     StateType,
     SanityCheckState,
     ActionType,
-)  # Import SanityCheckState
+    ActionResult,
+)
 
-# Action is now just the column index
 ColumnActionType = int
 
 
@@ -96,7 +96,7 @@ class Connect4(BaseEnvironment):
 
         return self.get_observation()
 
-    def step(self, action: ColumnActionType) -> Tuple[Dict[str, Any], float, bool]:
+    def step(self, action: ColumnActionType) -> ActionResult:
         """
         Take a step in the environment by dropping a piece in a column.
 
@@ -114,11 +114,10 @@ class Connect4(BaseEnvironment):
         ), f"Connect4.step received illegal action {action}. Legal actions: {current_legal_actions}. Board:\n{self.board}"
 
         if self.is_game_over():
-            # Return current state, 0 reward for current player, and done=True
-            return (
-                self.get_observation(),
-                self.rewards.get(self.current_player, 0.0),
-                True,
+            return ActionResult(
+                next_state=self.get_observation(),
+                reward=self.rewards.get(self.current_player, 0.0),
+                done=True,
             )
 
         col = action  # Action is the column index
@@ -174,7 +173,11 @@ class Connect4(BaseEnvironment):
 
         self.current_player = (self.current_player + 1) % self.num_players
 
-        return self.get_observation(), reward_for_acting_player, self.done
+        return ActionResult(
+            next_state=self.get_observation(),
+            reward=reward_for_acting_player,
+            done=self.done,
+        )
 
     def _is_valid_action(self, col: ColumnActionType) -> bool:
         """Check if dropping a piece in the column is valid."""

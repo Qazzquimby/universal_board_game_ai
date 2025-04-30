@@ -130,7 +130,7 @@ class AlphaZeroAgent(Agent):
         search_env = self.env.copy()
         search_env.set_state(state)
 
-        self.mcts.reset_root()
+        self.mcts.set_root()
         self.mcts.prepare_for_next_search(train=train)
 
         for sim_num in range(self.config.num_simulations):
@@ -500,4 +500,4 @@ class AlphaZeroAgent(Agent):
     def reset(self) -> None:
         """Reset agent state (e.g., MCTS tree)."""
         # Only reset MCTS root, internal episode history is no longer used by agent.
-        self.mcts.reset_root()
+        self.mcts.set_root()

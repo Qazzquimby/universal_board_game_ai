@@ -242,5 +242,5 @@ class MuZeroAgent(Agent):
 
     def reset(self) -> None:
         """Reset agent state (e.g., MCTS tree, current trajectory)."""
-        self.mcts.reset_root()
+        self.mcts.set_root()
         self._current_episode_trajectory = []

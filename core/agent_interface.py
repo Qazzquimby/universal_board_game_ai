@@ -1,17 +1,16 @@
 import abc
 from typing import Any, Dict, List
 
+from environments.base import BaseEnvironment
+
 
 class Agent(abc.ABC):
     """Abstract base class for all agents."""
 
     @abc.abstractmethod
-    def act(self, state: Dict[str, Any]) -> Any:
+    def act(self, env: BaseEnvironment) -> Any:
         """
         Choose an action based on the current state.
-
-        Args:
-            state: The current environment state observation.
 
         Returns:
             The action chosen by the agent.
@@ -28,7 +27,7 @@ class Agent(abc.ABC):
         Subclasses should implement their specific learning logic (e.g., sampling from a buffer,
         processing a trajectory provided differently).
         """
-        pass # Optional method
+        pass  # Optional method
 
     def save(self) -> None:
         """

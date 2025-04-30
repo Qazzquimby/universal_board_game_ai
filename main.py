@@ -16,12 +16,8 @@ def run_main(config: AppConfig):
 
 
 if __name__ == "__main__":
-    # --- Configuration ---
-    # TODO: Add argument parsing here to override config defaults (e.g., using argparse or Hydra)
     config = AppConfig()
 
-    # --- Environment Selection ---
-    # Simple selection logic using command-line argument
     if len(sys.argv) > 1:
         config.env.name = sys.argv[1]  # e.g., python main.py Nim
 
