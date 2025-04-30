@@ -92,7 +92,7 @@ class MCTSAgent(Agent):
         )
         assert chosen_action
 
-        if self._tree_reuse and chosen_action is not None:
+        if self._tree_reuse:
             self.mcts_orchestrator.advance_root(chosen_action)
 
         self._last_action = chosen_action

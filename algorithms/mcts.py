@@ -315,10 +315,22 @@ class UCB1Selection(SelectionStrategy):
                 # Handle ties (e.g., choose randomly among tied best actions)
                 # If using shuffled keys, the first one encountered with the best score wins.
 
-            assert best_action is not None
-            assert best_child_node is not None
+            assert (
+                best_action is not None
+            ), "UCB1Selection failed to find a best action."
+            assert (
+                best_child_node is not None
+            ), "UCB1Selection failed to find a best child node."
+            # Ensure the selected action actually exists as a child (basic sanity check)
+            action_key = (
+                tuple(best_action) if isinstance(best_action, list) else best_action
+            )
+            assert (
+                action_key in current_node.children
+            ), f"Selected action {action_key} not in node children {list(current_node.children.keys())}"
 
             # logger.trace(f"  Selected Action: {best_action} with score {best_score:.3f}")
+
             _, _, done = sim_env.step(best_action)
             current_node = best_child_node
             path.append(current_node)
@@ -346,9 +358,20 @@ class UniformExpansion(ExpansionStrategy):
         num_legal_actions = len(legal_actions)
         uniform_prior = 1.0 / num_legal_actions if num_legal_actions > 0 else 0.0
 
+        # Convert legal actions to hashable keys for comparison and storage
+        legal_action_keys = {
+            tuple(a) if isinstance(a, list) else a for a in legal_actions
+        }
+
         for action in legal_actions:
             action_key = tuple(action) if isinstance(action, list) else action
-            assert action_key not in node.children
+            # Assert that the action we are about to add is one we got from get_legal_actions
+            assert (
+                action_key in legal_action_keys
+            ), f"Action {action_key} intended for expansion not found in legal actions {legal_action_keys}"
+            assert (
+                action_key not in node.children
+            ), f"Attempting to expand action {action_key} which already exists as a child."
             node.children[action_key] = MCTSNode(parent=node, prior=uniform_prior)
 
 
