@@ -28,12 +28,9 @@ class MCTSAgent_Old(Agent):
             discount_factor=1.0,
         )
 
-    def act(self, state: StateType) -> ActionType:
+    def act(self, env: BaseEnvironment) -> ActionType:
         """
         Perform MCTS search and choose the best action.
-
-        Args:
-            state: The current environment state observation.
 
         Returns:
             The chosen action (row, col).
@@ -42,6 +39,8 @@ class MCTSAgent_Old(Agent):
         # For stateless MCTS between moves, we run a fresh search each time.
         # If we wanted to reuse the tree, we'd need more logic here.
         self.reset()  # Reset the tree for a fresh search from the current state
+
+        state = self.env.get_observation()
 
         root_node = self.mcts.search(self.env, state)
         assert root_node.children

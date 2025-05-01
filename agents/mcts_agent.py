@@ -64,7 +64,7 @@ class MCTSAgent(Agent):
         self.mcts_orchestrator.search(env)
 
         chosen_action = self.mcts_orchestrator.get_policy().chosen_action
-        assert chosen_action
+        assert chosen_action is not None
         self._last_action = chosen_action
         return chosen_action
 

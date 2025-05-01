@@ -381,10 +381,8 @@ class UCB1Selection(SelectionStrategy):
                 assert (
                     action_key in current_node.children
                 ), f"Selected action {action_key} not in node children {list(current_node.children.keys())}"
-                # This assertion is now implicitly covered by the critical assertion at the start of the loop
 
-            # Apply the step to the simulation environment
-            _, _, done = sim_env.step(best_action)
+            done = sim_env.step(best_action).done
 
             if DEBUG:
                 assert (
@@ -461,7 +459,7 @@ class UniformExpansion(ExpansionStrategy):
 
             # Simulate action to get the resulting state for the child node
             child_env = env.copy()
-            child_state, _, _ = child_env.step(action)
+            child_state = child_env.step(action).next_state
             child_state_key = get_state_key(child_state)
 
             # Create child node, storing the state and key it represents
@@ -532,7 +530,7 @@ class RandomRolloutEvaluation(EvaluationStrategy):
                     action_key_rollout in legal_action_keys_rollout
                 ), f"Rollout chose action {action_key_rollout} which is not in legal actions {legal_action_keys_rollout}"
 
-            _, _, done = sim_env.step(action)
+            sim_env.step(action)
             steps += 1
             # Apply discount factor here if needed for non-terminal rewards
 
