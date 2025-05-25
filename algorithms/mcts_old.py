@@ -2,19 +2,19 @@ import math
 import random
 from typing import Optional, Dict, Tuple
 from loguru import logger
-from environments.base import ActionType, BaseEnvironment, StateType
+from environments.base import ActionType, BaseEnvironment
 
 
 class MCTSNode_Old:
     def __init__(self, parent: Optional["MCTSNode_Old"] = None, prior: float = 1.0):
         self.parent = parent
-        self.prior = prior  # P(s,a) - Prior probability from the network
+        self.prior = prior
         self.visit_count = 0
-        self.total_value = 0.0  # W(s,a) - Total action value accumulated
+        self.total_value = 0.0
         self.children: Dict[ActionType, MCTSNode_Old] = {}
 
     @property
-    def value(self) -> float:  # Q(s,a) - Mean action value
+    def value(self) -> float:
         return self.total_value / self.visit_count if self.visit_count else 0.0
 
     def is_expanded(self) -> bool:
@@ -30,7 +30,6 @@ class MCTSNode_Old:
         for action, prior in action_priors.items():
             action_key = tuple(action) if isinstance(action, list) else action
             if action_key not in self.children:
-                # logger.trace(f"  Node.expand: Creating child for action {action_key} with prior {prior:.4f}")
                 self.children[action_key] = MCTSNode_Old(parent=self, prior=prior)
                 children_added += 1
             else:
@@ -54,13 +53,11 @@ class MCTS_Old:
     def __init__(
         self,
         exploration_constant: float = 1.41,  # Standard UCB1 exploration constant
-        discount_factor: float = 1.0,  # Discount factor for rollout rewards
+        discount_factor: float = 1.0,
         num_simulations: int = 100,
     ):
         self.exploration_constant = exploration_constant
-        self.discount_factor = (
-            discount_factor  # Not used in standard UCB1 backprop here
-        )
+        self.discount_factor = discount_factor
         self.num_simulations = num_simulations
         self.root = MCTSNode_Old()
 
@@ -75,7 +72,6 @@ class MCTS_Old:
         while node.is_expanded() and not sim_env.is_game_over():
             parent_visits = node.visit_count
 
-            # Select the action corresponding to the child with the highest UCB score
             child_scores = {
                 act: self._score_child(node=child, parent_visits=parent_visits)
                 for act, child in node.children.items()
@@ -106,7 +102,6 @@ class MCTS_Old:
             return
 
         legal_actions = env.get_legal_actions()
-        # Use uniform prior for standard MCTS expansion
         action_priors = {
             action: 1.0 / len(legal_actions) if legal_actions else 1.0
             for action in legal_actions
@@ -123,7 +118,7 @@ class MCTS_Old:
             env.width * env.height
             if hasattr(env, "width") and hasattr(env, "height")
             else 100
-        )  # Safety break
+        )
 
         while not sim_env.is_game_over() and steps < max_steps:
             legal_actions = sim_env.get_legal_actions()
@@ -147,7 +142,6 @@ class MCTS_Old:
             value = 1.0
         else:
             value = -1.0
-        # logger.debug(f"  Rollout: StartPlayer={player_at_rollout_start}, Winner={winner}, Value={value}")
         return value
 
     def _backpropagate(
@@ -166,10 +160,7 @@ class MCTS_Old:
 
         while current_node is not None:
             current_node.visit_count += 1
-            # logger.debug(f"  Backprop: Node={current_node}, ValueToAdd={value_for_current_node:.3f}, OldW={current_node.total_value:.3f}, OldN={current_node.visit_count - 1}, NewW={current_node.total_value + value_for_current_node:.3f}, NewN={current_node.visit_count}")
             current_node.total_value += value_for_current_node
-
-            # Flip the value perspective for the parent node.
             value_for_current_node *= -1
             current_node = current_node.parent
 
@@ -191,8 +182,6 @@ class MCTS_Old:
                 value = self._rollout(leaf_env_state)
 
             else:
-                # Game ended during selection. Determine the outcome.
-                # Value must be from the perspective of the player whose turn it was AT THE LEAF node.
                 player_at_leaf = leaf_env_state.get_current_player()
                 winner = leaf_env_state.get_winning_player()
 
@@ -203,7 +192,6 @@ class MCTS_Old:
                 else:
                     value = -1.0
 
-                # logger.debug(f"  Terminal Found during Select: Winner={winner}, PlayerAtNode={player_at_leaf}, Value={value}")
             # 3. Backpropagation: Update nodes along the path from the leaf to the root.
             self._backpropagate(leaf_node, value)
 

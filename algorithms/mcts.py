@@ -445,7 +445,7 @@ class RandomRolloutEvaluation(EvaluationStrategy):
             logger.warning(
                 f"MCTS Rollout: Reached max depth ({self.max_rollout_depth}). Treating as draw."
             )
-            return 0.0  # Treat hitting max depth as a draw
+            return 0.0
 
         winner = sim_env.get_winning_player()
         if winner is None:
