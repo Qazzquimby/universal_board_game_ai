@@ -39,10 +39,8 @@ class MCTSAgent_Old(Agent):
         # For stateless MCTS between moves, we run a fresh search each time.
         # If we wanted to reuse the tree, we'd need more logic here.
         self.reset()  # Reset the tree for a fresh search from the current state
-
-        state = self.env.get_observation()
-
-        root_node = self.mcts.search(self.env, state)
+        self.env = env
+        root_node = self.mcts.search(self.env)
         assert root_node.children
 
         # if not root_node.children:
