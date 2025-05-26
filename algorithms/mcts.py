@@ -65,7 +65,7 @@ class MCTSNode:
     def __init__(
         self,
         parent: Optional["MCTSNode"] = None,
-        prior: float = 0.0,
+        prior: float = 1.0,
         state_key: Optional[str] = None,
         state: Optional[StateType] = None,
     ):
@@ -364,7 +364,7 @@ class UniformExpansion(ExpansionStrategy):
         legal_actions = env.get_legal_actions()
         assert legal_actions
         num_legal_actions = len(legal_actions)
-        uniform_prior = 1.0 / num_legal_actions if num_legal_actions > 0 else 0.0
+        uniform_prior = 1.0
         legal_action_keys = {
             tuple(a) if isinstance(a, list) else a for a in legal_actions
         }

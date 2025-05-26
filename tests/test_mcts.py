@@ -11,7 +11,7 @@ from algorithms.mcts import (
     StandardBackpropagation,
 )
 from environments.connect4 import Connect4, ActionResult
-from environments.base import StateType, ActionType  # ActionType might be useful
+from environments.base import ActionType
 import numpy as np
 
 
