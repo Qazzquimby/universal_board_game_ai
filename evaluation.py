@@ -58,10 +58,10 @@ def _play_one_game(
 
 def run_test_games(
     env: BaseEnvironment,
+    agent0_name: str,
+    agent0: Agent,
     agent1_name: str,
     agent1: Agent,
-    agent2_name: str,
-    agent2: Agent,
     num_games: int = 100,
 ):
     """
@@ -69,58 +69,58 @@ def run_test_games(
 
     Args:
         env: The game environment instance (a copy will be used).
-        agent1_name: Name of the first agent.
-        agent1: The first agent object.
-        agent2_name: Name of the second agent.
-        agent2: The second agent object.
+        agent0_name: Name of the first agent.
+        agent0: The first agent object.
+        agent1_name: Name of the second agent.
+        agent1: The second agent object.
         num_games: Total number of games to play (will be split between starting orders).
 
     Returns:
         dict: Aggregated results {agent1_name: total_wins, agent2_name: total_wins, "draws": total_draws}
     """
-    print(f"\n--- Testing {agent1_name} vs {agent2_name} ---")
-    results = {agent1_name: 0, agent2_name: 0, "draws": 0}
+    print(f"\n--- Testing {agent0_name} vs {agent1_name} ---")
+    results = {agent0_name: 0, agent1_name: 0, "draws": 0}
 
     profiler = GameProfiler()
 
-    for i in tqdm(range(num_games), desc=f"{agent1_name} (P0) vs {agent2_name} (P1)"):
+    for i in tqdm(range(num_games), desc=f"{agent0_name} (P0) vs {agent1_name} (P1)"):
         game_env = env.copy()
         game_env.reset()
         if i % 2 == 0:
-            winner = _play_one_game(game_env, agent1, agent2, profiler=profiler)
+            winner = _play_one_game(game_env, agent0, agent1, profiler=profiler)
 
             if winner == 0:
-                results[agent1_name] += 1
+                results[agent0_name] += 1
             elif winner == 1:
-                results[agent2_name] += 1
+                results[agent1_name] += 1
             else:
                 results["draws"] += 1
         else:
-            winner = _play_one_game(game_env, agent2, agent1)
+            winner = _play_one_game(game_env, agent1, agent0)
             if winner == 0:
-                results[agent2_name] += 1
-            elif winner == 1:
                 results[agent1_name] += 1
+            elif winner == 1:
+                results[agent0_name] += 1
             else:
                 results["draws"] += 1
 
-    print(f"--- Results after {num_games} games ({agent1_name} vs {agent2_name}) ---")
+    print(f"--- Results after {num_games} games ({agent0_name} vs {agent1_name}) ---")
+    print(f"{agent0_name} total wins: {results[agent0_name]}")
     print(f"{agent1_name} total wins: {results[agent1_name]}")
-    print(f"{agent2_name} total wins: {results[agent2_name]}")
     print(f"Total draws: {results['draws']}")
-    print("-" * (len(f"--- Testing {agent1_name} vs {agent2_name} ---") + 5))
+    print("-" * (len(f"--- Testing {agent0_name} vs {agent1_name} ---") + 5))
 
     total_games = sum(results.values())
     if total_games == 0:
         return {
+            f"{agent0_name}_win_rate": 0.0,
             f"{agent1_name}_win_rate": 0.0,
-            f"{agent2_name}_win_rate": 0.0,
             "draw_rate": 0.0,
         }
 
     rates = {
+        f"{agent0_name}_win_rate": results[agent0_name] / total_games,
         f"{agent1_name}_win_rate": results[agent1_name] / total_games,
-        f"{agent2_name}_win_rate": results[agent2_name] / total_games,
         "draw_rate": results["draws"] / total_games,
     }
     return rates
@@ -138,16 +138,16 @@ def run_evaluation(env: BaseEnvironment, agents: Dict[str, Agent], config: AppCo
     print("\n--- Starting Agent Evaluation ---")
     agent_names = list(agents.keys())
 
-    agent1_name = agent_names[0]
-    agent2_name = agent_names[1]
+    agent0_name = agent_names[0]
+    agent1_name = agent_names[1]
+    agent0 = agents[agent0_name]
     agent1 = agents[agent1_name]
-    agent2 = agents[agent2_name]
 
     run_test_games(
         env=env,
+        agent0_name=agent0_name,
+        agent0=agent0,
         agent1_name=agent1_name,
         agent1=agent1,
-        agent2_name=agent2_name,
-        agent2=agent2,
         num_games=config.evaluation.full_eval_num_games,
     )

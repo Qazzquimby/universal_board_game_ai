@@ -131,21 +131,15 @@ def run_training(config: AppConfig, env_name_override: str = None):
 
     # --- WandB Initialization ---
     if config.wandb.enabled:
-        try:
-            wandb.login(key=WANDB_KEY)
-            wandb.init(
-                project=config.wandb.project_name,
-                entity=config.wandb.entity or None,
-                name=config.wandb.run_name or None,
-                config=config.to_dict()
-                # mode="disabled" # Uncomment for debugging without logging online
-            )
-            logger.info("WandB initialized successfully.")
-        except Exception as e:
-            logger.error(
-                f"Failed to initialize WandB: {e}. Disabling WandB for this run."
-            )
-            config.wandb.enabled = False
+        wandb.login(key=WANDB_KEY)
+        wandb.init(
+            project=config.wandb.project_name,
+            entity=config.wandb.entity or None,
+            name=config.wandb.run_name or None,
+            config=config.to_dict()
+            # mode="disabled" # Uncomment for debugging without logging online
+        )
+        logger.info("WandB initialized successfully.")
 
     # --- Ray Initialization ---
     if not ray.is_initialized():
@@ -388,10 +382,10 @@ def run_training(config: AppConfig, env_name_override: str = None):
                 # Run games
                 eval_results = evaluation.run_test_games(
                     env=env,
-                    agent1_name="AlphaZero",
-                    agent1=agent,
-                    agent2_name=benchmark_agent_name,
-                    agent2=benchmark_agent,
+                    agent0_name="AlphaZero",
+                    agent0=agent,
+                    agent1_name=benchmark_agent_name,
+                    agent1=benchmark_agent,
                     num_games=config.evaluation.periodic_eval_num_games,
                 )
 
