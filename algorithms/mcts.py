@@ -257,7 +257,7 @@ class UCB1Selection(SelectionStrategy):
                     f"Node State Key: {current_node.state_key}\n"
                     f"Node Children Keys: {child_action_keys}\n"
                     f"Sim Env Legal Action Keys: {legal_action_keys_in_sim}\n"
-                    f"Sim Env State: {sim_env.get_observation()}"
+                    f"Sim Env State: {sim_env.get_state_with_key()}"
                 )
             assert current_node.children
 
@@ -308,7 +308,7 @@ class UniformExpansion(ExpansionStrategy):
         if node.is_expanded() or env.is_game_over():
             return
 
-        current_state = env.get_observation()
+        current_state = env.get_state_with_key()
         node.state = current_state
         node.state_key = get_state_key(current_state)
 
@@ -336,7 +336,7 @@ class UniformExpansion(ExpansionStrategy):
                 ), f"Attempting to expand action {action_key} which already exists as a child. State: {current_state}"
 
             child_env = env.copy()
-            child_state = child_env.step(action).next_state
+            child_state = child_env.step(action).next_state_with_key
             child_node = MCTSNode(parent=node, prior=uniform_prior, state=child_state)
             node.children[action_key] = child_node
 

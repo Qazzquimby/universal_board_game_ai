@@ -7,6 +7,7 @@ from environments.base import (
     StateType,
     SanityCheckState,
     ActionType,
+    StateWithKey,
 )  # Import SanityCheckState, ActionType
 
 # Define Nim-specific action type for clarity
@@ -129,13 +130,13 @@ class NimEnv(BaseEnvironment):
         self.winner = None
         self.step_count = 0
         self.last_action = None
-        return self.get_observation()
+        return self.get_state_with_key()
 
     def step(self, action: NimActionType) -> Tuple[StateType, float, bool]:
         """Take a step in the Nim game."""
         if self.is_game_over():
             # Return current state, 0 reward, and done=True if game already finished
-            return self.get_observation(), 0.0, True
+            return self.get_state_with_key(), 0.0, True
 
         pile_index, num_to_remove = action
         self.last_action = action
@@ -158,7 +159,7 @@ class NimEnv(BaseEnvironment):
         self.current_player = (self.current_player + 1) % self._num_players
 
         # reward is always 0. Terminal is determined by evaluation from winner.
-        return self.get_observation(), 0, self.done
+        return self.get_state_with_key(), 0, self.done
 
     def _is_valid_action(self, action: NimActionType) -> bool:
         """Check if an action is valid given the current piles."""
@@ -193,17 +194,18 @@ class NimEnv(BaseEnvironment):
         # Game is over if done flag is set (set correctly in step)
         return self.done
 
-    def get_observation(self) -> StateType:
+    def get_state_with_key(self) -> StateWithKey:
         """Return the current state observation."""
-        # Use a tuple for the core state (piles) to make it hashable for Q-learning keys
-        return {
-            "piles": tuple(self.piles.tolist()),  # Use tuple for hashability
-            "current_player": self.current_player,
-            "step_count": self.step_count,
-            "last_action": self.last_action,
-            "winner": self.winner,
-            "done": self.done,
-        }
+        StateWithKey.from_state(
+            {
+                "piles": tuple(self.piles.tolist()),  # Use tuple for hashability
+                "current_player": self.current_player,
+                "step_count": self.step_count,
+                "last_action": self.last_action,
+                "winner": self.winner,
+                "done": self.done,
+            }
+        )
 
     def get_winning_player(self) -> Optional[int]:
         """Return the winner, or None if draw/not over."""
@@ -244,7 +246,7 @@ class NimEnv(BaseEnvironment):
         states.append(
             SanityCheckState(
                 description="Simple winning state [1, 2, 0], P0 turn (Optimal: (1,1))",
-                state=env2.get_observation(),
+                state_with_key=env2.get_state_with_key(),
                 expected_value=1.0,
                 expected_action=(1, 1),  # Take 1 from pile 1 (index 1)
             )
@@ -257,7 +259,7 @@ class NimEnv(BaseEnvironment):
         states.append(
             SanityCheckState(
                 description="Simple losing state [1, 1, 0], P0 turn",
-                state=env3.get_observation(),
+                state_with_key=env3.get_state_with_key(),
                 expected_value=-1.0,
                 expected_action=None,  # Any move leads to a losing state, no single 'best' move to test
             )
@@ -272,7 +274,7 @@ class NimEnv(BaseEnvironment):
         states.append(
             SanityCheckState(
                 description="One pile left [0, 0, 5], P1 turn (Optimal: (2,5))",
-                state=env4.get_observation(),
+                state_with_key=env4.get_state_with_key(),
                 expected_value=1.0,
                 expected_action=(2, 5),  # Take all 5 from pile 2 (index 2)
             )

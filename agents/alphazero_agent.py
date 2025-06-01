@@ -13,7 +13,7 @@ from loguru import logger
 
 from core.agent_interface import Agent
 from environments.base import BaseEnvironment, StateType, ActionType
-from algorithms.mcts import AlphaZeroMCTS, DummyAlphaZeroNet, get_state_key
+from algorithms.mcts import DummyAlphaZeroNet
 from models.networks import AlphaZeroNet
 from core.config import AlphaZeroConfig, DATA_DIR, TrainingConfig
 
@@ -141,16 +141,19 @@ class AlphaZeroAgent(Agent):
             if leaf_env.is_game_over():
                 value = self.mcts.get_terminal_value(leaf_env)
             else:
-                leaf_state_obs = leaf_env.get_observation()
-                state_key = get_state_key(leaf_state_obs)
-
-                cached_result = self.mcts.network_cache.get(state_key)
+                leaf_state_with_key = leaf_env.get_state_with_key()
+                cached_result = self.mcts.network_cache.get(leaf_state_with_key.key)
                 if cached_result:
                     policy_np, value = cached_result
                 else:
                     # Cache miss: Predict with network
-                    policy_np, value = self.network.predict(leaf_state_obs)
-                    self.mcts.network_cache[state_key] = (policy_np, value)
+                    policy_np, value = self.network.predict(
+                        leaf_state_with_key.state_with_key
+                    )
+                    self.mcts.network_cache[leaf_state_with_key.key] = (
+                        policy_np,
+                        value,
+                    )
 
                 # 3. Expansion: Expand the leaf node using network policy priors
                 assert policy_np is not None

@@ -14,7 +14,8 @@ from algorithms.mcts import (
     EvaluationStrategy,
     BackpropagationStrategy,
     MCTSNode,
-    DEBUG, PolicyResult,
+    DEBUG,
+    PolicyResult,
 )
 from core.agent_interface import Agent
 from environments.base import BaseEnvironment, ActionType, StateWithKey
@@ -46,15 +47,19 @@ class MCTSAgent(Agent):
     def get_matching_node(self, key: int) -> Optional[MCTSNode]:
         return self._key_to_node.get(key, None)
 
+    def cache_node(self, key: int, node: MCTSNode):
+        self._key_to_node[key] = node
+
     def set_root(self, state_with_key: StateWithKey):
         matching_node = self.get_matching_node(key=state_with_key.key)
         if matching_node:
-            self.root = MCTSNode(state_with_key=state_with_key)
+            self.root = state_with_key
         else:
-            self.root = MCTSNode()
+            self.root = MCTSNode(state_with_key=state_with_key)
+            self.cache_node(key=state_with_key.key, node=self.root)
 
     def act(self, env: BaseEnvironment) -> Optional[ActionType]:
-        self.set_root(state=env.state)
+        self.set_root(state_with_key=state_with_key)
         self.search(env)
         chosen_action = self.get_policy().chosen_action
         assert chosen_action is not None
@@ -71,7 +76,7 @@ class MCTSAgent(Agent):
             The root node of the search tree after simulations.
         """
         if DEBUG:
-            current_env_state = env.get_observation()
+            current_env_state = env.get_state_with_key()
             current_env_key = get_state_key(current_env_state)
             if self.root.state is None:
                 self.root.state = current_env_state

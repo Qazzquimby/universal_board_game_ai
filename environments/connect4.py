@@ -8,6 +8,7 @@ from environments.base import (
     SanityCheckState,
     ActionType,
     ActionResult,
+    StateWithKey,
 )
 
 ColumnActionType = int
@@ -77,8 +78,7 @@ class Connect4(BaseEnvironment):
     def map_policy_index_to_action(self, index: int) -> Optional[ActionType]:
         return index
 
-    # Ensure method signatures match EnvInterface
-    def reset(self) -> StateType:
+    def reset(self) -> StateWithKey:
         """
         Reset the environment to initial state.
 
@@ -94,7 +94,7 @@ class Connect4(BaseEnvironment):
         self.last_action = None
         self.rewards = {i: 0.0 for i in range(self.num_players)}
 
-        return self.get_observation()
+        return self.get_state_with_key()
 
     def step(self, action: ColumnActionType) -> ActionResult:
         """
@@ -115,7 +115,7 @@ class Connect4(BaseEnvironment):
 
         if self.is_game_over():
             return ActionResult(
-                next_state=self.get_observation(),
+                next_state_with_key=self.get_state_with_key(),
                 reward=self.rewards.get(self.current_player, 0.0),
                 done=True,
             )
@@ -174,7 +174,7 @@ class Connect4(BaseEnvironment):
         self.current_player = (self.current_player + 1) % self.num_players
 
         return ActionResult(
-            next_state=self.get_observation(),
+            next_state_with_key=self.get_state_with_key(),
             reward=reward_for_acting_player,
             done=self.done,
         )
@@ -263,20 +263,19 @@ class Connect4(BaseEnvironment):
 
         return False  # No win found for this player on this move
 
-    # Ensure method signatures match EnvInterface
-    def get_observation(self) -> StateType:
+    def get_state_with_key(self) -> StateWithKey:
         """Get the current observation of the environment."""
-        return {
-            "board": self.board.copy(),
-            "current_player": self.current_player,
-            "step_count": self.step_count,
-            "last_action": self.last_action,
-            "rewards": self.rewards.copy(),
-            "winner": self.winner,
-            "done": self.done,
-            # Add legal actions to observation? Optional, but can be useful for some agents.
-            # "legal_actions": self.get_legal_actions()
-        }
+        return StateWithKey.from_state(
+            {
+                "board": self.board.copy(),
+                "current_player": self.current_player,
+                "step_count": self.step_count,
+                "last_action": self.last_action,
+                "rewards": self.rewards.copy(),
+                "winner": self.winner,
+                "done": self.done,
+            }
+        )
 
     # Ensure method signatures match EnvInterface
     def render(self, mode: str = "human") -> None:
@@ -383,7 +382,9 @@ class Connect4(BaseEnvironment):
         states.append(
             SanityCheckState(
                 description="Empty board, Player 0 turn",
-                state=Connect4(width=self.width, height=self.height).get_observation(),
+                state_with_key=Connect4(
+                    width=self.width, height=self.height
+                ).get_state_with_key(),
                 expected_value=0.0,
                 expected_action=None,
             )
@@ -408,7 +409,7 @@ class Connect4(BaseEnvironment):
         states.append(
             SanityCheckState(
                 description="Player 0 can win horizontally (col 3)",
-                state=env2.get_observation(),
+                state_with_key=env2.get_state_with_key(),
                 expected_value=1.0,
                 expected_action=3,
             )
@@ -435,7 +436,7 @@ class Connect4(BaseEnvironment):
         states.append(
             SanityCheckState(
                 description="Player 1 can win vertically (col 0)",
-                state=env3.get_observation(),
+                state_with_key=env3.get_state_with_key(),
                 expected_value=1.0,
                 expected_action=0,
             )
@@ -462,7 +463,7 @@ class Connect4(BaseEnvironment):
         states.append(
             SanityCheckState(
                 description="Player 0 must block P1 win (col 6)",
-                state=env4.get_observation(),
+                state_with_key=env4.get_state_with_key(),
                 # Player 0 *must* block, but doesn't guarantee a win. Outcome unclear. Use 0.0
                 # Alternatively, could argue it's slightly negative as P1 forced the block? Let's use 0.0 for simplicity.
                 # expected_value=0.0,  # Blocking doesn't guarantee win/loss

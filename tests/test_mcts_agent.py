@@ -49,7 +49,7 @@ def test_mcts_agent_act_deterministic_simple_win(nim_env_simple):
     # Agent should pick *a* legal move. Let's run it.
     env = nim_env_simple
     agent = MCTSAgent(env=env, num_simulations=20, temperature=0.0, tree_reuse=False)
-    state = env.get_observation()
+    state = env.get_state_with_key()
     policy_result = agent.act(state)  # act now returns PolicyResult or raises error
 
     assert policy_result is not None  # Should not be None if act succeeds
@@ -68,7 +68,7 @@ def test_mcts_agent_act_deterministic_simple_win(nim_env_simple):
             "done": False,
         }
     )
-    state = env.get_observation()
+    state = env.get_state_with_key()
     policy_result = agent.act(state)
     action = policy_result  # act returns the chosen action
     assert action == (0, 1)  # Must choose the only winning move
@@ -77,7 +77,7 @@ def test_mcts_agent_act_deterministic_simple_win(nim_env_simple):
 def test_mcts_agent_act_returns_legal_action(mcts_agent_nim_stochastic, nim_env_simple):
     """Test that the agent always returns a legal action."""
     env = nim_env_simple
-    state = env.get_observation()
+    state = env.get_state_with_key()
     legal_actions = env.get_legal_actions()
 
     # Run act multiple times to check stochastic selection
@@ -95,7 +95,7 @@ def test_mcts_agent_act_returns_legal_action(mcts_agent_nim_stochastic, nim_env_
 def test_mcts_agent_reset(mcts_agent_nim_deterministic, nim_env_simple):
     """Test the agent's reset method."""
     agent = mcts_agent_nim_deterministic
-    state = nim_env_simple.get_observation()
+    state = nim_env_simple.get_state_with_key()
     # Run search to populate the tree
     try:
         agent.act(state)

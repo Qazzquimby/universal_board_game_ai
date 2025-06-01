@@ -28,14 +28,14 @@ class SanityCheckState:
     """Holds data for a single sanity check case."""
 
     description: str
-    state: StateType
+    state_with_key: StateWithKey
     expected_value: Optional[float] = None
     expected_action: Optional[ActionType] = None
 
 
 @dataclass
 class ActionResult:
-    next_state: StateType  # The state observation after the action.
+    next_state_with_key: StateWithKey
     reward: float  #  The reward received by the player who just acted.
     done: bool
 
@@ -122,13 +122,7 @@ class BaseEnvironment(abc.ABC):
         pass
 
     @abc.abstractmethod
-    def get_observation(self) -> StateType:
-        """
-        Get the current state observation.
-
-        Returns:
-            The current state observation dictionary.
-        """
+    def get_state_with_key(self) -> StateWithKey:
         pass
 
     @abc.abstractmethod

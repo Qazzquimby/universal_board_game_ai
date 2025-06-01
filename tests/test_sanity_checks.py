@@ -87,9 +87,9 @@ class TestSanityChecks:
         """Runs sanity check for a single case for MCTSAgent."""
         print(f"\n--- Testing MCTS: {check_case.description} ---")
         current_env = env.copy()
-        current_env.set_state(check_case.state)
+        current_env.set_state(check_case.state_with_key)
         agent.reset()
-        chosen_action = agent.act(check_case.state)
+        chosen_action = agent.act(check_case.state_with_key)
         root_node = agent.mcts.root
 
         if not root_node or not root_node.children:
@@ -140,7 +140,7 @@ class TestSanityChecks:
         )
 
         current_env = env.copy()
-        current_env.set_state(check_case.state)
+        current_env.set_state(check_case.state_with_key)
         agent.reset()
 
         # Loading is handled by the agent based on its config (set in the test method)
@@ -152,7 +152,7 @@ class TestSanityChecks:
                     "Warning: Configured to load weights, but no weights file found or load failed. Using initial network weights."
                 )
 
-        chosen_action = agent.act(check_case.state, train=False)
+        chosen_action = agent.act(check_case.state_with_key, train=False)
         root_node = agent.mcts.root
 
         if not root_node or not root_node.children:
@@ -220,16 +220,16 @@ class TestSanityChecks:
             )
 
         try:
-            policy_np, value_np = agent.network.predict(check_case.state)
+            policy_np, value_np = agent.network.predict(check_case.state_with_key)
         except Exception as e:
             raise AssertionError(
-                f"Network prediction failed for state {check_case.state} with error: {e}"
+                f"Network prediction failed for state {check_case.state_with_key} with error: {e}"
             )
 
         print(
-            f"  State: {check_case.state.get('board', check_case.state.get('piles', 'N/A'))}"
+            f"  State: {check_case.state_with_key.get('board', check_case.state_with_key.get('piles', 'N/A'))}"
         )
-        print(f"  Player: {check_case.state['current_player']}")
+        print(f"  Player: {check_case.state_with_key['current_player']}")
         print(f"  Value Prediction: {value_np:.4f}")
 
         if check_case.expected_value is not None:
@@ -250,7 +250,7 @@ class TestSanityChecks:
             print("  (No expected value defined for comparison)")
 
         temp_env = env.copy()
-        temp_env.set_state(check_case.state)
+        temp_env.set_state(check_case.state_with_key)
         legal_actions = temp_env.get_legal_actions()
 
         if not legal_actions:

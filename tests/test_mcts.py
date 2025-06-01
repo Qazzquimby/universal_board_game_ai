@@ -106,7 +106,7 @@ def test_ucb1_select_unvisited_child(root_node, connect4_env_small):
     # Action 1 means P0 places a piece in column 1.
     # The piece (1) will be at board[3, 1] (bottom row of col 1 for a 4-row high board).
     # Current player in leaf_env will be 1.
-    leaf_env_state = selection_result.leaf_env.get_observation()
+    leaf_env_state = selection_result.leaf_env.get_state_with_key()
     assert (
         leaf_env_state["board"][env.height - 1, action_unvisited_col] == 1
     )  # Player 0's piece
@@ -174,7 +174,7 @@ def test_ucb1_select_best_score(root_node, connect4_env_small):
 
     # Check environment state corresponds to action_col1
     # P0 places piece (1) in col 1 at board[3,1] (for H=4). Player 1 to move.
-    leaf_env_state = selection_result.leaf_env.get_observation()
+    leaf_env_state = selection_result.leaf_env.get_state_with_key()
     assert leaf_env_state["board"][env.height - 1, action_col1] == 1  # Player 0's piece
     assert leaf_env_state["current_player"] == 1
 
@@ -252,7 +252,7 @@ def test_ucb1_select_path(root_node, connect4_env_small):
 
     # Expected leaf state: P0 played col 0 (board[H-1,0]=1), P1 played col 1 (board[H-1,1]=2)
     # Current player at leaf is P0.
-    leaf_env_state = selection_result.leaf_env.get_observation()
+    leaf_env_state = selection_result.leaf_env.get_state_with_key()
     expected_board = np.zeros((env.height, env.width), dtype=np.int8)
     expected_board[env.height - 1, action_r_c1] = 1  # P0's piece
     expected_board[env.height - 1, action_c1_gc1] = 2  # P1's piece
@@ -569,14 +569,14 @@ def test_rollout_evaluation_max_depth(root_node, rollout_evaluator):
             self.current_player = (self.current_player + 1) % self.num_players
 
             # Return an observation. Since board isn't changing, observation is mostly static.
-            obs = self.get_observation()
+            state_with_key = self.get_state_with_key()
             # Crucially, done must be false based on our is_game_over override
-            obs["done"] = self.is_game_over()
+            state_with_key.state["done"] = self.is_game_over()
 
             return ActionResult(
-                next_state=obs,
+                next_state_with_key=state_with_key,
                 reward=0.0,  # No rewards during this type of rollout
-                done=obs["done"],
+                done=state_with_key.state["done"],
             )
 
     # Use a board size that wouldn't fill up within max_rollout_depth if step was normal
