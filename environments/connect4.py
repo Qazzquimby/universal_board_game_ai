@@ -34,6 +34,8 @@ class Connect4(BaseEnvironment):
             num_players: Number of players (default 2).
             max_steps: Maximum number of steps before draw (default width*height + 1).
         """
+
+        super().__init__()
         self._width = width
         self._height = height
         self._num_players = num_players
@@ -78,7 +80,7 @@ class Connect4(BaseEnvironment):
     def map_policy_index_to_action(self, index: int) -> Optional[ActionType]:
         return index
 
-    def reset(self) -> StateWithKey:
+    def _reset(self) -> StateWithKey:
         """
         Reset the environment to initial state.
 
@@ -96,7 +98,7 @@ class Connect4(BaseEnvironment):
 
         return self.get_state_with_key()
 
-    def step(self, action: ColumnActionType) -> ActionResult:
+    def _step(self, action: ColumnActionType) -> ActionResult:
         """
         Take a step in the environment by dropping a piece in a column.
 
@@ -263,19 +265,17 @@ class Connect4(BaseEnvironment):
 
         return False  # No win found for this player on this move
 
-    def get_state_with_key(self) -> StateWithKey:
+    def _get_state(self) -> StateType:
         """Get the current observation of the environment."""
-        return StateWithKey.from_state(
-            {
-                "board": self.board.copy(),
-                "current_player": self.current_player,
-                "step_count": self.step_count,
-                "last_action": self.last_action,
-                "rewards": self.rewards.copy(),
-                "winner": self.winner,
-                "done": self.done,
-            }
-        )
+        return {
+            "board": self.board.copy(),
+            "current_player": self.current_player,
+            "step_count": self.step_count,
+            "last_action": self.last_action,
+            "rewards": self.rewards.copy(),
+            "winner": self.winner,
+            "done": self.done,
+        }
 
     # Ensure method signatures match EnvInterface
     def render(self, mode: str = "human") -> None:

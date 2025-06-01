@@ -40,8 +40,20 @@ class ActionResult:
     done: bool
 
 
+def mutator(method):
+    def wrapper(self, *args, **kwargs):
+        self._dirty = True
+        return method(self, *args, **kwargs)
+
+    return wrapper
+
+
 class BaseEnvironment(abc.ABC):
     """Abstract base class for game environments."""
+
+    def __init__(self):
+        self._dirty = True
+        self._state_with_key: Optional[StateWithKey] = None
 
     @property
     @abc.abstractmethod
@@ -65,17 +77,20 @@ class BaseEnvironment(abc.ABC):
         """Maps a policy vector index back to a valid environment action."""
         pass
 
-    @abc.abstractmethod
-    def reset(self) -> StateType:
+    def reset(self) -> StateWithKey:
         """
         Reset the environment to its initial state.
 
         Returns:
             The initial state observation.
         """
-        pass
+        self._dirty = True
+        return self._reset()
 
     @abc.abstractmethod
+    def _reset(self) -> StateWithKey:
+        pass
+
     def step(self, action: ActionType) -> ActionResult:
         """
         Take a step in the environment using the given action.
@@ -83,6 +98,11 @@ class BaseEnvironment(abc.ABC):
         Args:
             action: The action taken by the current player.
         """
+        self._dirty = True
+        return self._step(action)
+
+    @abc.abstractmethod
+    def _step(self, action: ActionType) -> ActionResult:
         pass
 
     @abc.abstractmethod
@@ -121,8 +141,14 @@ class BaseEnvironment(abc.ABC):
         """
         pass
 
-    @abc.abstractmethod
     def get_state_with_key(self) -> StateWithKey:
+        if self._dirty:
+            self._state_with_key = StateWithKey.from_state(self._get_state())
+        else:
+            return self._state_with_key
+
+    @abc.abstractmethod
+    def _get_state(self):
         pass
 
     @abc.abstractmethod

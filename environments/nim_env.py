@@ -31,6 +31,7 @@ class NimEnv(BaseEnvironment):
             initial_piles: List defining the number of objects in each pile at the start.
             num_players: Number of players (typically 2 for Nim).
         """
+        super().__init__()
         if initial_piles is None:
             initial_piles = [3, 5, 7]
 
@@ -122,7 +123,7 @@ class NimEnv(BaseEnvironment):
         # The caller (e.g., MCTS) should check if the reconstructed action is legal for the *current* state.
         return (pile_idx, num_removed)
 
-    def reset(self) -> StateType:
+    def _reset(self) -> StateType:
         """Reset the game to the initial pile configuration."""
         self.piles = np.array(self.initial_piles, dtype=np.int32)
         self.current_player = 0
@@ -132,7 +133,7 @@ class NimEnv(BaseEnvironment):
         self.last_action = None
         return self.get_state_with_key()
 
-    def step(self, action: NimActionType) -> Tuple[StateType, float, bool]:
+    def _step(self, action: NimActionType) -> Tuple[StateType, float, bool]:
         """Take a step in the Nim game."""
         if self.is_game_over():
             # Return current state, 0 reward, and done=True if game already finished
@@ -194,18 +195,16 @@ class NimEnv(BaseEnvironment):
         # Game is over if done flag is set (set correctly in step)
         return self.done
 
-    def get_state_with_key(self) -> StateWithKey:
+    def get_state_with_key(self) -> StateType:
         """Return the current state observation."""
-        StateWithKey.from_state(
-            {
-                "piles": tuple(self.piles.tolist()),  # Use tuple for hashability
-                "current_player": self.current_player,
-                "step_count": self.step_count,
-                "last_action": self.last_action,
-                "winner": self.winner,
-                "done": self.done,
-            }
-        )
+        return {
+            "piles": tuple(self.piles.tolist()),  # Use tuple for hashability
+            "current_player": self.current_player,
+            "step_count": self.step_count,
+            "last_action": self.last_action,
+            "winner": self.winner,
+            "done": self.done,
+        }
 
     def get_winning_player(self) -> Optional[int]:
         """Return the winner, or None if draw/not over."""

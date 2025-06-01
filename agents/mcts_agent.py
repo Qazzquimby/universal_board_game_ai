@@ -14,7 +14,6 @@ from algorithms.mcts import (
     EvaluationStrategy,
     BackpropagationStrategy,
     MCTSNode,
-    DEBUG,
     PolicyResult,
 )
 from core.agent_interface import Agent
@@ -29,6 +28,7 @@ class MCTSAgent(Agent):
         expansion_strategy: ExpansionStrategy,
         evaluation_strategy: EvaluationStrategy,
         backpropagation_strategy: BackpropagationStrategy,
+        temperature=0,
     ):
         if num_simulations <= 0:
             raise ValueError("Number of simulations must be positive.")
@@ -39,6 +39,7 @@ class MCTSAgent(Agent):
         self.backpropagation_strategy = backpropagation_strategy
 
         self.num_simulations = num_simulations
+        self.temperature = temperature
 
         self.root: MCTSNode = None
         self._tree_reuse_enabled = True
@@ -59,7 +60,7 @@ class MCTSAgent(Agent):
             self.cache_node(key=state_with_key.key, node=self.root)
 
     def act(self, env: BaseEnvironment) -> Optional[ActionType]:
-        self.set_root(state_with_key=state_with_key)
+        self.set_root(state_with_key=env.get_state_with_key())
         self.search(env)
         chosen_action = self.get_policy().chosen_action
         assert chosen_action is not None
@@ -75,14 +76,6 @@ class MCTSAgent(Agent):
         Returns:
             The root node of the search tree after simulations.
         """
-        if DEBUG:
-            current_env_state = env.get_state_with_key()
-            current_env_key = get_state_key(current_env_state)
-            if self.root.state is None:
-                self.root.state = current_env_state
-            if self.root.state_key is None:
-                self.root.state_key = current_env_key
-
         for sim_idx in range(self.num_simulations):
             sim_env = env.copy()
 
