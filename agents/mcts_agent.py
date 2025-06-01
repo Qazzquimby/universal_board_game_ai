@@ -20,8 +20,6 @@ class MCTSAgent(Agent):
         exploration_constant: float = 1.41,
         rollout_max_depth: int = 100,
         discount_factor: float = 1.0,
-        temperature: float = 0.0,
-        tree_reuse: bool = True,
     ):
         """
         Args:
@@ -29,15 +27,11 @@ class MCTSAgent(Agent):
             exploration_constant: Exploration constant (c) for UCB1 selection.
             rollout_max_depth: Max depth for random rollouts during evaluation.
             discount_factor: Discount factor for rollout rewards (usually 1.0).
-            temperature: Temperature for final action selection (0=deterministic).
-            tree_reuse: Whether to reuse the MCTS tree between moves.
         """
         if num_simulations <= 0:
             raise ValueError("Number of simulations must be positive.")
         if exploration_constant < 0:
             raise ValueError("Exploration constant cannot be negative.")
-
-        self._tree_reuse = tree_reuse
 
         selection_strategy = UCB1Selection(exploration_constant=exploration_constant)
         expansion_strategy = UniformExpansion()
@@ -53,14 +47,11 @@ class MCTSAgent(Agent):
             backpropagation_strategy=backpropagation_strategy,
             num_simulations=num_simulations,
         )
-        self.mcts_orchestrator._tree_reuse_enabled = tree_reuse
 
         self._last_action: Optional[ActionType] = None
 
     def act(self, env: BaseEnvironment) -> Optional[ActionType]:
-        self.mcts_orchestrator.set_root()
-        # todo if tree reuse .set_root(state=env.state)
-
+        self.mcts_orchestrator.set_root(state=env.state)
         self.mcts_orchestrator.search(env)
 
         chosen_action = self.mcts_orchestrator.get_policy().chosen_action

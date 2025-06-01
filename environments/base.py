@@ -1,9 +1,26 @@
 import abc
+import pickle
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, TypeVar, Tuple
 
 ActionType = TypeVar("ActionType")
 StateType = Dict[str, Any]
+
+
+@dataclass
+class StateWithKey:
+    state: StateType
+    key: int
+
+    @classmethod
+    def from_state(cls, state):
+        key = cls._get_key_for_state(state)
+        return cls(state=state, key=key)
+
+    @staticmethod
+    def _get_key_for_state(state):
+        serialized = pickle.dumps(state, protocol=pickle.HIGHEST_PROTOCOL)
+        return hash(serialized)
 
 
 @dataclass

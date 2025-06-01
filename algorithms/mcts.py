@@ -1,5 +1,6 @@
 import math
 import random
+from functools import lru_cache
 from typing import (
     List,
     Tuple,
@@ -8,55 +9,17 @@ from typing import (
 )
 
 import torch
+from cachetools import LRUCache
 from loguru import logger
 import abc
 import torch.nn as nn
 from dataclasses import dataclass, field
 
-from environments.base import ActionType, StateType, BaseEnvironment
+from environments.base import ActionType, StateType, BaseEnvironment, StateWithKey
 
 import numpy as np
 
 DEBUG = True
-
-
-def assert_states_are_equal(state1: StateType, state2: StateType):
-    """Compares two state dictionaries, handling NumPy arrays correctly."""
-    if state1.keys() != state2.keys():
-        assert False
-    for key in state1:
-        val1 = state1[key]
-        val2 = state2[key]
-        if isinstance(val1, np.ndarray) and isinstance(val2, np.ndarray):
-            if not np.array_equal(val1, val2):
-                assert False
-        elif val1 != val2:
-            assert False
-
-
-def get_state_key(s: StateType) -> str:
-    """Creates a hashable key from a state dictionary."""
-    parts = []
-    for k, v in sorted(s.items()):
-        if isinstance(v, np.ndarray):
-            parts.append(f"{k}:{hash(v.tobytes())}")
-        elif isinstance(v, (list, tuple)):
-            try:
-                parts.append(f"{k}:{hash(tuple(v))}")
-            except TypeError:
-                parts.append(f"{k}:{repr(v)}")
-        elif isinstance(v, dict):
-            parts.append(f"{k}:{get_state_key(v)}")
-        else:
-            try:
-                hash(v)
-                parts.append(f"{k}:{repr(v)}")
-            except TypeError:
-                logger.warning(
-                    f"Unhashable type in state key generation: {type(v)} for key {k}. Using repr()."
-                )
-                parts.append(f"{k}:{repr(v)}")
-            return "|".join(parts)
 
 
 class MCTSNode:
@@ -64,17 +27,13 @@ class MCTSNode:
 
     def __init__(
         self,
+        state_with_key: StateWithKey,
         parent: Optional["MCTSNode"] = None,
         prior: float = 1.0,
-        state_key: Optional[str] = None,
-        state: Optional[StateType] = None,
     ):
         self.parent = parent
         self.prior: float = prior
-        self.state_key: Optional[str] = state_key
-        self.state: Optional[StateType] = state
-        if self.state:
-            self.state_key = get_state_key(self.state)
+        self.state_with_key = state_with_key
 
         self.children: Dict[ActionType, MCTSNode] = {}
         self.visit_count: int = 0
@@ -88,14 +47,6 @@ class MCTSNode:
     def is_expanded(self) -> bool:
         """Checks if the node has been expanded (i.e., has children)."""
         return bool(self.children)
-
-    def __repr__(self) -> str:
-        """Provides a developer-friendly representation of the node."""
-        state_info = "State:Present" if self.state is not None else "State:None"
-        return (
-            f"MCTSNode(visits={self.visit_count}, value={self.value:.3f}, "
-            f"children={len(self.children)}, {state_info}, state_key='{self.state_key}')"
-        )
 
 
 @dataclass
@@ -525,16 +476,22 @@ class MCTSOrchestrator:
         self.num_simulations = num_simulations
         self.temperature = temperature
 
-        self.root: MCTSNode = MCTSNode()
+        self.root: MCTSNode = None
         self._tree_reuse_enabled = True
 
-    def set_root(self, state=None):
+        self._key_to_node = LRUCache(1024 * 8)
+
+    def get_matching_node(self, key: int) -> Optional[MCTSNode]:
+        return self._key_to_node.get(key, None)
+
+    def set_root(self, state_with_key: StateWithKey):
         """Resets the root node, discarding the existing tree."""
-        if state is None:
-            self.root = MCTSNode()
+        # todo search tree for state with matching key
+        matching_node = self.get_matching_node(key=state_with_key.key)
+        if matching_node:
+            self.root = MCTSNode(state_with_key=state_with_key)
         else:
-            # todo get node from tree with matching state key and set that to new root
-            raise NotImplementedError
+            self.root = MCTSNode()
 
     def search(self, env: BaseEnvironment) -> MCTSNode:
         """
