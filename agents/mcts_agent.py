@@ -20,6 +20,22 @@ from core.agent_interface import Agent
 from environments.base import BaseEnvironment, ActionType, StateWithKey
 
 
+class MCTSNodeCache:
+    def __init__(self):
+        self.enabled = True
+        self._key_to_node = LRUCache(1024 * 8)
+
+    def get_matching_node(self, key: int) -> Optional[MCTSNode]:
+        if self.enabled:
+            return self._key_to_node.get(key, None)
+        else:
+            return None
+
+    def cache_node(self, key: int, node: MCTSNode):
+        if self.enabled:
+            self._key_to_node[key] = node
+
+
 class MCTSAgent(Agent):
     def __init__(
         self,
@@ -42,26 +58,19 @@ class MCTSAgent(Agent):
         self.temperature = temperature
 
         self.root: MCTSNode = None
-        self._tree_reuse_enabled = True
-        self._key_to_node = LRUCache(1024 * 8)
-
-    def get_matching_node(self, key: int) -> Optional[MCTSNode]:
-        return self._key_to_node.get(key, None)
-
-    def cache_node(self, key: int, node: MCTSNode):
-        self._key_to_node[key] = node
+        self.cache = MCTSNodeCache()
 
     def set_root(self, state_with_key: StateWithKey):
-        matching_node = self.get_matching_node(key=state_with_key.key)
+        matching_node = self.cache.get_matching_node(key=state_with_key.key)
         if matching_node:
             self.root = matching_node
         else:
             self.root = MCTSNode(state_with_key=state_with_key)
-            self.cache_node(key=state_with_key.key, node=self.root)
+            self.cache.cache_node(key=state_with_key.key, node=self.root)
 
     def act(self, env: BaseEnvironment) -> Optional[ActionType]:
         self.set_root(state_with_key=env.get_state_with_key())
-        self.search(env)
+        self.search(env=env)
         chosen_action = self.get_policy().chosen_action
         assert chosen_action is not None
         return chosen_action
@@ -97,6 +106,19 @@ class MCTSAgent(Agent):
             else:
                 if not leaf_node.is_expanded():
                     self.expansion_strategy.expand(leaf_node, leaf_env)
+                    if self.cache.enabled:
+                        for action, child_node in leaf_node.children.items():
+                            matching_node = self.cache.get_matching_node(
+                                child_node.state_with_key.key
+                            )
+                            if matching_node:
+                                leaf_node.children[action] = matching_node
+                                # todo double check I'm not screwing this up.
+                                #  Maybe need to update the stats
+                            else:
+                                self.cache.cache_node(
+                                    key=child_node.state_with_key.key, node=child_node
+                                )
 
                 value = float(self.evaluation_strategy.evaluate(leaf_node, leaf_env))
 

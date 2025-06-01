@@ -2,6 +2,8 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import List, Dict, Any
 
+import wandb
+
 
 # --- Environment Configuration ---
 @dataclass
@@ -22,7 +24,7 @@ class EnvConfig:
 class MCTSConfig:
     exploration_constant: float = 1.41
     discount_factor: float = 1.0  # Discount within the search tree
-    num_simulations: int = 400
+    num_simulations: int = 100
 
 
 @dataclass
@@ -93,7 +95,7 @@ class TrainingConfig:
 # --- WandB Configuration ---
 @dataclass
 class WandBConfig:
-    enabled: bool = True  # Enable/disable WandB logging
+    enabled: bool = True
     project_name: str = "board_game_ai"
     entity: str = ""  # Your WandB username or team name (optional)
     run_name: str = ""  # Optional: Set a specific run name, otherwise auto-generated
@@ -127,6 +129,18 @@ class AppConfig:
     def to_dict(self) -> Dict[str, Any]:
         """Converts the dataclass instance to a dictionary, handling nested dataclasses."""
         return asdict(self)
+
+    def init_wandb(self):
+        if not self.wandb.enabled:
+            return
+
+        wandb.login(key=WANDB_KEY)
+        wandb.init(
+            project=self.wandb.project_name,
+            entity=self.wandb.entity or None,
+            name=self.wandb.run_name or None,
+            config=self.to_dict(),
+        )
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents

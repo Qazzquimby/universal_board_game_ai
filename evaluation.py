@@ -1,4 +1,5 @@
 import time
+from statistics import mean
 from typing import Dict, Optional
 
 from tqdm import tqdm
@@ -6,16 +7,20 @@ from tqdm import tqdm
 from core.agent_interface import Agent
 from core.config import AppConfig
 from environments.base import BaseEnvironment
+import wandb
 
 
 class GameProfiler:
     def __init__(self):
+        self.agent0_times = []
         self.agent1_times = []
-        self.agent2_times = []
 
 
 def _play_one_game(
-    env: BaseEnvironment, agent0: Agent, agent1: Agent, profiler: GameProfiler = None
+    env: BaseEnvironment,
+    agent0: Agent,
+    agent1: Agent,
+    profiler: GameProfiler = None,
 ) -> Optional[int]:
     """
     Plays a single game from the current env state.
@@ -62,6 +67,7 @@ def run_test_games(
     agent0: Agent,
     agent1_name: str,
     agent1: Agent,
+    config: AppConfig,
     num_games: int = 100,
 ):
     """
@@ -83,6 +89,8 @@ def run_test_games(
 
     profiler = GameProfiler()
 
+    config.init_wandb()
+
     for i in tqdm(range(num_games), desc=f"{agent0_name} (P0) vs {agent1_name} (P1)"):
         game_env = env.copy()
         game_env.reset()
@@ -96,7 +104,7 @@ def run_test_games(
             else:
                 results["draws"] += 1
         else:
-            winner = _play_one_game(game_env, agent1, agent0)
+            winner = _play_one_game(game_env, agent1, agent0, profiler=profiler)
             if winner == 0:
                 results[agent1_name] += 1
             elif winner == 1:
@@ -104,10 +112,23 @@ def run_test_games(
             else:
                 results["draws"] += 1
 
+    log_results = {
+        f"{agent0_name} total wins": results[agent0_name],
+        f"{agent1_name} total wins": results[agent1_name],
+        "total draws": results["draws"],
+    }
+    if profiler:
+        log_results[f"{agent0_name} total seconds"] = sum(profiler.agent0_times)
+        log_results[f"{agent1_name} total seconds"] = sum(profiler.agent1_times)
+        log_results[f"{agent0_name} avg seconds"] = mean(profiler.agent0_times)
+        log_results[f"{agent1_name} avg seconds"] = mean(profiler.agent1_times)
+
+    if config.wandb.enabled:
+        wandb.log(log_results)
+
     print(f"--- Results after {num_games} games ({agent0_name} vs {agent1_name}) ---")
-    print(f"{agent0_name} total wins: {results[agent0_name]}")
-    print(f"{agent1_name} total wins: {results[agent1_name]}")
-    print(f"Total draws: {results['draws']}")
+    for key, value in log_results.items():
+        print(f"{key}: {value}")
     print("-" * (len(f"--- Testing {agent0_name} vs {agent1_name} ---") + 5))
 
     total_games = sum(results.values())
@@ -150,4 +171,5 @@ def run_evaluation(env: BaseEnvironment, agents: Dict[str, Agent], config: AppCo
         agent1_name=agent1_name,
         agent1=agent1,
         num_games=config.evaluation.full_eval_num_games,
+        config=config,
     )

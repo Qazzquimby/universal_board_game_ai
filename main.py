@@ -17,6 +17,7 @@ def run_main(config: AppConfig):
 
 if __name__ == "__main__":
     config = AppConfig()
+    config.wandb.run_name = "new mcts with run timing"
 
     if len(sys.argv) > 1:
         config.env.name = sys.argv[1]  # e.g., python main.py Nim
