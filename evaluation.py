@@ -1,3 +1,4 @@
+import time
 from typing import Dict, Optional
 
 from tqdm import tqdm
@@ -7,7 +8,15 @@ from core.config import AppConfig
 from environments.base import BaseEnvironment
 
 
-def _play_one_game(env: BaseEnvironment, agent0: Agent, agent1: Agent) -> Optional[int]:
+class GameProfiler:
+    def __init__(self):
+        self.agent1_times = []
+        self.agent2_times = []
+
+
+def _play_one_game(
+    env: BaseEnvironment, agent0: Agent, agent1: Agent, profiler: GameProfiler = None
+) -> Optional[int]:
     """
     Plays a single game from the current env state.
     Args:
@@ -21,10 +30,20 @@ def _play_one_game(env: BaseEnvironment, agent0: Agent, agent1: Agent) -> Option
 
     while not done:
         current_player_idx = env.get_current_player()
-        if current_player_idx == 0:
-            action = agent0.act(env=env)
+
+        if profiler:
+            start = time.perf_counter()
+            if current_player_idx == 0:
+                action = agent0.act(env=env)
+                profiler.agent0_times.append(time.perf_counter() - start)
+            else:
+                action = agent1.act(env=env)
+                profiler.agent1_times.append(time.perf_counter() - start)
         else:
-            action = agent1.act(env=env)
+            if current_player_idx == 0:
+                action = agent0.act(env=env)
+            else:
+                action = agent1.act(env=env)
         assert action is not None
 
         result = env.step(action)
@@ -62,11 +81,13 @@ def run_test_games(
     print(f"\n--- Testing {agent1_name} vs {agent2_name} ---")
     results = {agent1_name: 0, agent2_name: 0, "draws": 0}
 
+    profiler = GameProfiler()
+
     for i in tqdm(range(num_games), desc=f"{agent1_name} (P0) vs {agent2_name} (P1)"):
         game_env = env.copy()
         game_env.reset()
         if i % 2 == 0:
-            winner = _play_one_game(game_env, agent1, agent2)
+            winner = _play_one_game(game_env, agent1, agent2, profiler=profiler)
 
             if winner == 0:
                 results[agent1_name] += 1
