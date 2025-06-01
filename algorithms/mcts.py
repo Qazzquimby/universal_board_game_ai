@@ -1,23 +1,20 @@
 import math
 import random
-from functools import lru_cache
 from typing import (
     List,
     Tuple,
     Optional,
     Dict,
 )
-
-import torch
-from cachetools import LRUCache
-from loguru import logger
 import abc
-import torch.nn as nn
 from dataclasses import dataclass, field
 
-from environments.base import ActionType, StateType, BaseEnvironment, StateWithKey
-
+import torch
+from loguru import logger
+import torch.nn as nn
 import numpy as np
+
+from environments.base import ActionType, BaseEnvironment, StateWithKey
 
 DEBUG = True
 
@@ -308,9 +305,12 @@ class UniformExpansion(ExpansionStrategy):
         if node.is_expanded() or env.is_game_over():
             return
 
-        current_state = env.get_state_with_key()
-        node.state = current_state
-        node.state_key = get_state_key(current_state)
+        current_state_with_key = env.get_state_with_key()
+        assert node.state_with_key.key == current_state_with_key.key
+        # node.state_with_key = current_state_with_key
+        # todo hmm. Expanding shouldnt change the state
+        # node.state = current_state_with_key
+        # node.state_key = get_state_key(current_state_with_key)
 
         legal_actions = env.get_legal_actions()
         assert legal_actions
@@ -327,17 +327,19 @@ class UniformExpansion(ExpansionStrategy):
                 if hasattr(env, "_is_valid_action"):
                     assert env._is_valid_action(
                         action
-                    ), f"Action {action} from get_legal_actions() is considered invalid by _is_valid_action() in state {current_state}"
+                    ), f"Action {action} from get_legal_actions() is considered invalid by _is_valid_action() in state {current_state_with_key}"
                 assert (
                     action_key in legal_action_keys
-                ), f"Action key {action_key} (from action {action}) not found in the initially generated legal action keys {legal_action_keys}. State: {current_state}"
+                ), f"Action key {action_key} (from action {action}) not found in the initially generated legal action keys {legal_action_keys}. State: {current_state_with_key}"
                 assert (
                     action_key not in node.children
-                ), f"Attempting to expand action {action_key} which already exists as a child. State: {current_state}"
+                ), f"Attempting to expand action {action_key} which already exists as a child. State: {current_state_with_key}"
 
             child_env = env.copy()
-            child_state = child_env.step(action).next_state_with_key
-            child_node = MCTSNode(parent=node, prior=uniform_prior, state=child_state)
+            child_state_with_key = child_env.step(action).next_state_with_key
+            child_node = MCTSNode(
+                parent=node, prior=uniform_prior, state_with_key=child_state_with_key
+            )
             node.children[action_key] = child_node
 
             if DEBUG:
@@ -350,7 +352,7 @@ class UniformExpansion(ExpansionStrategy):
         if DEBUG:
             assert (
                 len(node.children) == num_legal_actions
-            ), f"Number of children created ({len(node.children)}) does not match the number of legal actions ({num_legal_actions}). Legal actions: {legal_actions}, Children keys: {list(node.children.keys())}. State: {current_state}"
+            ), f"Number of children created ({len(node.children)}) does not match the number of legal actions ({num_legal_actions}). Legal actions: {legal_actions}, Children keys: {list(node.children.keys())}. State: {current_state_with_key}"
 
 
 class RandomRolloutEvaluation(EvaluationStrategy):
