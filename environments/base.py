@@ -144,8 +144,7 @@ class BaseEnvironment(abc.ABC):
     def get_state_with_key(self) -> StateWithKey:
         if self._dirty:
             self._state_with_key = StateWithKey.from_state(self._get_state())
-        else:
-            return self._state_with_key
+        return self._state_with_key
 
     @abc.abstractmethod
     def _get_state(self):

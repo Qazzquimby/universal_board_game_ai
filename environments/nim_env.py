@@ -195,7 +195,7 @@ class NimEnv(BaseEnvironment):
         # Game is over if done flag is set (set correctly in step)
         return self.done
 
-    def get_state_with_key(self) -> StateType:
+    def get_state(self) -> StateType:
         """Return the current state observation."""
         return {
             "piles": tuple(self.piles.tolist()),  # Use tuple for hashability

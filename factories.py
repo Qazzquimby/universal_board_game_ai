@@ -10,7 +10,7 @@ from core.config import (
 from environments.base import BaseEnvironment
 from environments.connect4 import Connect4
 from environments.nim_env import NimEnv
-from agents.mcts_agent import MCTSAgent
+from agents.mcts_agent import MCTSAgent, make_pure_mcts
 
 
 def get_environment(env_config: EnvConfig) -> BaseEnvironment:
@@ -49,9 +49,8 @@ def get_agents(env: BaseEnvironment, config: AppConfig) -> Dict[str, Agent]:
     #     az_agent.network.eval()
 
     mcts_agent_name = f"MCTS_{config.mcts.num_simulations}"
-    mcts_agent = MCTSAgent(
+    mcts_agent = make_pure_mcts(
         num_simulations=config.mcts.num_simulations,
-        exploration_constant=config.mcts.exploration_constant,
     )
 
     mcts_agent_old_name = f"MCTS_old_{config.mcts.num_simulations}"

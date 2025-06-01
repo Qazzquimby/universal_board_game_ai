@@ -54,7 +54,7 @@ class MCTSAgent(Agent):
     def set_root(self, state_with_key: StateWithKey):
         matching_node = self.get_matching_node(key=state_with_key.key)
         if matching_node:
-            self.root = state_with_key
+            self.root = matching_node
         else:
             self.root = MCTSNode(state_with_key=state_with_key)
             self.cache_node(key=state_with_key.key, node=self.root)
