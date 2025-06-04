@@ -95,7 +95,7 @@ class TrainingConfig:
 # --- WandB Configuration ---
 @dataclass
 class WandBConfig:
-    enabled: bool = True
+    enabled: bool = False
     project_name: str = "board_game_ai"
     entity: str = ""  # Your WandB username or team name (optional)
     run_name: str = ""  # Optional: Set a specific run name, otherwise auto-generated
