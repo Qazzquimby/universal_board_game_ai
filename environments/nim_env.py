@@ -135,7 +135,7 @@ class NimEnv(BaseEnvironment):
 
     def _step(self, action: NimActionType) -> Tuple[StateType, float, bool]:
         """Take a step in the Nim game."""
-        if self.is_game_over():
+        if self.done:
             # Return current state, 0 reward, and done=True if game already finished
             return self.get_state_with_key(), 0.0, True
 
@@ -189,11 +189,6 @@ class NimEnv(BaseEnvironment):
     def get_current_player(self) -> int:
         """Return the index of the current player."""
         return self.current_player
-
-    def is_game_over(self) -> bool:
-        """Check if the game has ended."""
-        # Game is over if done flag is set (set correctly in step)
-        return self.done
 
     def get_state(self) -> StateType:
         """Return the current state observation."""

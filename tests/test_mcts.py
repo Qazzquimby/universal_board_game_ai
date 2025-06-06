@@ -317,7 +317,7 @@ def test_uniform_expansion_terminal_node(root_node, connect4_env_small):
         "done": True,  # Game is over
     }
     env.set_state(state_terminal_p0_wins)
-    assert env.is_game_over()
+    assert env.done
     assert env.get_winning_player() == 0
 
     expander.expand(root_node, env)
@@ -377,7 +377,7 @@ def test_rollout_evaluation_terminal_win(
         "done": True,
     }
     env.set_state(state_terminal_p0_is_current_and_winner)
-    assert env.is_game_over()
+    assert env.done
     assert env.get_winning_player() == 0
     assert env.get_current_player() == 0
 
@@ -409,7 +409,7 @@ def test_rollout_evaluation_terminal_loss(
         "done": True,
     }
     env.set_state(state_terminal_p0_is_current_p1_wins)
-    assert env.is_game_over()
+    assert env.done
     assert env.get_winning_player() == 1
     assert env.get_current_player() == 0
 
@@ -468,7 +468,7 @@ def test_rollout_evaluation_terminal_loss(
 #         "done": False,
 #     }
 #     env.set_state(state_double_threat)
-#     assert not env.is_game_over()
+#     assert not env.done
 #     assert env.get_current_player() == 0
 #
 #     # P0 plays, e.g., blocks at (row_threat, 0) by playing in column 0.
@@ -528,7 +528,7 @@ def test_rollout_evaluation_terminal_loss(
 #         "done": True,
 #     }
 #     env.set_state(state_terminal_draw)
-#     assert env.is_game_over()
+#     assert env.done
 #     assert env.get_winning_player() is None
 #
 #     value = rollout_evaluator.evaluate(root_node, env)
@@ -543,12 +543,8 @@ def test_rollout_evaluation_max_depth(root_node, rollout_evaluator):
             # Initialize with large enough board that max_rollout_depth is hit first
             super().__init__(width=width, height=height)
 
-        def is_game_over(self) -> bool:
-            # Overridden to ensure game doesn't end by normal Connect4 rules
-            return False
-
         def get_winning_player(self) -> Optional[int]:
-            # No winner, so if is_game_over were true, it'd be a draw
+            # No winner, so if done were true, it'd be a draw
             return None
 
         def get_legal_actions(self) -> List[ActionType]:
@@ -570,8 +566,8 @@ def test_rollout_evaluation_max_depth(root_node, rollout_evaluator):
 
             # Return an observation. Since board isn't changing, observation is mostly static.
             state_with_key = self.get_state_with_key()
-            # Crucially, done must be false based on our is_game_over override
-            state_with_key.state["done"] = self.is_game_over()
+            # Crucially, done must be false based on our done override
+            state_with_key.state["done"] = self.done
 
             return ActionResult(
                 next_state_with_key=state_with_key,

@@ -115,7 +115,7 @@ class Connect4(BaseEnvironment):
             action in current_legal_actions
         ), f"Connect4.step received illegal action {action}. Legal actions: {current_legal_actions}. Board:\n{self.board}"
 
-        if self.is_game_over():
+        if self.done:
             return ActionResult(
                 next_state_with_key=self.get_state_with_key(),
                 reward=self.rewards.get(self.current_player, 0.0),
@@ -325,7 +325,7 @@ class Connect4(BaseEnvironment):
     # This helper method isn't part of the interface, keep it if useful internally
     def is_draw(self) -> bool:
         """Return whether the game ended in a draw."""
-        return self.is_game_over() and self.winner is None
+        return self.done and self.winner is None
 
     # Ensure method signatures match EnvInterface
     def get_current_player(self) -> int:

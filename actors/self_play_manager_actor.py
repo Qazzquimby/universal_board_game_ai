@@ -98,7 +98,7 @@ class SelfPlayWorkerActor:
             # Check if game is already finished *within this collection task*
             # This needs refinement - how to know if a game slot is truly done?
             # Let's assume we just keep resetting finished games within the worker.
-            if self.envs[game_idx].is_game_over() or game_idx in self.pending_requests:
+            if self.envs[game_idx].done or game_idx in self.pending_requests:
                 # If game over, it should have been reset in _handle_finished_game
                 # If still pending, wait.
                 continue

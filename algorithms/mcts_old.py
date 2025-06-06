@@ -69,7 +69,7 @@ class MCTS_Old:
         self, node: MCTSNode_Old, sim_env: BaseEnvironment
     ) -> Tuple[MCTSNode_Old, BaseEnvironment]:
         """Select child node with highest UCB score until a leaf node is reached."""
-        while node.is_expanded() and not sim_env.is_game_over():
+        while node.is_expanded() and not sim_env.done:
             parent_visits = node.visit_count
 
             child_scores = {
@@ -98,7 +98,7 @@ class MCTS_Old:
 
     def _expand(self, node: MCTSNode_Old, env: BaseEnvironment):
         """Expand the leaf node by creating children for all legal actions."""
-        if node.is_expanded() or env.is_game_over():
+        if node.is_expanded() or env.done:
             return
 
         legal_actions = env.get_legal_actions()
@@ -120,7 +120,7 @@ class MCTS_Old:
             else 100
         )
 
-        while not sim_env.is_game_over() and steps < max_steps:
+        while not sim_env.done and steps < max_steps:
             legal_actions = sim_env.get_legal_actions()
             if not legal_actions:
                 logger.warning("MCTS _rollout: Game not over, but no legal actions.")
@@ -176,7 +176,7 @@ class MCTS_Old:
             leaf_node, leaf_env_state = self._select(self.root, sim_env)
 
             # 2. Evaluation: Get the value of the leaf node.
-            if not leaf_env_state.is_game_over():
+            if not leaf_env_state.done:
                 if not leaf_node.is_expanded():
                     self._expand(leaf_node, leaf_env_state)
                 value = self._rollout(leaf_env_state)

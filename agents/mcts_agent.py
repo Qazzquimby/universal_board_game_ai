@@ -103,16 +103,9 @@ class MCTSAgent(Agent):
 
             # 2. Expansion & Evaluation
             player_at_leaf = leaf_env.get_current_player()
-            if leaf_env.done:
-                winner = leaf_env.get_winning_player()
-                if winner is None:  # draw
-                    value = 0.0
-                else:
-                    value = 1.0 if winner == player_at_leaf else -1.0
-            else:
-                if not leaf_node.is_expanded:
-                    self.expansion_strategy.expand(leaf_node, leaf_env)
-                value = float(self.evaluation_strategy.evaluate(leaf_node, leaf_env))
+            if not leaf_node.is_expanded:
+                self.expansion_strategy.expand(leaf_node, leaf_env)
+            value = float(self.evaluation_strategy.evaluate(leaf_node, leaf_env))
 
             # 3. Backpropagation
             # The value should be from the perspective of the player whose turn it was at the leaf node.

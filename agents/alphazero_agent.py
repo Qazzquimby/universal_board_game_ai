@@ -138,7 +138,7 @@ class AlphaZeroAgent(Agent):
             leaf_node, leaf_env, _ = self.mcts._select_leaf(self.mcts.root, search_env)
 
             # 2. Evaluation: Get value of the leaf node
-            if leaf_env.is_game_over():
+            if leaf_env.done:
                 value = self.mcts.get_terminal_value(leaf_env)
             else:
                 leaf_state_with_key = leaf_env.get_state_with_key()

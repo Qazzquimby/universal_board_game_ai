@@ -336,7 +336,7 @@ class UCB1Selection(SelectionStrategy):
                     best_score = score
                     best_action = action
 
-            assert best_action
+            assert best_action is not None
 
             step_result = sim_env.step(best_action)
             next_node = cache.get_matching_node(key=step_result.next_state_with_key.key)
@@ -366,6 +366,7 @@ class UniformExpansion(ExpansionStrategy):
         for action in legal_actions:
             action_key = tuple(action) if isinstance(action, list) else action
             node.edges[action_key] = Edge(prior=1.0)
+        node.is_expanded = True
 
 
 class RandomRolloutEvaluation(EvaluationStrategy):
@@ -432,7 +433,7 @@ class StandardBackpropagation(BackpropagationStrategy):
             node.num_visits += 1
             node.total_value += value_for_node
 
-            if parent_of_node and action_to_node:
+            if parent_of_node and action_to_node is not None:
                 # not start of path
                 action_key = (
                     tuple(action_to_node)

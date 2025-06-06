@@ -24,7 +24,7 @@ class EnvConfig:
 class MCTSConfig:
     exploration_constant: float = 1.41
     discount_factor: float = 1.0  # Discount within the search tree
-    num_simulations: int = 100
+    num_simulations: int = 400
 
 
 @dataclass
@@ -61,7 +61,7 @@ class AlphaZeroConfig:
 @dataclass
 class MuZeroConfig:
     # Inherit/share some params with AlphaZero? Or keep separate? Let's keep separate for now.
-    num_simulations: int = 50  # Reduced default for MuZero as it's more complex per sim
+    num_simulations: int = 20  # Reduced default for MuZero as it's more complex per sim
     cpuct: float = 1.0
     learning_rate: float = 0.001
     weight_decay: float = 0.0001
@@ -106,8 +106,8 @@ class WandBConfig:
 # --- Evaluation Configuration ---
 @dataclass
 class EvaluationConfig:
-    full_eval_num_games: int = 50
-    benchmark_mcts_simulations: int = 100
+    full_eval_num_games: int = 20
+    benchmark_mcts_simulations: int = 400
     run_periodic_evaluation: bool = True
     periodic_eval_frequency: int = 4
     periodic_eval_num_games: int = 30
