@@ -99,7 +99,7 @@ def test_mcts_agent_reset(mcts_agent_nim_deterministic, nim_env_simple):
     # Run search to populate the tree
     try:
         agent.act(state)
-        assert agent.mcts_orchestrator.root.visit_count > 0
+        assert agent.mcts_orchestrator.root.num_visits > 0
         assert agent._last_action is not None
     except ValueError:
         # If act raises ValueError (e.g., from get_policy), the test might still pass
@@ -110,6 +110,6 @@ def test_mcts_agent_reset(mcts_agent_nim_deterministic, nim_env_simple):
     agent.reset()
 
     # Check if orchestrator root and last action are reset
-    assert agent.mcts_orchestrator.root.visit_count == 0
+    assert agent.mcts_orchestrator.root.num_visits == 0
     assert not agent.mcts_orchestrator.root.children  # Root should be fresh
     assert agent._last_action is None

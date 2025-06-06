@@ -55,6 +55,8 @@ class BaseEnvironment(abc.ABC):
         self._dirty = True
         self._state_with_key: Optional[StateWithKey] = None
 
+        self.done = False  # is game currently over
+
     @property
     @abc.abstractmethod
     def observation_tensor_shape(self) -> Tuple[int, ...]:
@@ -128,16 +130,6 @@ class BaseEnvironment(abc.ABC):
 
         Returns:
             The current player index (e.g., 0 or 1).
-        """
-        pass
-
-    @abc.abstractmethod
-    def is_game_over(self) -> bool:
-        """
-        Check if the game has ended.
-
-        Returns:
-            True if the game is over, False otherwise.
         """
         pass
 

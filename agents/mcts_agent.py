@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Dict
 
 import numpy as np
 from cachetools import LRUCache
@@ -60,7 +60,10 @@ class MCTSAgent(Agent):
         self.root: MCTSNode = None
         self.cache = MCTSNodeCache()
 
-    def set_root(self, state_with_key: StateWithKey):
+    def _ensure_state_is_root(self, state_with_key: StateWithKey):
+        if self.root and self.root.state_with_key.key == state_with_key.key:
+            return  # already root
+
         matching_node = self.cache.get_matching_node(key=state_with_key.key)
         if matching_node:
             self.root = matching_node
@@ -69,11 +72,10 @@ class MCTSAgent(Agent):
             self.cache.cache_node(key=state_with_key.key, node=self.root)
 
     def act(self, env: BaseEnvironment) -> Optional[ActionType]:
-        self.set_root(state_with_key=env.get_state_with_key())
+        self._ensure_state_is_root(state_with_key=env.get_state_with_key())
         self.search(env=env)
-        chosen_action = self.get_policy().chosen_action
-        assert chosen_action is not None
-        return chosen_action
+        policy_result = self.get_policy()
+        return policy_result.chosen_action
 
     def search(self, env: BaseEnvironment) -> MCTSNode:
         """
@@ -85,46 +87,38 @@ class MCTSAgent(Agent):
         Returns:
             The root node of the search tree after simulations.
         """
+        self._ensure_state_is_root(state_with_key=env.get_state_with_key())
+
         for sim_idx in range(self.num_simulations):
             sim_env = env.copy()
 
             # 1. Selection: Find a leaf node using the selection strategy.
             #    The strategy modifies sim_env to match the leaf node's state.
-            selection_result = self.selection_strategy.select(self.root, sim_env)
+            selection_result = self.selection_strategy.select(
+                node=self.root, sim_env=sim_env, cache=self.cache
+            )
             path = selection_result.path
             leaf_node = selection_result.leaf_node
             leaf_env = selection_result.leaf_env
 
             # 2. Expansion & Evaluation
             player_at_leaf = leaf_env.get_current_player()
-            if leaf_env.is_game_over():
+            if leaf_env.done:
                 winner = leaf_env.get_winning_player()
                 if winner is None:  # draw
                     value = 0.0
                 else:
                     value = 1.0 if winner == player_at_leaf else -1.0
             else:
-                if not leaf_node.is_expanded():
+                if not leaf_node.is_expanded:
                     self.expansion_strategy.expand(leaf_node, leaf_env)
-                    if self.cache.enabled:
-                        for action, child_node in leaf_node.children.items():
-                            matching_node = self.cache.get_matching_node(
-                                child_node.state_with_key.key
-                            )
-                            if matching_node:
-                                leaf_node.children[action] = matching_node
-                                # todo double check I'm not screwing this up.
-                                #  Maybe need to update the stats
-                            else:
-                                self.cache.cache_node(
-                                    key=child_node.state_with_key.key, node=child_node
-                                )
-
                 value = float(self.evaluation_strategy.evaluate(leaf_node, leaf_env))
 
             # 3. Backpropagation
             # The value should be from the perspective of the player whose turn it was at the leaf node.
-            self.backpropagation_strategy.backpropagate(path, value, player_at_leaf)
+            self.backpropagation_strategy.backpropagate(
+                path=path, value=value, player_at_leaf=player_at_leaf
+            )
         return self.root
 
     def get_policy(self) -> PolicyResult:
@@ -139,52 +133,36 @@ class MCTSAgent(Agent):
                         after simulations, indicating an issue (e.g., insufficient search
                         or problem during MCTS phases).
         """
-        assert self.root.children
+        assert self.root
 
-        action_visits = {
-            action: child.visit_count for action, child in self.root.children.items()
+        action_visits: Dict[ActionType, int] = {
+            action: edge.num_visits for action, edge in self.root.edges.items()
         }
 
-        valid_actions_visits = {a: v for a, v in action_visits.items() if v > 0}
-        assert valid_actions_visits
-
-        actions = list(valid_actions_visits.keys())
-        visits = np.array(list(valid_actions_visits.values()), dtype=np.float64)
-
-        probabilities = {}
+        actions = list(action_visits.keys())
+        visits = np.array(
+            [action_visits[action] for action in actions], dtype=np.float64
+        )
 
         if self.temperature == 0:
             best_action_index = np.argmax(visits)
             chosen_action = actions[best_action_index]
-            for i, act in enumerate(actions):
-                probabilities[act] = 1.0 if i == best_action_index else 0.0
+            probabilities = {
+                act: (1.0 if act == chosen_action else 0.0) for act in actions
+            }
         else:
-            assert self.temperature > 0
-
             log_visits = np.log(visits + 1e-10)
-            log_probs = log_visits / self.temperature
-            log_probs -= np.max(log_probs)
-            exp_probs = np.exp(log_probs)
-            probs_values = exp_probs / np.sum(exp_probs)
+            scaled_log_visits = log_visits / self.temperature
+            scaled_log_visits -= np.max(scaled_log_visits)
+            exp_scaled_log_visits = np.exp(scaled_log_visits)
 
-            probs_values /= np.sum(probs_values)
-            if not np.isclose(np.sum(probs_values), 1.0):
-                logger.warning(
-                    f"Probabilities sum to {np.sum(probs_values)} after normalization. Re-normalizing."
-                )
-                probs_values /= np.sum(probs_values)
-
-            for act, prob in zip(actions, probs_values):
-                probabilities[act] = prob
+            probs_values = exp_scaled_log_visits / np.sum(exp_scaled_log_visits)
 
             chosen_action_index = np.random.choice(len(actions), p=probs_values)
             chosen_action = actions[chosen_action_index]
 
-        for zero_visit_action in action_visits:
-            if zero_visit_action not in probabilities:
-                probabilities[zero_visit_action] = 0.0
+            probabilities = {act: prob for act, prob in zip(actions, probs_values)}
 
-        assert chosen_action is not None
         return PolicyResult(
             chosen_action=chosen_action,
             action_probabilities=probabilities,

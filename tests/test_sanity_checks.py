@@ -113,7 +113,7 @@ class TestSanityChecks:
             ), f"Expected action {check_case.expected_action} but got {chosen_action}"
 
         visit_counts = np.array(
-            [child.visit_count for child in root_node.children.values()]
+            [child.num_visits for child in root_node.children.values()]
         )
         actions = list(root_node.children.keys())
         sorted_visits = sorted(
@@ -176,7 +176,7 @@ class TestSanityChecks:
             ), f"Expected action {check_case.expected_action} but got {chosen_action}"
 
         visit_counts = np.array(
-            [child.visit_count for child in root_node.children.values()]
+            [child.num_visits for child in root_node.children.values()]
         )
         actions = list(root_node.children.keys())
         sorted_visits = sorted(

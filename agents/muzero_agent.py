@@ -92,7 +92,7 @@ class MuZeroAgent(Agent):
             return random.choice(legal_actions) if legal_actions else None
 
         visit_counts = np.array(
-            [child.visit_count for child in root_node.children.values()]
+            [child.num_visits for child in root_node.children.values()]
         )
         actions = list(root_node.children.keys())
 

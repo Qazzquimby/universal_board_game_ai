@@ -47,14 +47,14 @@ def test_ucb1_score_child():
     # Score = -Q(child) + C * P(child) * sqrt(log(N(parent)) / N(child))
     # Score = -0.4 + sqrt(2) * 0.5 * sqrt(log(10) / 5)
     expected_score_visited = -0.4 + math.sqrt(2) * 0.5 * math.sqrt(math.log(10) / 5)
-    assert selector._score_child(child_visited, parent.visit_count) == pytest.approx(
+    assert selector._score_edge(child_visited, parent.visit_count) == pytest.approx(
         expected_score_visited
     )
 
     child_unvisited = MCTSNode(parent=parent, prior=0.5)
     child_unvisited.visit_count = 0
     # Score for unvisited should be infinity
-    assert selector._score_child(child_unvisited, parent.visit_count) == float("inf")
+    assert selector._score_edge(child_unvisited, parent.visit_count) == float("inf")
 
 
 def test_ucb1_select_unvisited_child(root_node, connect4_env_small):
@@ -285,7 +285,7 @@ def test_uniform_expansion(root_node, connect4_env_small):
         child = root_node.children[action_key]
         assert child.parent == root_node
         assert child.prior == pytest.approx(expected_prior)
-        assert child.visit_count == 0
+        assert child.num_visits == 0
         assert child.total_value == 0.0
         assert not child.is_expanded()
 

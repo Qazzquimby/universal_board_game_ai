@@ -318,12 +318,6 @@ class Connect4(BaseEnvironment):
         return valid_actions
 
     # Ensure method signatures match EnvInterface
-    def is_game_over(self) -> bool:
-        """Return whether the game is over."""
-        # Game is over if done flag is set. Check for no legal actions might be redundant if done is set correctly.
-        return self.done
-
-    # Ensure method signatures match EnvInterface
     def get_winning_player(self) -> Optional[int]:
         """Return the winning player number, or None if no winner."""
         return self.winner
