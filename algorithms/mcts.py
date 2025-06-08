@@ -192,17 +192,8 @@ class EvaluationStrategy(abc.ABC):
 class BackpropagationStrategy(abc.ABC):
     @abc.abstractmethod
     def backpropagate(
-        self, path: SearchPath, value: float, player_at_leaf: int
+        self, path: SearchPath, player_to_value: Dict[int, float]
     ) -> None:
-        """
-        Update statistics of nodes along the path based on the evaluation result.
-
-        Args:
-            path: The list of nodes from the root to the evaluated leaf (inclusive).
-            value: The value obtained from the evaluation (e.g., rollout result or network value).
-                   This value should be from the perspective of the player whose turn it was at the leaf node.
-            player_at_leaf: The player whose turn it was at the leaf node. (Not strictly needed if value perspective is consistent)
-        """
         pass
 
 
@@ -415,23 +406,17 @@ class StandardBackpropagation(BackpropagationStrategy):
     """Updates node statistics by backpropagating the evaluation value."""
 
     def backpropagate(
-        self,
-        path: SearchPath,
-        value: float,
-        player_at_leaf: int,
+        self, path: SearchPath, player_to_value: Dict[int, float]
     ) -> None:
-        """
-        Backpropagate the evaluated value up the tree, updating node statistics.
-        Assumes `value` is from the perspective of the player whose turn it was at the leaf node.
-        """
-        value_for_node = value
+        # scrap "value" and have player_to_value dict.
 
         for i in range(len(path)):
             node, action_to_node, parent_of_node = path.get_step_details(
                 steps_from_end=i
             )
+            acting_player = node.state_with_key.state["current_player"]  # safe?
             node.num_visits += 1
-            node.total_value += value_for_node
+            node.total_value += player_to_value.get(acting_player)
 
             if parent_of_node and action_to_node is not None:
                 # not start of path
@@ -443,11 +428,9 @@ class StandardBackpropagation(BackpropagationStrategy):
 
                 edge_to_update = parent_of_node.edges[action_key]
                 edge_to_update.num_visits += 1
-                edge_to_update.total_value += -value
-
-            # todo make this work for games what dont alternate players each action
-
-            value_for_node *= -1.0
+                edge_to_update.total_value += player_to_value.get(
+                    parent_of_node.state_with_key.state["current_player"]
+                )
 
 
 @dataclass

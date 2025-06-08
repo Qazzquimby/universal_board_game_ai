@@ -1,3 +1,12 @@
+# Immediate todo
+
+The current new implementation loses to the old and I can't figure out why.
+Make a tictactoe env or something else that doesn't need many sims to converge correctly.
+Maybe replace rollout with something more deterministic and fast to watch
+
+
+
+  
 The goal is to create a universal board game engine which makes it easy (as it can be) to define any
 board game, up to and including extremely complex board games like MtG.
 The engine then automatically designs, parameterizes, and trains a powerful AI model to play the

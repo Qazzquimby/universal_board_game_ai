@@ -106,11 +106,17 @@ class MCTSAgent(Agent):
             if not leaf_node.is_expanded:
                 self.expansion_strategy.expand(leaf_node, leaf_env)
             value = float(self.evaluation_strategy.evaluate(leaf_node, leaf_env))
+            player_to_value = {}
+            for player in range(env.num_players):
+                if player == player_at_leaf:
+                    player_to_value[player] = value
+                else:
+                    player_to_value[player] = -value
 
             # 3. Backpropagation
             # The value should be from the perspective of the player whose turn it was at the leaf node.
             self.backpropagation_strategy.backpropagate(
-                path=path, value=value, player_at_leaf=player_at_leaf
+                path=path, player_to_value=player_to_value
             )
         return self.root
 
