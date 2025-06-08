@@ -36,6 +36,9 @@ class MCTSNodeCache:
             self._key_to_node[key] = node
 
 
+EARLY_STOP_IF_CHANGE_IMPOSSIBLE_CHECK_FREQUENCY = 50
+
+
 class MCTSAgent(Agent):
     def __init__(
         self,
@@ -90,6 +93,23 @@ class MCTSAgent(Agent):
         self._ensure_state_is_root(state_with_key=env.get_state_with_key())
 
         for sim_idx in range(self.num_simulations):
+            if (
+                sim_idx
+                and EARLY_STOP_IF_CHANGE_IMPOSSIBLE_CHECK_FREQUENCY
+                and sim_idx % EARLY_STOP_IF_CHANGE_IMPOSSIBLE_CHECK_FREQUENCY == 0
+            ):
+                visit_counts = sorted(
+                    [edge.num_visits for edge in self.root.edges.values()]
+                )
+                if len(visit_counts) < 2:
+                    break
+                max_visits = visit_counts[-1]
+                second_most_visits = visit_counts[-2]
+                sims_needed_to_change_mind = max_visits - second_most_visits
+                remaining_sims = self.num_simulations - sim_idx
+                if remaining_sims < sims_needed_to_change_mind:
+                    break
+
             sim_env = env.copy()
 
             # 1. Selection: Find a leaf node using the selection strategy.

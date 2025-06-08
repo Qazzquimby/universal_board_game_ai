@@ -95,10 +95,10 @@ class TrainingConfig:
 # --- WandB Configuration ---
 @dataclass
 class WandBConfig:
-    enabled: bool = False
+    enabled: bool = True
     project_name: str = "board_game_ai"
     entity: str = ""  # Your WandB username or team name (optional)
-    run_name: str = ""  # Optional: Set a specific run name, otherwise auto-generated
+    run_name: str = "add stop on impossible"  # Optional: Set a specific run name, otherwise auto-generated
     log_freq: int = 1  # Log metrics every N iterations
     log_config: bool = True  # Log the entire AppConfig to WandB
 

@@ -408,8 +408,6 @@ class StandardBackpropagation(BackpropagationStrategy):
     def backpropagate(
         self, path: SearchPath, player_to_value: Dict[int, float]
     ) -> None:
-        # scrap "value" and have player_to_value dict.
-
         for i in range(len(path)):
             node, action_to_node, parent_of_node = path.get_step_details(
                 steps_from_end=i
