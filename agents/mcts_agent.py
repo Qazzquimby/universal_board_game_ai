@@ -195,7 +195,7 @@ def make_pure_mcts(num_simulations):
         selection_strategy=UCB1Selection(exploration_constant=1.41),
         expansion_strategy=UniformExpansion(),
         evaluation_strategy=RandomRolloutEvaluation(
-            max_rollout_depth=100, discount_factor=1
+            max_rollout_depth=100, discount_factor=0.98
         ),
         backpropagation_strategy=StandardBackpropagation(),
     )

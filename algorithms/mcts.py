@@ -399,6 +399,8 @@ class RandomRolloutEvaluation(EvaluationStrategy):
         else:
             value = -1.0
 
+        value *= self.discount_factor**steps
+
         return value
 
 
