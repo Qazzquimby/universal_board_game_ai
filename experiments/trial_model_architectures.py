@@ -138,8 +138,12 @@ class ResidualBlock(nn.Module):
 
     def forward(self, x):
         residual = x
-        out = F.relu(self.bn1(self.conv1(x)))
-        out = self.bn2(self.conv2(out))
+        # Standard residual block: Conv -> BN -> ReLU -> Conv -> BN -> Add -> ReLU
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = F.relu(out)
+        out = self.conv2(out)
+        out = self.bn2(out)
         out += residual
         out = F.relu(out)
         return out
@@ -178,6 +182,7 @@ def train_and_evaluate(model, model_name, train_loader, test_loader):
     for epoch in range(NUM_EPOCHS):
         model.train()
         total_train_loss, total_train_policy_acc, total_train_value_mse = 0, 0, 0
+        total_train_policy_loss, total_train_value_loss = 0, 0
         train_batches = 0
 
         for inputs, policy_labels, value_labels in train_loader:
@@ -192,6 +197,8 @@ def train_and_evaluate(model, model_name, train_loader, test_loader):
             optimizer.step()
 
             total_train_loss += loss.item()
+            total_train_policy_loss += loss_p.item()
+            total_train_value_loss += loss_v.item()
             _, predicted_policies = torch.max(policy_logits, 1)
             total_train_policy_acc += (
                 (predicted_policies == policy_labels).int().sum().item()
@@ -203,6 +210,7 @@ def train_and_evaluate(model, model_name, train_loader, test_loader):
 
         model.eval()
         total_test_loss, total_test_policy_acc, total_test_value_mse = 0, 0, 0
+        total_test_policy_loss, total_test_value_loss = 0, 0
         test_batches = 0
         with torch.no_grad():
             for inputs, policy_labels, value_labels in test_loader:
@@ -212,6 +220,8 @@ def train_and_evaluate(model, model_name, train_loader, test_loader):
                 loss = loss_p + loss_v
 
                 total_test_loss += loss.item()
+                total_test_policy_loss += loss_p.item()
+                total_test_value_loss += loss_v.item()
                 _, predicted_policies = torch.max(policy_logits, 1)
                 total_test_policy_acc += (
                     (predicted_policies == policy_labels).int().sum().item()
@@ -222,25 +232,36 @@ def train_and_evaluate(model, model_name, train_loader, test_loader):
                 test_batches += 1
 
         train_loss = total_train_loss / train_batches
+        train_policy_loss = total_train_policy_loss / train_batches
+        train_value_loss = total_train_value_loss / train_batches
         train_acc = total_train_policy_acc / len(train_loader.dataset)
         train_mse = total_train_value_mse / train_batches
 
         test_loss = total_test_loss / test_batches
+        test_policy_loss = total_test_policy_loss / test_batches
+        test_value_loss = total_test_value_loss / test_batches
         test_acc = total_test_policy_acc / len(test_loader.dataset)
         test_mse = total_test_value_mse / test_batches
 
         print(
-            f"Epoch {epoch+1}/{NUM_EPOCHS} | Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}, Train MSE: {train_mse:.4f} | "
-            f"Test Loss: {test_loss:.4f}, Test Acc: {test_acc:.4f}, Test MSE: {test_mse:.4f}"
+            f"Epoch {epoch+1}/{NUM_EPOCHS} | "
+            f"Train Loss: {train_loss:.4f} (P: {train_policy_loss:.4f}, V: {train_value_loss:.4f}), "
+            f"Train Acc: {train_acc:.4f}, Train MSE: {train_mse:.4f} | "
+            f"Test Loss: {test_loss:.4f} (P: {test_policy_loss:.4f}, V: {test_value_loss:.4f}), "
+            f"Test Acc: {test_acc:.4f}, Test MSE: {test_mse:.4f}"
         )
 
         results.append(
             {
                 "epoch": epoch + 1,
                 "train_loss": train_loss,
+                "train_policy_loss": train_policy_loss,
+                "train_value_loss": train_value_loss,
                 "train_acc": train_acc,
                 "train_mse": train_mse,
                 "test_loss": test_loss,
+                "test_policy_loss": test_policy_loss,
+                "test_value_loss": test_value_loss,
                 "test_acc": test_acc,
                 "test_mse": test_mse,
             }
