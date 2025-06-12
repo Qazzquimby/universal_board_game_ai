@@ -28,10 +28,11 @@ from environments.base import BaseEnvironment
 from environments.connect4 import Connect4
 
 # --- Constants ---
-TARGET_NUM_STATES = 50000
-NUM_SIMULATIONS_PER_MOVE = 50
-NUM_INITIAL_RANDOM_MOVES = 10  # 5 per player
-OUTPUT_DIR = Path("data/connect_4_states/pure_mcts")
+TARGET_NUM_STATES = 15_000
+
+NUM_SIMULATIONS_PER_MOVE = 800
+NUM_INITIAL_RANDOM_MOVES = 10
+OUTPUT_DIR = Path("../data/connect_4_states/pure_mcts")
 OUTPUT_FILE = OUTPUT_DIR / "mcts_generated_states.json"
 
 
@@ -61,7 +62,7 @@ def _play_and_collect_one_game(
     # 2. Play with MCTS and collect data points
     game_data_points = []
     done = False
-    while not done:
+    while not env.done:
         current_action_history_str = "".join(action_history)
         current_player = env.get_current_player()
 
@@ -81,7 +82,6 @@ def _play_and_collect_one_game(
 
         result = env.step(action)
         action_history.append(str(action))
-        done = result.done
 
     # 3. Add final game result to all data points from this game
     winner = env.get_winning_player()  # Can be 0, 1, or None for a draw
