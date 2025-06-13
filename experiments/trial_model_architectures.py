@@ -1,4 +1,5 @@
 import json
+import json
 import time
 from pathlib import Path
 import torch
@@ -10,6 +11,7 @@ import numpy as np
 from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 import pandas as pd
+import wandb
 from torch_geometric.data import Batch, HeteroData
 from torch_geometric.nn import HGTConv, global_mean_pool
 
@@ -216,19 +218,17 @@ def construct_graph_data(board_tensor):
 
 
 class Connect4GraphDataset(Dataset):
-    def __init__(self, inputs, policy_labels, value_labels):
-        self.inputs = inputs
+    def __init__(self, graphs, policy_labels, value_labels):
+        self.graphs = graphs
         self.policy_labels = torch.from_numpy(policy_labels).long()
         self.value_labels = torch.from_numpy(value_labels)
 
     def __len__(self):
-        return len(self.inputs)
+        return len(self.graphs)
 
     def __getitem__(self, idx):
-        board_tensor = torch.from_numpy(self.inputs[idx])
-        graph_data = construct_graph_data(board_tensor)
         return (
-            graph_data,
+            self.graphs[idx],
             self.policy_labels[idx],
             self.value_labels[idx],
         )
@@ -372,12 +372,20 @@ def train_and_evaluate(model, model_name, train_loader, test_loader):
         test_acc = total_test_policy_acc / len(test_loader.dataset)
         test_mse = total_test_value_mse / test_batches
 
-        print(
-            f"Epoch {epoch+1}/{MAX_EPOCHS} | "
-            f"Train Loss: {train_loss:.4f} (P: {train_policy_loss:.4f}, V: {train_value_loss:.4f}), "
-            f"Train Acc: {train_acc:.4f}, Train MSE: {train_mse:.4f} | "
-            f"Test Loss: {test_loss:.4f} (P: {test_policy_loss:.4f}, V: {test_value_loss:.4f}), "
-            f"Test Acc: {test_acc:.4f}, Test MSE: {test_mse:.4f}"
+        wandb.log(
+            {
+                "epoch": epoch + 1,
+                "train_loss": train_loss,
+                "train_policy_loss": train_policy_loss,
+                "train_value_loss": train_value_loss,
+                "train_acc": train_acc,
+                "train_mse": train_mse,
+                "test_loss": test_loss,
+                "test_policy_loss": test_policy_loss,
+                "test_value_loss": test_value_loss,
+                "test_acc": test_acc,
+                "test_mse": test_mse,
+            }
         )
 
         results.append(
@@ -407,6 +415,12 @@ def train_and_evaluate(model, model_name, train_loader, test_loader):
             break
 
     training_time = time.time() - start_time
+    final_epoch = len(results)
+    final_results = results[-1]
+    print(f"Converged after {final_epoch} epochs.")
+    print(
+        f"Final Results | Test Loss: {final_results['test_loss']:.4f}, Test Acc: {final_results['test_acc']:.4f}, Test MSE: {final_results['test_mse']:.4f}"
+    )
     return pd.DataFrame(results), training_time
 
 
@@ -427,15 +441,34 @@ def main():
 
     all_results = {}
     for name, model in models_to_train.items():
+        wandb.init(
+            project="connect4_arch_comparison",
+            name=name,
+            config={
+                "learning_rate": LEARNING_RATE,
+                "batch_size": BATCH_SIZE,
+                "architecture": name,
+            },
+        )
         model.to(DEVICE)
         results_df, training_time = train_and_evaluate(
             model, name, train_loader, test_loader
         )
         all_results[name] = {"df": results_df, "time": training_time}
 
+    print("\n--- Pre-processing data for GraphNet ---")
+    train_graphs = [
+        construct_graph_data(torch.from_numpy(board))
+        for board in tqdm(X_train, desc="Processing train graphs")
+    ]
+    test_graphs = [
+        construct_graph_data(torch.from_numpy(board))
+        for board in tqdm(X_test, desc="Processing test graphs")
+    ]
+
     print("\n--- Setting up Graph Model ---")
-    graph_train_dataset = Connect4GraphDataset(X_train, p_train, v_train)
-    graph_test_dataset = Connect4GraphDataset(X_test, p_test, v_test)
+    graph_train_dataset = Connect4GraphDataset(train_graphs, p_train, v_train)
+    graph_test_dataset = Connect4GraphDataset(test_graphs, p_test, v_test)
     graph_train_loader = DataLoader(
         graph_train_dataset,
         batch_size=BATCH_SIZE,
@@ -449,11 +482,21 @@ def main():
         collate_fn=pyg_collate_fn,
     )
 
+    wandb.init(
+        project="connect4_arch_comparison",
+        name="GraphNet",
+        config={
+            "learning_rate": LEARNING_RATE,
+            "batch_size": BATCH_SIZE,
+            "architecture": "GraphNet",
+        },
+    )
     graph_model = GraphNet().to(DEVICE)
     results_df, training_time = train_and_evaluate(
         graph_model, "GraphNet", graph_train_loader, graph_test_loader
     )
     all_results["GraphNet"] = {"df": results_df, "time": training_time}
+    wandb.finish()
 
     print("\n--- Final Results Summary ---")
     for name, results in all_results.items():
