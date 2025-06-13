@@ -12,14 +12,14 @@ from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 import pandas as pd
 import wandb
-from torch_geometric.data import Batch, HeteroData
-from torch_geometric.nn import HGTConv, global_mean_pool
+from torch_geometric.data import Batch, Data, HeteroData
+from torch_geometric.nn import GATConv, HGTConv, global_add_pool, global_mean_pool
 
 from environments.connect4 import Connect4
 
 BOARD_HEIGHT = 6
 BOARD_WIDTH = 7
-MAX_EPOCHS = 50
+MAX_EPOCHS = 500
 LEARNING_RATE = 0.001
 BATCH_SIZE = 256
 EARLY_STOPPING_PATIENCE = 3
@@ -244,9 +244,16 @@ def pyg_collate_fn(batch):
 
 
 class GraphNet(nn.Module):
-    def __init__(self, hidden_channels=64, num_heads=4, num_layers=2):
+    def __init__(
+        self,
+        hidden_channels=64,
+        num_heads=4,
+        num_layers=2,
+        pooling_fn=global_mean_pool,
+    ):
         super().__init__()
         self.hidden_channels = hidden_channels
+        self.pooling = pooling_fn
 
         node_types = ["cell"]
         edge_types = [
@@ -280,7 +287,7 @@ class GraphNet(nn.Module):
 
         cell_features = x_dict["cell"]
 
-        graph_embedding = global_mean_pool(cell_features, data["cell"].batch)
+        graph_embedding = self.pooling(cell_features, data["cell"].batch)
 
         x = F.relu(self.fc1(graph_embedding))
         policy_logits = self.policy_head(x)
@@ -289,10 +296,86 @@ class GraphNet(nn.Module):
         return policy_logits, value
 
 
-def train_and_evaluate(model, model_name, train_loader, test_loader):
+def construct_homogeneous_graph_data(board_tensor):
+    p1_pieces = board_tensor[0].numpy()
+    p2_pieces = board_tensor[1].numpy()
+
+    node_features = []
+    for r in range(BOARD_HEIGHT):
+        for c in range(BOARD_WIDTH):
+            is_p1 = p1_pieces[r, c] == 1
+            is_p2 = p2_pieces[r, c] == 1
+            is_empty = not is_p1 and not is_p2
+            node_features.append([float(is_empty), float(is_p1), float(is_p2)])
+
+    directions = {
+        "N": (-1, 0),
+        "NE": (-1, 1),
+        "E": (0, 1),
+        "SE": (1, 1),
+        "S": (1, 0),
+        "SW": (1, -1),
+        "W": (0, -1),
+        "NW": (-1, -1),
+    }
+    all_sources, all_dests = [], []
+    for name, (dr, dc) in directions.items():
+        for r in range(BOARD_HEIGHT):
+            for c in range(BOARD_WIDTH):
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < BOARD_HEIGHT and 0 <= nc < BOARD_WIDTH:
+                    all_sources.append(r * BOARD_WIDTH + c)
+                    all_dests.append(nr * BOARD_WIDTH + nc)
+
+    edge_index = torch.tensor([all_sources, all_dests], dtype=torch.long)
+    return Data(x=torch.tensor(node_features, dtype=torch.float), edge_index=edge_index)
+
+
+class GATNet(nn.Module):
+    def __init__(
+        self,
+        in_channels=3,
+        hidden_channels=64,
+        num_layers=2,
+        num_heads=4,
+        pooling_fn=global_mean_pool,
+    ):
+        super().__init__()
+        self.pooling = pooling_fn
+        self.gat_layers = nn.ModuleList()
+
+        self.gat_layers.append(GATConv(in_channels, hidden_channels, heads=num_heads))
+
+        for _ in range(num_layers - 1):
+            self.gat_layers.append(
+                GATConv(hidden_channels * num_heads, hidden_channels, heads=num_heads)
+            )
+
+        self.fc1 = nn.Linear(hidden_channels * num_heads, 128)
+        self.policy_head = nn.Linear(128, BOARD_WIDTH)
+        self.value_head = nn.Linear(128, 1)
+
+    def forward(self, data):
+        x, edge_index, batch = data.x, data.edge_index, data.batch
+
+        for layer in self.gat_layers:
+            x = F.relu(layer(x, edge_index))
+
+        graph_embedding = self.pooling(x, batch)
+
+        x = F.relu(self.fc1(graph_embedding))
+        policy_logits = self.policy_head(x)
+        value = torch.tanh(self.value_head(x))
+
+        return policy_logits, value
+
+
+def train_and_evaluate(
+    model, model_name, train_loader, test_loader, learning_rate=LEARNING_RATE
+):
     print(f"\n--- Training {model_name} on {DEVICE} ---")
     start_time = time.time()
-    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     policy_criterion = nn.CrossEntropyLoss()
     value_criterion = nn.MSELoss()
 
@@ -455,48 +538,144 @@ def main():
             model, name, train_loader, test_loader
         )
         all_results[name] = {"df": results_df, "time": training_time}
+        wandb.finish()
 
-    print("\n--- Pre-processing data for GraphNet ---")
-    train_graphs = [
+    # --- HGT GraphNet Experiments ---
+    print("\n--- Pre-processing data for HGT GraphNet ---")
+    hgt_train_graphs = [
         construct_graph_data(torch.from_numpy(board))
-        for board in tqdm(X_train, desc="Processing train graphs")
+        for board in tqdm(X_train, desc="Processing HGT train graphs")
     ]
-    test_graphs = [
+    hgt_test_graphs = [
         construct_graph_data(torch.from_numpy(board))
-        for board in tqdm(X_test, desc="Processing test graphs")
+        for board in tqdm(X_test, desc="Processing HGT test graphs")
     ]
-
-    print("\n--- Setting up Graph Model ---")
-    graph_train_dataset = Connect4GraphDataset(train_graphs, p_train, v_train)
-    graph_test_dataset = Connect4GraphDataset(test_graphs, p_test, v_test)
-    graph_train_loader = DataLoader(
-        graph_train_dataset,
+    hgt_train_dataset = Connect4GraphDataset(hgt_train_graphs, p_train, v_train)
+    hgt_test_dataset = Connect4GraphDataset(hgt_test_graphs, p_test, v_test)
+    hgt_train_loader = DataLoader(
+        hgt_train_dataset,
         batch_size=BATCH_SIZE,
         shuffle=True,
         collate_fn=pyg_collate_fn,
     )
-    graph_test_loader = DataLoader(
-        graph_test_dataset,
+    hgt_test_loader = DataLoader(
+        hgt_test_dataset,
         batch_size=BATCH_SIZE,
         shuffle=False,
         collate_fn=pyg_collate_fn,
     )
 
-    wandb.init(
-        project="connect4_arch_comparison",
-        name="GraphNet",
-        config={
-            "learning_rate": LEARNING_RATE,
-            "batch_size": BATCH_SIZE,
-            "architecture": "GraphNet",
+    hgt_experiments = [
+        {
+            "name": "HGT_Baseline",
+            "params": {"hidden_channels": 64, "num_heads": 4, "num_layers": 2},
+            "lr": 0.001,
         },
+        {
+            "name": "HGT_Simple",
+            "params": {"hidden_channels": 32, "num_heads": 2, "num_layers": 1},
+            "lr": 0.001,
+        },
+        {
+            "name": "HGT_Complex",
+            "params": {"hidden_channels": 128, "num_heads": 8, "num_layers": 4},
+            "lr": 0.001,
+        },
+        {
+            "name": "HGT_LowLR",
+            "params": {"hidden_channels": 64, "num_heads": 4, "num_layers": 2},
+            "lr": 0.0001,
+        },
+        {
+            "name": "HGT_AddPool",
+            "params": {
+                "hidden_channels": 64,
+                "num_heads": 4,
+                "num_layers": 2,
+                "pooling_fn": global_add_pool,
+            },
+            "lr": 0.001,
+        },
+    ]
+
+    for exp in hgt_experiments:
+        wandb.init(
+            project="connect4_arch_comparison",
+            name=exp["name"],
+            reinit=True,
+            config={
+                "learning_rate": exp["lr"],
+                "batch_size": BATCH_SIZE,
+                "architecture": "GraphNet_HGT",
+                **exp["params"],
+            },
+        )
+        model = GraphNet(**exp["params"]).to(DEVICE)
+        results_df, training_time = train_and_evaluate(
+            model,
+            exp["name"],
+            hgt_train_loader,
+            hgt_test_loader,
+            learning_rate=exp["lr"],
+        )
+        all_results[exp["name"]] = {"df": results_df, "time": training_time}
+        wandb.finish()
+
+    # --- GAT GraphNet Experiments ---
+    print("\n--- Pre-processing data for GAT GraphNet ---")
+    gat_train_graphs = [
+        construct_homogeneous_graph_data(torch.from_numpy(board))
+        for board in tqdm(X_train, desc="Processing GAT train graphs")
+    ]
+    gat_test_graphs = [
+        construct_homogeneous_graph_data(torch.from_numpy(board))
+        for board in tqdm(X_test, desc="Processing GAT test graphs")
+    ]
+    gat_train_dataset = Connect4GraphDataset(gat_train_graphs, p_train, v_train)
+    gat_test_dataset = Connect4GraphDataset(gat_test_graphs, p_test, v_test)
+    gat_train_loader = DataLoader(
+        gat_train_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=True,
+        collate_fn=pyg_collate_fn,
     )
-    graph_model = GraphNet().to(DEVICE)
-    results_df, training_time = train_and_evaluate(
-        graph_model, "GraphNet", graph_train_loader, graph_test_loader
+    gat_test_loader = DataLoader(
+        gat_test_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=False,
+        collate_fn=pyg_collate_fn,
     )
-    all_results["GraphNet"] = {"df": results_df, "time": training_time}
-    wandb.finish()
+
+    gat_experiments = [
+        {
+            "name": "GAT_Baseline",
+            "params": {"hidden_channels": 64, "num_heads": 4, "num_layers": 2},
+            "lr": 0.001,
+        }
+    ]
+
+    for exp in gat_experiments:
+        wandb.init(
+            project="connect4_arch_comparison",
+            name=exp["name"],
+            reinit=True,
+            config={
+                "learning_rate": exp["lr"],
+                "batch_size": BATCH_SIZE,
+                "architecture": "GraphNet_GAT",
+                **exp["params"],
+            },
+        )
+        model = GATNet(**exp["params"]).to(DEVICE)
+        results_df, training_time = train_and_evaluate(
+            model,
+            exp["name"],
+            gat_train_loader,
+            gat_test_loader,
+            learning_rate=exp["lr"],
+        )
+        all_results[exp["name"]] = {"df": results_df, "time": training_time}
+        wandb.finish()
 
     print("\n--- Final Results Summary ---")
     for name, results in all_results.items():
