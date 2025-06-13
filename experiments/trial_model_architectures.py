@@ -1,4 +1,5 @@
 import json
+import time
 from pathlib import Path
 import torch
 import torch.nn as nn
@@ -9,14 +10,17 @@ import numpy as np
 from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 import pandas as pd
+from torch_geometric.data import Batch, HeteroData
+from torch_geometric.nn import HGTConv, global_mean_pool
 
 from environments.connect4 import Connect4
 
 BOARD_HEIGHT = 6
 BOARD_WIDTH = 7
-NUM_EPOCHS = 10
+MAX_EPOCHS = 50
 LEARNING_RATE = 0.001
 BATCH_SIZE = 256
+EARLY_STOPPING_PATIENCE = 3
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 DATA_PATH = (
     Path(__file__).resolve().parents[1]
@@ -80,9 +84,9 @@ def load_and_process_data():
 
 class Connect4Dataset(Dataset):
     def __init__(self, inputs, policy_labels, value_labels):
-        self.inputs = torch.from_numpy(inputs).to(DEVICE)
-        self.policy_labels = torch.from_numpy(policy_labels).long().to(DEVICE)
-        self.value_labels = torch.from_numpy(value_labels).to(DEVICE)
+        self.inputs = torch.from_numpy(inputs)
+        self.policy_labels = torch.from_numpy(policy_labels).long()
+        self.value_labels = torch.from_numpy(value_labels)
 
     def __len__(self):
         return len(self.inputs)
@@ -138,7 +142,6 @@ class ResidualBlock(nn.Module):
 
     def forward(self, x):
         residual = x
-        # Standard residual block: Conv -> BN -> ReLU -> Conv -> BN -> Add -> ReLU
         out = self.conv1(x)
         out = self.bn1(out)
         out = F.relu(out)
@@ -171,21 +174,143 @@ class ResNet(nn.Module):
         return policy_logits, value
 
 
+def construct_graph_data(board_tensor):
+    """Constructs a PyG HeteroData object from a board tensor."""
+    p1_pieces = board_tensor[0].numpy()
+    p2_pieces = board_tensor[1].numpy()
+
+    node_features = []
+    for r in range(BOARD_HEIGHT):
+        for c in range(BOARD_WIDTH):
+            is_p1 = p1_pieces[r, c] == 1
+            is_p2 = p2_pieces[r, c] == 1
+            is_empty = not is_p1 and not is_p2
+            node_features.append([float(is_empty), float(is_p1), float(is_p2)])
+
+    data = HeteroData()
+    data["cell"].x = torch.tensor(node_features, dtype=torch.float)
+
+    directions = {
+        "N": (-1, 0),
+        "NE": (-1, 1),
+        "E": (0, 1),
+        "SE": (1, 1),
+        "S": (1, 0),
+        "SW": (1, -1),
+        "W": (0, -1),
+        "NW": (-1, -1),
+    }
+
+    for name, (dr, dc) in directions.items():
+        sources, dests = [], []
+        for r in range(BOARD_HEIGHT):
+            for c in range(BOARD_WIDTH):
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < BOARD_HEIGHT and 0 <= nc < BOARD_WIDTH:
+                    sources.append(r * BOARD_WIDTH + c)
+                    dests.append(nr * BOARD_WIDTH + nc)
+        edge_type = ("cell", name, "cell")
+        data[edge_type].edge_index = torch.tensor([sources, dests], dtype=torch.long)
+
+    return data
+
+
+class Connect4GraphDataset(Dataset):
+    def __init__(self, inputs, policy_labels, value_labels):
+        self.inputs = inputs
+        self.policy_labels = torch.from_numpy(policy_labels).long()
+        self.value_labels = torch.from_numpy(value_labels)
+
+    def __len__(self):
+        return len(self.inputs)
+
+    def __getitem__(self, idx):
+        board_tensor = torch.from_numpy(self.inputs[idx])
+        graph_data = construct_graph_data(board_tensor)
+        return (
+            graph_data,
+            self.policy_labels[idx],
+            self.value_labels[idx],
+        )
+
+
+def pyg_collate_fn(batch):
+    """Custom collate function to batch graph data and labels correctly."""
+    graphs, policies, values = zip(*batch)
+    batched_graph = Batch.from_data_list(list(graphs))
+    batched_policies = torch.stack(list(policies))
+    batched_values = torch.stack(list(values))
+    return batched_graph, batched_policies, batched_values
+
+
+class GraphNet(nn.Module):
+    def __init__(self, hidden_channels=64, num_heads=4, num_layers=2):
+        super().__init__()
+        self.hidden_channels = hidden_channels
+
+        node_types = ["cell"]
+        edge_types = [
+            ("cell", "N", "cell"),
+            ("cell", "NE", "cell"),
+            ("cell", "E", "cell"),
+            ("cell", "SE", "cell"),
+            ("cell", "S", "cell"),
+            ("cell", "SW", "cell"),
+            ("cell", "W", "cell"),
+            ("cell", "NW", "cell"),
+        ]
+        self.metadata = (node_types, edge_types)
+
+        self.in_proj = nn.Linear(3, hidden_channels)
+
+        self.hgt_layers = nn.ModuleList()
+        for _ in range(num_layers):
+            conv = HGTConv(hidden_channels, hidden_channels, self.metadata, num_heads)
+            self.hgt_layers.append(conv)
+
+        self.fc1 = nn.Linear(hidden_channels, 128)
+        self.policy_head = nn.Linear(128, BOARD_WIDTH)
+        self.value_head = nn.Linear(128, 1)
+
+    def forward(self, data):
+        x_dict = {"cell": self.in_proj(data["cell"].x)}
+
+        for layer in self.hgt_layers:
+            x_dict = layer(x_dict, data.edge_index_dict)
+
+        cell_features = x_dict["cell"]
+
+        graph_embedding = global_mean_pool(cell_features, data["cell"].batch)
+
+        x = F.relu(self.fc1(graph_embedding))
+        policy_logits = self.policy_head(x)
+        value = torch.tanh(self.value_head(x))
+
+        return policy_logits, value
+
+
 def train_and_evaluate(model, model_name, train_loader, test_loader):
     print(f"\n--- Training {model_name} on {DEVICE} ---")
+    start_time = time.time()
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
     policy_criterion = nn.CrossEntropyLoss()
     value_criterion = nn.MSELoss()
 
     results = []
+    best_test_loss = float("inf")
+    epochs_no_improve = 0
 
-    for epoch in range(NUM_EPOCHS):
+    for epoch in range(MAX_EPOCHS):
         model.train()
         total_train_loss, total_train_policy_acc, total_train_value_mse = 0, 0, 0
         total_train_policy_loss, total_train_value_loss = 0, 0
         train_batches = 0
 
         for inputs, policy_labels, value_labels in train_loader:
+            inputs = inputs.to(DEVICE)
+            policy_labels = policy_labels.to(DEVICE)
+            value_labels = value_labels.to(DEVICE)
+
             optimizer.zero_grad()
             policy_logits, value_preds = model(inputs)
 
@@ -214,6 +339,10 @@ def train_and_evaluate(model, model_name, train_loader, test_loader):
         test_batches = 0
         with torch.no_grad():
             for inputs, policy_labels, value_labels in test_loader:
+                inputs = inputs.to(DEVICE)
+                policy_labels = policy_labels.to(DEVICE)
+                value_labels = value_labels.to(DEVICE)
+
                 policy_logits, value_preds = model(inputs)
                 loss_p = policy_criterion(policy_logits, policy_labels)
                 loss_v = value_criterion(value_preds.squeeze(), value_labels)
@@ -244,7 +373,7 @@ def train_and_evaluate(model, model_name, train_loader, test_loader):
         test_mse = total_test_value_mse / test_batches
 
         print(
-            f"Epoch {epoch+1}/{NUM_EPOCHS} | "
+            f"Epoch {epoch+1}/{MAX_EPOCHS} | "
             f"Train Loss: {train_loss:.4f} (P: {train_policy_loss:.4f}, V: {train_value_loss:.4f}), "
             f"Train Acc: {train_acc:.4f}, Train MSE: {train_mse:.4f} | "
             f"Test Loss: {test_loss:.4f} (P: {test_policy_loss:.4f}, V: {test_value_loss:.4f}), "
@@ -267,7 +396,18 @@ def train_and_evaluate(model, model_name, train_loader, test_loader):
             }
         )
 
-    return pd.DataFrame(results)
+        if test_loss < best_test_loss:
+            best_test_loss = test_loss
+            epochs_no_improve = 0
+        else:
+            epochs_no_improve += 1
+
+        if epochs_no_improve >= EARLY_STOPPING_PATIENCE:
+            print(f"Early stopping triggered after {epoch + 1} epochs.")
+            break
+
+    training_time = time.time() - start_time
+    return pd.DataFrame(results), training_time
 
 
 def main():
@@ -288,13 +428,38 @@ def main():
     all_results = {}
     for name, model in models_to_train.items():
         model.to(DEVICE)
-        results_df = train_and_evaluate(model, name, train_loader, test_loader)
-        all_results[name] = results_df
+        results_df, training_time = train_and_evaluate(
+            model, name, train_loader, test_loader
+        )
+        all_results[name] = {"df": results_df, "time": training_time}
+
+    print("\n--- Setting up Graph Model ---")
+    graph_train_dataset = Connect4GraphDataset(X_train, p_train, v_train)
+    graph_test_dataset = Connect4GraphDataset(X_test, p_test, v_test)
+    graph_train_loader = DataLoader(
+        graph_train_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=True,
+        collate_fn=pyg_collate_fn,
+    )
+    graph_test_loader = DataLoader(
+        graph_test_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=False,
+        collate_fn=pyg_collate_fn,
+    )
+
+    graph_model = GraphNet().to(DEVICE)
+    results_df, training_time = train_and_evaluate(
+        graph_model, "GraphNet", graph_train_loader, graph_test_loader
+    )
+    all_results["GraphNet"] = {"df": results_df, "time": training_time}
 
     print("\n--- Final Results Summary ---")
-    for name, df in all_results.items():
+    for name, results in all_results.items():
         print(f"\nModel: {name}")
-        print(df.iloc[-1].to_string())
+        print(f"Training Time: {results['time']:.2f} seconds")
+        print(results["df"].iloc[-1].to_string())
 
 
 if __name__ == "__main__":
