@@ -217,8 +217,9 @@ def construct_graph_data(board_tensor):
 
 
 class Connect4GraphDataset(Dataset):
-    def __init__(self, graphs, policy_labels, value_labels):
+    def __init__(self, graphs, raw_inputs, policy_labels, value_labels):
         self.graphs = graphs
+        self.raw_inputs = torch.from_numpy(raw_inputs)
         self.policy_labels = torch.from_numpy(policy_labels).long()
         self.value_labels = torch.from_numpy(value_labels)
 
@@ -228,6 +229,7 @@ class Connect4GraphDataset(Dataset):
     def __getitem__(self, idx):
         return (
             self.graphs[idx],
+            self.raw_inputs[idx],
             self.policy_labels[idx],
             self.value_labels[idx],
         )
@@ -235,11 +237,12 @@ class Connect4GraphDataset(Dataset):
 
 def pyg_collate_fn(batch):
     """Custom collate function to batch graph data and labels correctly."""
-    graphs, policies, values = zip(*batch)
+    graphs, raw_inputs, policies, values = zip(*batch)
     batched_graph = Batch.from_data_list(list(graphs))
+    batched_raw_inputs = torch.stack(list(raw_inputs))
     batched_policies = torch.stack(list(policies))
     batched_values = torch.stack(list(values))
-    return batched_graph, batched_policies, batched_values
+    return batched_graph, batched_raw_inputs, batched_policies, batched_values
 
 
 class GraphNet(nn.Module):
@@ -278,7 +281,7 @@ class GraphNet(nn.Module):
         self.policy_head = nn.Linear(128, BOARD_WIDTH)
         self.value_head = nn.Linear(128, 1)
 
-    def forward(self, data):
+    def forward(self, data, raw_boards=None):
         x_dict = {"cell": self.in_proj(data["cell"].x)}
 
         for layer in self.hgt_layers:
@@ -370,7 +373,7 @@ class ColumnGraphNet(nn.Module):
         self.value_fc = nn.Linear(hidden_channels, 64)
         self.value_head = nn.Linear(64, 1)
 
-    def forward(self, data):
+    def forward(self, data, raw_boards=None):
         x_dict = {
             "cell": self.cell_in_proj(data["cell"].x),
             "column": self.col_in_proj(data["column"].x),
@@ -389,6 +392,65 @@ class ColumnGraphNet(nn.Module):
         cell_embeds = x_dict["cell"]
         graph_embedding = global_add_pool(cell_embeds, data["cell"].batch)
         v = F.relu(self.value_fc(graph_embedding))
+        value = torch.tanh(self.value_head(v))
+
+        return policy_logits, value
+
+
+class HybridGNN(nn.Module):
+    def __init__(self, hidden_channels=64, num_heads=4, num_layers=2):
+        super().__init__()
+        node_types = ["cell", "column"]
+        edge_types = [
+            ("cell", "adjacent_to", "cell"),
+            ("cell", "in_column", "column"),
+            ("column", "rev_in_column", "cell"),
+        ]
+        self.metadata = (node_types, edge_types)
+        self.hidden_channels = hidden_channels
+
+        self.cell_in_proj = nn.Linear(3, hidden_channels)
+        self.col_in_proj = nn.Linear(1, hidden_channels)
+
+        self.hgt_layers = nn.ModuleList()
+        for _ in range(num_layers):
+            conv = HGTConv(hidden_channels, hidden_channels, self.metadata, num_heads)
+            self.hgt_layers.append(conv)
+
+        mlp_input_size = 2 * BOARD_HEIGHT * BOARD_WIDTH
+
+        # Policy head combines GNN column features and raw board state
+        self.policy_fc = nn.Linear(hidden_channels + mlp_input_size, 64)
+        self.policy_head = nn.Linear(64, 1)
+
+        # Value head combines GNN global features and raw board state
+        self.value_fc = nn.Linear(hidden_channels + mlp_input_size, 64)
+        self.value_head = nn.Linear(64, 1)
+
+    def forward(self, data, raw_boards):
+        x_dict = {
+            "cell": self.cell_in_proj(data["cell"].x),
+            "column": self.col_in_proj(data["column"].x),
+        }
+
+        for layer in self.hgt_layers:
+            x_dict = layer(x_dict, data.edge_index_dict)
+
+        flat_boards = raw_boards.view(raw_boards.size(0), -1)
+
+        # Policy
+        column_embeds = x_dict["column"]
+        expanded_flat_boards = flat_boards.repeat_interleave(BOARD_WIDTH, dim=0)
+        policy_input = torch.cat([column_embeds, expanded_flat_boards], dim=1)
+        p = F.relu(self.policy_fc(policy_input))
+        policy_logits_flat = self.policy_head(p).squeeze(-1)
+        policy_logits = policy_logits_flat.view(-1, BOARD_WIDTH)
+
+        # Value
+        cell_embeds = x_dict["cell"]
+        graph_embedding = global_add_pool(cell_embeds, data["cell"].batch)
+        value_input = torch.cat([graph_embedding, flat_boards], dim=1)
+        v = F.relu(self.value_fc(value_input))
         value = torch.tanh(self.value_head(v))
 
         return policy_logits, value
@@ -413,13 +475,25 @@ def train_and_evaluate(
         total_train_policy_loss, total_train_value_loss = 0, 0
         train_batches = 0
 
-        for inputs, policy_labels, value_labels in train_loader:
+        for data_batch in train_loader:
+            if len(data_batch) == 4:  # GNN loader
+                inputs, raw_boards, policy_labels, value_labels = data_batch
+                inputs = inputs.to(DEVICE)
+                raw_boards = raw_boards.to(DEVICE)
+            else:  # Standard loader
+                inputs, policy_labels, value_labels = data_batch
+                raw_boards = None
+
             inputs = inputs.to(DEVICE)
             policy_labels = policy_labels.to(DEVICE)
             value_labels = value_labels.to(DEVICE)
 
             optimizer.zero_grad()
-            policy_logits, value_preds = model(inputs)
+
+            if raw_boards is not None:
+                policy_logits, value_preds = model(inputs, raw_boards)
+            else:
+                policy_logits, value_preds = model(inputs)
 
             loss_p = policy_criterion(policy_logits, policy_labels)
             loss_v = value_criterion(value_preds.squeeze(), value_labels)
@@ -445,12 +519,23 @@ def train_and_evaluate(
         total_test_policy_loss, total_test_value_loss = 0, 0
         test_batches = 0
         with torch.no_grad():
-            for inputs, policy_labels, value_labels in test_loader:
+            for data_batch in test_loader:
+                if len(data_batch) == 4:  # GNN loader
+                    inputs, raw_boards, policy_labels, value_labels = data_batch
+                    inputs = inputs.to(DEVICE)
+                    raw_boards = raw_boards.to(DEVICE)
+                else:  # Standard loader
+                    inputs, policy_labels, value_labels = data_batch
+                    raw_boards = None
+
                 inputs = inputs.to(DEVICE)
                 policy_labels = policy_labels.to(DEVICE)
                 value_labels = value_labels.to(DEVICE)
 
-                policy_logits, value_preds = model(inputs)
+                if raw_boards is not None:
+                    policy_logits, value_preds = model(inputs, raw_boards)
+                else:
+                    policy_logits, value_preds = model(inputs)
                 loss_p = policy_criterion(policy_logits, policy_labels)
                 loss_v = value_criterion(value_preds.squeeze(), value_labels)
                 loss = loss_p + loss_v
@@ -532,6 +617,7 @@ def train_and_evaluate(
 
 
 def main():
+    run_group_id = f"run_{int(time.time())}"
     inputs, policy_labels, value_labels = load_and_process_data()
 
     X_train, X_test, p_train, p_test, v_train, v_test = train_test_split(
@@ -551,6 +637,7 @@ def main():
         wandb.init(
             project="connect4_arch_comparison",
             name=name,
+            group=run_group_id,
             config={
                 "learning_rate": LEARNING_RATE,
                 "batch_size": BATCH_SIZE,
@@ -564,113 +651,92 @@ def main():
         all_results[name] = {"df": results_df, "time": training_time}
         wandb.finish()
 
-    # --- HGT GraphNet (Cell-Only) Baseline Experiment ---
-    print("\n--- Pre-processing data for HGT GraphNet (Cell-Only) ---")
-    hgt_train_graphs = [
+    # --- GNN Experiments ---
+    print("\n--- Pre-processing data for GNNs ---")
+    cell_train_graphs = [
         construct_graph_data(torch.from_numpy(board))
-        for board in tqdm(X_train, desc="Processing HGT train graphs")
+        for board in tqdm(X_train, desc="Processing Cell graphs")
     ]
-    hgt_test_graphs = [
+    cell_test_graphs = [
         construct_graph_data(torch.from_numpy(board))
-        for board in tqdm(X_test, desc="Processing HGT test graphs")
+        for board in tqdm(X_test, desc="Processing Cell graphs")
     ]
-    hgt_train_dataset = Connect4GraphDataset(hgt_train_graphs, p_train, v_train)
-    hgt_test_dataset = Connect4GraphDataset(hgt_test_graphs, p_test, v_test)
-    hgt_train_loader = DataLoader(
-        hgt_train_dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=pyg_collate_fn
-    )
-    hgt_test_loader = DataLoader(
-        hgt_test_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=pyg_collate_fn
-    )
-
-    baseline_hgt_exp = {
-        "name": "HGT_CellOnly_AddPool",
-        "params": {
-            "hidden_channels": 128,
-            "num_heads": 8,
-            "num_layers": 4,
-            "pooling_fn": global_add_pool,
-        },
-        "lr": 0.001,
-    }
-    wandb.init(
-        project="connect4_arch_comparison",
-        name=baseline_hgt_exp["name"],
-        reinit=True,
-        config={
-            "learning_rate": baseline_hgt_exp["lr"],
-            "batch_size": BATCH_SIZE,
-            "architecture": "GraphNet_HGT_CellOnly",
-            **baseline_hgt_exp["params"],
-        },
-    )
-    model = GraphNet(**baseline_hgt_exp["params"]).to(DEVICE)
-    results_df, training_time = train_and_evaluate(
-        model,
-        baseline_hgt_exp["name"],
-        hgt_train_loader,
-        hgt_test_loader,
-        learning_rate=baseline_hgt_exp["lr"],
-    )
-    all_results[baseline_hgt_exp["name"]] = {"df": results_df, "time": training_time}
-    wandb.finish()
-
-    # --- ColumnGraphNet Experiments ---
-    print("\n--- Pre-processing data for ColumnGraphNet ---")
     col_train_graphs = [
         construct_column_graph_data(torch.from_numpy(board))
-        for board in tqdm(X_train, desc="Processing Column train graphs")
+        for board in tqdm(X_train, desc="Processing Column graphs")
     ]
     col_test_graphs = [
         construct_column_graph_data(torch.from_numpy(board))
-        for board in tqdm(X_test, desc="Processing Column test graphs")
+        for board in tqdm(X_test, desc="Processing Column graphs")
     ]
-    col_train_dataset = Connect4GraphDataset(col_train_graphs, p_train, v_train)
-    col_test_dataset = Connect4GraphDataset(col_test_graphs, p_test, v_test)
-    col_train_loader = DataLoader(
-        col_train_dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=pyg_collate_fn
-    )
-    col_test_loader = DataLoader(
-        col_test_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=pyg_collate_fn
-    )
 
-    col_graph_experiments = [
+    gnn_experiments = [
         {
-            "name": "ColumnGNN_Baseline",
-            "params": {"hidden_channels": 64, "num_heads": 4, "num_layers": 2},
+            "name": "CellGNN_ValueFocused",
+            "model_class": GraphNet,
+            "train_graphs": cell_train_graphs,
+            "test_graphs": cell_test_graphs,
+            "params": {
+                "hidden_channels": 128,
+                "num_heads": 8,
+                "num_layers": 4,
+                "pooling_fn": global_add_pool,
+            },
             "lr": 0.001,
         },
         {
-            "name": "ColumnGNN_Complex",
+            "name": "ColumnGNN_PolicyFocused",
+            "model_class": ColumnGraphNet,
+            "train_graphs": col_train_graphs,
+            "test_graphs": col_test_graphs,
             "params": {"hidden_channels": 128, "num_heads": 4, "num_layers": 4},
             "lr": 0.001,
         },
         {
-            "name": "ColumnGNN_LowLR",
+            "name": "HybridGNN_Baseline",
+            "model_class": HybridGNN,
+            "train_graphs": col_train_graphs,
+            "test_graphs": col_test_graphs,
             "params": {"hidden_channels": 64, "num_heads": 4, "num_layers": 2},
-            "lr": 0.0001,
+            "lr": 0.001,
+        },
+        {
+            "name": "HybridGNN_Complex",
+            "model_class": HybridGNN,
+            "train_graphs": col_train_graphs,
+            "test_graphs": col_test_graphs,
+            "params": {"hidden_channels": 128, "num_heads": 4, "num_layers": 4},
+            "lr": 0.001,
         },
     ]
 
-    for exp in col_graph_experiments:
+    for exp in gnn_experiments:
+        train_dataset = Connect4GraphDataset(
+            exp["train_graphs"], X_train, p_train, v_train
+        )
+        test_dataset = Connect4GraphDataset(exp["test_graphs"], X_test, p_test, v_test)
+        train_loader = DataLoader(
+            train_dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=pyg_collate_fn
+        )
+        test_loader = DataLoader(
+            test_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=pyg_collate_fn
+        )
+
         wandb.init(
             project="connect4_arch_comparison",
             name=exp["name"],
+            group=run_group_id,
             reinit=True,
             config={
                 "learning_rate": exp["lr"],
                 "batch_size": BATCH_SIZE,
-                "architecture": "ColumnGraphNet",
+                "architecture": exp["model_class"].__name__,
                 **exp["params"],
             },
         )
-        model = ColumnGraphNet(**exp["params"]).to(DEVICE)
+        model = exp["model_class"](**exp["params"]).to(DEVICE)
         results_df, training_time = train_and_evaluate(
-            model,
-            exp["name"],
-            col_train_loader,
-            col_test_loader,
-            learning_rate=exp["lr"],
+            model, exp["name"], train_loader, test_loader, learning_rate=exp["lr"]
         )
         all_results[exp["name"]] = {"df": results_df, "time": training_time}
         wandb.finish()
