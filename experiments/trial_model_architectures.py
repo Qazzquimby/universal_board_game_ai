@@ -1,3 +1,7 @@
+# Symmetricalize by x dim and player
+# repeat but with manually creating graph implementations and understanding them well.
+
+
 import json
 import time
 from pathlib import Path
@@ -21,7 +25,7 @@ BOARD_WIDTH = 7
 MAX_EPOCHS = 500
 LEARNING_RATE = 0.001
 BATCH_SIZE = 256
-EARLY_STOPPING_PATIENCE = 3
+EARLY_STOPPING_PATIENCE = 10
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 DATA_PATH = (
     Path(__file__).resolve().parents[1]
@@ -229,7 +233,6 @@ class Connect4GraphDataset(Dataset):
     def __getitem__(self, idx):
         return (
             self.graphs[idx],
-            self.raw_inputs[idx],
             self.policy_labels[idx],
             self.value_labels[idx],
         )
@@ -237,12 +240,11 @@ class Connect4GraphDataset(Dataset):
 
 def pyg_collate_fn(batch):
     """Custom collate function to batch graph data and labels correctly."""
-    graphs, raw_inputs, policies, values = zip(*batch)
+    graphs, policies, values = zip(*batch)
     batched_graph = Batch.from_data_list(list(graphs))
-    batched_raw_inputs = torch.stack(list(raw_inputs))
     batched_policies = torch.stack(list(policies))
     batched_values = torch.stack(list(values))
-    return batched_graph, batched_raw_inputs, batched_policies, batched_values
+    return batched_graph, batched_policies, batched_values
 
 
 class GraphNet(nn.Module):
@@ -281,7 +283,7 @@ class GraphNet(nn.Module):
         self.policy_head = nn.Linear(128, BOARD_WIDTH)
         self.value_head = nn.Linear(128, 1)
 
-    def forward(self, data, raw_boards=None):
+    def forward(self, data):
         x_dict = {"cell": self.in_proj(data["cell"].x)}
 
         for layer in self.hgt_layers:
@@ -294,164 +296,6 @@ class GraphNet(nn.Module):
         x = F.relu(self.fc1(graph_embedding))
         policy_logits = self.policy_head(x)
         value = torch.tanh(self.value_head(x))
-
-        return policy_logits, value
-
-
-def construct_column_graph_data(board_tensor):
-    p1_pieces = board_tensor[0].numpy()
-    p2_pieces = board_tensor[1].numpy()
-
-    data = HeteroData()
-
-    # Cell nodes
-    cell_features = []
-    for r in range(BOARD_HEIGHT):
-        for c in range(BOARD_WIDTH):
-            is_p1 = p1_pieces[r, c] == 1
-            is_p2 = p2_pieces[r, c] == 1
-            is_empty = not is_p1 and not is_p2
-            cell_features.append([float(is_empty), float(is_p1), float(is_p2)])
-    data["cell"].x = torch.tensor(cell_features, dtype=torch.float)
-
-    # Column nodes (with placeholder features)
-    data["column"].x = torch.zeros((BOARD_WIDTH, 1))
-
-    # Edges
-    adj_sources, adj_dests = [], []
-    cell_to_col_sources, cell_to_col_dests = [], []
-
-    directions = {
-        "N": (-1, 0), "NE": (-1, 1), "E": (0, 1), "SE": (1, 1),
-        "S": (1, 0), "SW": (1, -1), "W": (0, -1), "NW": (-1, -1),
-    }
-    for r in range(BOARD_HEIGHT):
-        for c in range(BOARD_WIDTH):
-            cell_idx = r * BOARD_WIDTH + c
-            # Cell -> Column edges
-            cell_to_col_sources.append(cell_idx)
-            cell_to_col_dests.append(c)
-            # Cell -> Cell adjacency edges
-            for dr, dc in directions.values():
-                nr, nc = r + dr, c + dc
-                if 0 <= nr < BOARD_HEIGHT and 0 <= nc < BOARD_WIDTH:
-                    neighbor_idx = nr * BOARD_WIDTH + nc
-                    adj_sources.append(cell_idx)
-                    adj_dests.append(neighbor_idx)
-
-    data[("cell", "adjacent_to", "cell")].edge_index = torch.tensor([adj_sources, adj_dests], dtype=torch.long)
-    data[("cell", "in_column", "column")].edge_index = torch.tensor([cell_to_col_sources, cell_to_col_dests], dtype=torch.long)
-    data[("column", "rev_in_column", "cell")].edge_index = data[("cell", "in_column", "column")].edge_index.flip([0])
-
-    return data
-
-
-class ColumnGraphNet(nn.Module):
-    def __init__(self, hidden_channels=64, num_heads=4, num_layers=2):
-        super().__init__()
-        node_types = ["cell", "column"]
-        edge_types = [
-            ("cell", "adjacent_to", "cell"),
-            ("cell", "in_column", "column"),
-            ("column", "rev_in_column", "cell"),
-        ]
-        self.metadata = (node_types, edge_types)
-
-        self.cell_in_proj = nn.Linear(3, hidden_channels)
-        self.col_in_proj = nn.Linear(1, hidden_channels)
-
-        self.hgt_layers = nn.ModuleList()
-        for _ in range(num_layers):
-            conv = HGTConv(hidden_channels, hidden_channels, self.metadata, num_heads)
-            self.hgt_layers.append(conv)
-
-        # Policy head operates on column node embeddings
-        self.policy_fc = nn.Linear(hidden_channels, 64)
-        self.policy_head = nn.Linear(64, 1)  # 1 logit per column
-
-        # Value head operates on a global embedding of cell nodes
-        self.value_fc = nn.Linear(hidden_channels, 64)
-        self.value_head = nn.Linear(64, 1)
-
-    def forward(self, data, raw_boards=None):
-        x_dict = {
-            "cell": self.cell_in_proj(data["cell"].x),
-            "column": self.col_in_proj(data["column"].x),
-        }
-
-        for layer in self.hgt_layers:
-            x_dict = layer(x_dict, data.edge_index_dict)
-
-        # Policy from column embeddings
-        column_embeds = x_dict["column"]
-        p = F.relu(self.policy_fc(column_embeds))
-        policy_logits_flat = self.policy_head(p).squeeze(-1)
-        policy_logits = policy_logits_flat.view(-1, BOARD_WIDTH)
-
-        # Value from global cell embedding
-        cell_embeds = x_dict["cell"]
-        graph_embedding = global_add_pool(cell_embeds, data["cell"].batch)
-        v = F.relu(self.value_fc(graph_embedding))
-        value = torch.tanh(self.value_head(v))
-
-        return policy_logits, value
-
-
-class HybridGNN(nn.Module):
-    def __init__(self, hidden_channels=64, num_heads=4, num_layers=2):
-        super().__init__()
-        node_types = ["cell", "column"]
-        edge_types = [
-            ("cell", "adjacent_to", "cell"),
-            ("cell", "in_column", "column"),
-            ("column", "rev_in_column", "cell"),
-        ]
-        self.metadata = (node_types, edge_types)
-        self.hidden_channels = hidden_channels
-
-        self.cell_in_proj = nn.Linear(3, hidden_channels)
-        self.col_in_proj = nn.Linear(1, hidden_channels)
-
-        self.hgt_layers = nn.ModuleList()
-        for _ in range(num_layers):
-            conv = HGTConv(hidden_channels, hidden_channels, self.metadata, num_heads)
-            self.hgt_layers.append(conv)
-
-        mlp_input_size = 2 * BOARD_HEIGHT * BOARD_WIDTH
-
-        # Policy head combines GNN column features and raw board state
-        self.policy_fc = nn.Linear(hidden_channels + mlp_input_size, 64)
-        self.policy_head = nn.Linear(64, 1)
-
-        # Value head combines GNN global features and raw board state
-        self.value_fc = nn.Linear(hidden_channels + mlp_input_size, 64)
-        self.value_head = nn.Linear(64, 1)
-
-    def forward(self, data, raw_boards):
-        x_dict = {
-            "cell": self.cell_in_proj(data["cell"].x),
-            "column": self.col_in_proj(data["column"].x),
-        }
-
-        for layer in self.hgt_layers:
-            x_dict = layer(x_dict, data.edge_index_dict)
-
-        flat_boards = raw_boards.view(raw_boards.size(0), -1)
-
-        # Policy
-        column_embeds = x_dict["column"]
-        expanded_flat_boards = flat_boards.repeat_interleave(BOARD_WIDTH, dim=0)
-        policy_input = torch.cat([column_embeds, expanded_flat_boards], dim=1)
-        p = F.relu(self.policy_fc(policy_input))
-        policy_logits_flat = self.policy_head(p).squeeze(-1)
-        policy_logits = policy_logits_flat.view(-1, BOARD_WIDTH)
-
-        # Value
-        cell_embeds = x_dict["cell"]
-        graph_embedding = global_add_pool(cell_embeds, data["cell"].batch)
-        value_input = torch.cat([graph_embedding, flat_boards], dim=1)
-        v = F.relu(self.value_fc(value_input))
-        value = torch.tanh(self.value_head(v))
 
         return policy_logits, value
 
@@ -476,24 +320,14 @@ def train_and_evaluate(
         train_batches = 0
 
         for data_batch in train_loader:
-            if len(data_batch) == 4:  # GNN loader
-                inputs, raw_boards, policy_labels, value_labels = data_batch
-                inputs = inputs.to(DEVICE)
-                raw_boards = raw_boards.to(DEVICE)
-            else:  # Standard loader
-                inputs, policy_labels, value_labels = data_batch
-                raw_boards = None
+            inputs, policy_labels, value_labels = data_batch
 
             inputs = inputs.to(DEVICE)
             policy_labels = policy_labels.to(DEVICE)
             value_labels = value_labels.to(DEVICE)
 
             optimizer.zero_grad()
-
-            if raw_boards is not None:
-                policy_logits, value_preds = model(inputs, raw_boards)
-            else:
-                policy_logits, value_preds = model(inputs)
+            policy_logits, value_preds = model(inputs)
 
             loss_p = policy_criterion(policy_logits, policy_labels)
             loss_v = value_criterion(value_preds.squeeze(), value_labels)
@@ -520,22 +354,12 @@ def train_and_evaluate(
         test_batches = 0
         with torch.no_grad():
             for data_batch in test_loader:
-                if len(data_batch) == 4:  # GNN loader
-                    inputs, raw_boards, policy_labels, value_labels = data_batch
-                    inputs = inputs.to(DEVICE)
-                    raw_boards = raw_boards.to(DEVICE)
-                else:  # Standard loader
-                    inputs, policy_labels, value_labels = data_batch
-                    raw_boards = None
+                inputs, policy_labels, value_labels = data_batch
 
                 inputs = inputs.to(DEVICE)
                 policy_labels = policy_labels.to(DEVICE)
                 value_labels = value_labels.to(DEVICE)
-
-                if raw_boards is not None:
-                    policy_logits, value_preds = model(inputs, raw_boards)
-                else:
-                    policy_logits, value_preds = model(inputs)
+                policy_logits, value_preds = model(inputs)
                 loss_p = policy_criterion(policy_logits, policy_labels)
                 loss_v = value_criterion(value_preds.squeeze(), value_labels)
                 loss = loss_p + loss_v
@@ -564,37 +388,22 @@ def train_and_evaluate(
         test_acc = total_test_policy_acc / len(test_loader.dataset)
         test_mse = total_test_value_mse / test_batches
 
-        wandb.log(
-            {
-                "epoch": epoch + 1,
-                "train_loss": train_loss,
-                "train_policy_loss": train_policy_loss,
-                "train_value_loss": train_value_loss,
-                "train_acc": train_acc,
-                "train_mse": train_mse,
-                "test_loss": test_loss,
-                "test_policy_loss": test_policy_loss,
-                "test_value_loss": test_value_loss,
-                "test_acc": test_acc,
-                "test_mse": test_mse,
-            }
-        )
+        log_info = {
+            "epoch": epoch + 1,
+            "train_loss": train_loss,
+            "train_policy_loss": train_policy_loss,
+            "train_value_loss": train_value_loss,
+            "train_acc": train_acc,
+            "train_mse": train_mse,
+            "test_loss": test_loss,
+            "test_policy_loss": test_policy_loss,
+            "test_value_loss": test_value_loss,
+            "test_acc": test_acc,
+            "test_mse": test_mse,
+        }
 
-        results.append(
-            {
-                "epoch": epoch + 1,
-                "train_loss": train_loss,
-                "train_policy_loss": train_policy_loss,
-                "train_value_loss": train_value_loss,
-                "train_acc": train_acc,
-                "train_mse": train_mse,
-                "test_loss": test_loss,
-                "test_policy_loss": test_policy_loss,
-                "test_value_loss": test_value_loss,
-                "test_acc": test_acc,
-                "test_mse": test_mse,
-            }
-        )
+        wandb.log(log_info)
+        results.append(log_info)
 
         if test_loss < best_test_loss:
             best_test_loss = test_loss
@@ -661,14 +470,6 @@ def main():
         construct_graph_data(torch.from_numpy(board))
         for board in tqdm(X_test, desc="Processing Cell graphs")
     ]
-    col_train_graphs = [
-        construct_column_graph_data(torch.from_numpy(board))
-        for board in tqdm(X_train, desc="Processing Column graphs")
-    ]
-    col_test_graphs = [
-        construct_column_graph_data(torch.from_numpy(board))
-        for board in tqdm(X_test, desc="Processing Column graphs")
-    ]
 
     gnn_experiments = [
         {
@@ -684,30 +485,6 @@ def main():
             },
             "lr": 0.001,
         },
-        {
-            "name": "ColumnGNN_PolicyFocused",
-            "model_class": ColumnGraphNet,
-            "train_graphs": col_train_graphs,
-            "test_graphs": col_test_graphs,
-            "params": {"hidden_channels": 128, "num_heads": 4, "num_layers": 4},
-            "lr": 0.001,
-        },
-        {
-            "name": "HybridGNN_Baseline",
-            "model_class": HybridGNN,
-            "train_graphs": col_train_graphs,
-            "test_graphs": col_test_graphs,
-            "params": {"hidden_channels": 64, "num_heads": 4, "num_layers": 2},
-            "lr": 0.001,
-        },
-        {
-            "name": "HybridGNN_Complex",
-            "model_class": HybridGNN,
-            "train_graphs": col_train_graphs,
-            "test_graphs": col_test_graphs,
-            "params": {"hidden_channels": 128, "num_heads": 4, "num_layers": 4},
-            "lr": 0.001,
-        },
     ]
 
     for exp in gnn_experiments:
@@ -716,10 +493,16 @@ def main():
         )
         test_dataset = Connect4GraphDataset(exp["test_graphs"], X_test, p_test, v_test)
         train_loader = DataLoader(
-            train_dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=pyg_collate_fn
+            train_dataset,
+            batch_size=BATCH_SIZE,
+            shuffle=True,
+            collate_fn=pyg_collate_fn,
         )
         test_loader = DataLoader(
-            test_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=pyg_collate_fn
+            test_dataset,
+            batch_size=BATCH_SIZE,
+            shuffle=False,
+            collate_fn=pyg_collate_fn,
         )
 
         wandb.init(
@@ -736,7 +519,11 @@ def main():
         )
         model = exp["model_class"](**exp["params"]).to(DEVICE)
         results_df, training_time = train_and_evaluate(
-            model, exp["name"], train_loader, test_loader, learning_rate=exp["lr"]
+            model=model,
+            model_name=exp["name"],
+            train_loader=train_loader,
+            test_loader=test_loader,
+            learning_rate=exp["lr"],
         )
         all_results[exp["name"]] = {"df": results_df, "time": training_time}
         wandb.finish()
