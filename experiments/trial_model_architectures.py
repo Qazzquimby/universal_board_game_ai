@@ -36,6 +36,40 @@ DATA_PATH = (
 )
 
 
+def _process_raw_item(item, env):
+    action_history_str = item.get("action_history", "")
+    if not action_history_str:
+        return None
+
+    env.reset()
+    actions = [int(a) for a in action_history_str]
+    for action in actions:
+        env.step(action)
+
+    current_player_idx = env.get_current_player()
+    opponent_player_idx = 1 - current_player_idx
+
+    current_player_piece = current_player_idx + 1
+    opponent_player_piece = opponent_player_idx + 1
+
+    board_state = np.array(env.board)
+    p1_board = (board_state == current_player_piece).astype(np.float32)
+    p2_board = (board_state == opponent_player_piece).astype(np.float32)
+    input_tensor = np.stack([p1_board, p2_board])
+
+    policy_label = item["next_action"]
+
+    winner_piece = item["winner"]
+    value = 0.0
+    if winner_piece is not None and winner_piece != 0:
+        if winner_piece == current_player_piece:
+            value = 1.0
+        else:
+            value = -1.0
+
+    return input_tensor, policy_label, value
+
+
 def load_and_process_data():
     print("Loading and processing data...")
     with open(DATA_PATH, "r") as f:
@@ -48,37 +82,12 @@ def load_and_process_data():
     env = Connect4(width=BOARD_WIDTH, height=BOARD_HEIGHT)
 
     for item in tqdm(raw_data):
-        action_history_str = item.get("action_history", "")
-        if not action_history_str:
-            continue
-
-        env.reset()
-        actions = [int(a) for a in action_history_str]
-        for action in actions:
-            env.step(action)
-
-        current_player_idx = env.get_current_player()  # 0 or 1
-        opponent_player_idx = 1 - current_player_idx
-
-        current_player_piece = current_player_idx + 1  # 1 or 2
-        opponent_player_piece = opponent_player_idx + 1  # 2 or 1
-
-        board_state = np.array(env.board)
-        p1_board = (board_state == current_player_piece).astype(np.float32)
-        p2_board = (board_state == opponent_player_piece).astype(np.float32)
-        input_tensor = np.stack([p1_board, p2_board])
-        inputs.append(input_tensor)
-
-        policy_labels.append(item["next_action"])
-
-        winner_piece = item["winner"]  # Assumes winner is 1 or 2
-        value = 0.0
-        if winner_piece is not None and winner_piece != 0:
-            if winner_piece == current_player_piece:
-                value = 1.0
-            else:
-                value = -1.0
-        value_labels.append(value)
+        processed_item = _process_raw_item(item, env)
+        if processed_item:
+            input_tensor, policy_label, value_label = processed_item
+            inputs.append(input_tensor)
+            policy_labels.append(policy_label)
+            value_labels.append(value_label)
 
     return (
         np.array(inputs),
@@ -300,6 +309,25 @@ class GraphNet(nn.Module):
         return policy_logits, value
 
 
+def _process_batch(model, data_batch, device, policy_criterion, value_criterion):
+    inputs, policy_labels, value_labels = data_batch
+    inputs = inputs.to(device)
+    policy_labels = policy_labels.to(device)
+    value_labels = value_labels.to(device)
+
+    policy_logits, value_preds = model(inputs)
+
+    loss_p = policy_criterion(policy_logits, policy_labels)
+    loss_v = value_criterion(value_preds.squeeze(), value_labels)
+    loss = loss_p + loss_v
+
+    _, predicted_policies = torch.max(policy_logits, 1)
+    policy_acc = (predicted_policies == policy_labels).int().sum().item()
+    value_mse = F.mse_loss(value_preds.squeeze(), value_labels).item()
+
+    return loss, loss_p.item(), loss_v.item(), policy_acc, value_mse
+
+
 def train_and_evaluate(
     model, model_name, train_loader, test_loader, learning_rate=LEARNING_RATE
 ):
@@ -317,71 +345,43 @@ def train_and_evaluate(
         model.train()
         total_train_loss, total_train_policy_acc, total_train_value_mse = 0, 0, 0
         total_train_policy_loss, total_train_value_loss = 0, 0
-        train_batches = 0
 
         for data_batch in train_loader:
-            inputs, policy_labels, value_labels = data_batch
-
-            inputs = inputs.to(DEVICE)
-            policy_labels = policy_labels.to(DEVICE)
-            value_labels = value_labels.to(DEVICE)
-
             optimizer.zero_grad()
-            policy_logits, value_preds = model(inputs)
-
-            loss_p = policy_criterion(policy_logits, policy_labels)
-            loss_v = value_criterion(value_preds.squeeze(), value_labels)
-            loss = loss_p + loss_v
-
+            loss, loss_p_item, loss_v_item, policy_acc, value_mse = _process_batch(
+                model, data_batch, DEVICE, policy_criterion, value_criterion
+            )
             loss.backward()
             optimizer.step()
 
             total_train_loss += loss.item()
-            total_train_policy_loss += loss_p.item()
-            total_train_value_loss += loss_v.item()
-            _, predicted_policies = torch.max(policy_logits, 1)
-            total_train_policy_acc += (
-                (predicted_policies == policy_labels).int().sum().item()
-            )
-            total_train_value_mse += F.mse_loss(
-                value_preds.squeeze(), value_labels
-            ).item()
-            train_batches += 1
+            total_train_policy_loss += loss_p_item
+            total_train_value_loss += loss_v_item
+            total_train_policy_acc += policy_acc
+            total_train_value_mse += value_mse
 
         model.eval()
         total_test_loss, total_test_policy_acc, total_test_value_mse = 0, 0, 0
         total_test_policy_loss, total_test_value_loss = 0, 0
-        test_batches = 0
         with torch.no_grad():
             for data_batch in test_loader:
-                inputs, policy_labels, value_labels = data_batch
-
-                inputs = inputs.to(DEVICE)
-                policy_labels = policy_labels.to(DEVICE)
-                value_labels = value_labels.to(DEVICE)
-                policy_logits, value_preds = model(inputs)
-                loss_p = policy_criterion(policy_logits, policy_labels)
-                loss_v = value_criterion(value_preds.squeeze(), value_labels)
-                loss = loss_p + loss_v
-
-                total_test_loss += loss.item()
-                total_test_policy_loss += loss_p.item()
-                total_test_value_loss += loss_v.item()
-                _, predicted_policies = torch.max(policy_logits, 1)
-                total_test_policy_acc += (
-                    (predicted_policies == policy_labels).int().sum().item()
+                loss, loss_p_item, loss_v_item, policy_acc, value_mse = _process_batch(
+                    model, data_batch, DEVICE, policy_criterion, value_criterion
                 )
-                total_test_value_mse += F.mse_loss(
-                    value_preds.squeeze(), value_labels
-                ).item()
-                test_batches += 1
+                total_test_loss += loss.item()
+                total_test_policy_loss += loss_p_item
+                total_test_value_loss += loss_v_item
+                total_test_policy_acc += policy_acc
+                total_test_value_mse += value_mse
 
+        train_batches = len(train_loader)
         train_loss = total_train_loss / train_batches
         train_policy_loss = total_train_policy_loss / train_batches
         train_value_loss = total_train_value_loss / train_batches
         train_acc = total_train_policy_acc / len(train_loader.dataset)
         train_mse = total_train_value_mse / train_batches
 
+        test_batches = len(test_loader)
         test_loss = total_test_loss / test_batches
         test_policy_loss = total_test_policy_loss / test_batches
         test_value_loss = total_test_value_loss / test_batches
