@@ -1,3 +1,101 @@
+Trial:
+
+# Holding pieces as 1hot vs a channel for each player made no difference to performance. Same curves.
+
+#  Try homognn with directionality
+Edge Features (The Best Approach)
+This is the most direct and powerful way to encode direction. We add features to the edges to describe their relationship.
+Modify the Graph Creation:
+Each edge will have a feature vector, for example, a one-hot encoding of its direction.
+def get_connect4_graph_with_edge_attrs():
+    edges = []
+    edge_attrs = []
+    # 8 directions + inverse directions = 8 unique types
+    # [E, NE, N, NW, W, SW, S, SE]
+    direction_map = {}
+    idx = 0
+    for dr in [-1, 0, 1]:
+        for dc in [-1, 0, 1]:
+            if dr == 0 and dc == 0: continue
+            direction_map[(dr, dc)] = idx
+            idx += 1
+    
+    for r in range(ROWS):
+        for c in range(COLS):
+            node_idx = r * COLS + c
+            for dr in [-1, 0, 1]:
+                for dc in [-1, 0, 1]:
+                    if dr == 0 and dc == 0: continue
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < ROWS and 0 <= nc < COLS:
+                        neighbor_idx = nr * COLS + nc
+                        edges.append([node_idx, neighbor_idx])
+                        
+                        # Add a directional feature for the edge
+                        direction_idx = direction_map[(dr, dc)]
+                        attr = [0] * 8
+                        attr[direction_idx] = 1
+                        edge_attrs.append(attr)
+
+    edge_index = torch.tensor(edges, dtype=torch.long).t().contiguous()
+    edge_attr = torch.tensor(edge_attrs, dtype=torch.float)
+    return edge_index, edge_attr
+Use code with caution.
+Python
+Modify the GNN Layer:
+You can't use GCNConv anymore. You need a layer that can process edge features. The most common way is to write your own using the MessagePassing base class from torch_geometric.
+from torch_geometric.nn import MessagePassing
+
+class DirectionalConv(MessagePassing):
+    def __init__(self, in_channels, out_channels):
+        super().__init__(aggr='mean') # "mean" aggregation.
+        self.edge_mlp = nn.Linear(in_channels + 8, out_channels) # Process node feature + edge feature
+        self.node_mlp = nn.Linear(in_channels, out_channels)
+
+    def forward(self, x, edge_index, edge_attr):
+        return self.propagate(edge_index, x=x, edge_attr=edge_attr)
+
+    def message(self, x_j, edge_attr):
+        # x_j is the feature of the neighbor node
+        # Concatenate neighbor feature with the edge's directional feature
+        input_for_mlp = torch.cat([x_j, edge_attr], dim=1)
+        return self.edge_mlp(input_for_mlp)
+
+    def update(self, aggr_out, x):
+        # aggr_out is the aggregated messages from neighbors
+        # We can also add a skip connection from the original node feature
+        return aggr_out + self.node_mlp(x)
+Use code with caution.
+Python
+This DirectionalConv layer learns a different message function for each direction, allowing it to explicitly distinguish a horizontal line from a vertical one.
+Method B: Positional Encodings
+This is a simpler approach borrowed from Transformers. We just add the node's coordinates directly to its feature vector.
+Modify the Node Features:
+# In board_to_graph function
+
+# Create coordinate features
+rows_pos = torch.arange(ROWS, dtype=torch.float).view(-1, 1).repeat(1, COLS) / (ROWS - 1)
+cols_pos = torch.arange(COLS, dtype=torch.float).view(1, -1).repeat(ROWS, 1) / (COLS - 1)
+
+# Flatten and stack with other features
+pos_features = torch.stack([rows_pos.flatten(), cols_pos.flatten()], dim=1)
+
+# New feature vector: [is_empty, is_my_piece, is_opp_piece, norm_row, norm_col]
+features = np.stack([...], axis=1).astype(np.float32)
+x = torch.cat([torch.tensor(features), pos_features], dim=1)
+Use code with caution.
+Python
+Now, the input to GCNConv is 5-dimensional. The network can learn correlations like "having a friendly piece at a high norm_row value (bottom of the board) is different from one at a low norm_row value (top)". While less direct than edge features, it gives the GNN a sense of absolute position, which helps it infer directionality.
+
+# transformer with location encoding
+
+# graph transformer
+
+
+---
+
+# Notes from earlier experiments
+
 Principle 1: The Graph as a "Knowledge Ledger," Not a Rigid Blueprint
 
 The current approach of pre-calculating a static graph for each state is too slow  
