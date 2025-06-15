@@ -16,7 +16,13 @@ from tqdm import tqdm
 import pandas as pd
 import wandb
 from torch_geometric.data import Batch, Data, HeteroData
-from torch_geometric.nn import GATConv, HGTConv, global_add_pool, global_mean_pool
+from torch_geometric.nn import (
+    GATConv,
+    HGTConv,
+    MessagePassing,
+    global_add_pool,
+    global_mean_pool,
+)
 
 from environments.connect4 import Connect4
 
@@ -185,6 +191,122 @@ class ResNet(nn.Module):
         x = F.relu(self.fc1(x))
         policy_logits = self.policy_head(x)
         value = torch.tanh(self.value_head(x))
+        return policy_logits, value
+
+
+def get_connect4_graph_with_edge_attrs(board_tensor):
+    """Constructs a PyG Data object with edge attributes for direction."""
+    p1_pieces = board_tensor[0].numpy()
+    p2_pieces = board_tensor[1].numpy()
+
+    node_features = []
+    for r in range(BOARD_HEIGHT):
+        for c in range(BOARD_WIDTH):
+            is_p1 = p1_pieces[r, c] == 1
+            is_p2 = p2_pieces[r, c] == 1
+            is_empty = not is_p1 and not is_p2
+            node_features.append([float(is_empty), float(is_p1), float(is_p2)])
+    x = torch.tensor(node_features, dtype=torch.float)
+
+    edges = []
+    edge_attrs = []
+    direction_map = {}
+    idx = 0
+    for dr in [-1, 0, 1]:
+        for dc in [-1, 0, 1]:
+            if dr == 0 and dc == 0:
+                continue
+            direction_map[(dr, dc)] = idx
+            idx += 1
+
+    for r in range(BOARD_HEIGHT):
+        for c in range(BOARD_WIDTH):
+            node_idx = r * BOARD_WIDTH + c
+            for dr in [-1, 0, 1]:
+                for dc in [-1, 0, 1]:
+                    if dr == 0 and dc == 0:
+                        continue
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < BOARD_HEIGHT and 0 <= nc < BOARD_WIDTH:
+                        neighbor_idx = nr * BOARD_WIDTH + nc
+                        edges.append([node_idx, neighbor_idx])
+
+                        direction_idx = direction_map[(dr, dc)]
+                        attr = [0] * 8
+                        attr[direction_idx] = 1
+                        edge_attrs.append(attr)
+
+    edge_index = torch.tensor(edges, dtype=torch.long).t().contiguous()
+    edge_attr = torch.tensor(edge_attrs, dtype=torch.float)
+
+    return Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
+
+
+class DirectionalConv(MessagePassing):
+    def __init__(self, in_channels, out_channels):
+        super().__init__(aggr="mean")  # "mean" aggregation.
+        self.edge_mlp = nn.Linear(
+            in_channels + 8, out_channels
+        )  # Process node feature + edge feature
+        self.node_mlp = nn.Linear(in_channels, out_channels)
+
+    def forward(self, x, edge_index, edge_attr):
+        return self.propagate(edge_index, x=x, edge_attr=edge_attr)
+
+    def message(self, x_j, edge_attr):
+        # x_j is the feature of the neighbor node
+        # Concatenate neighbor feature with the edge's directional feature
+        input_for_mlp = torch.cat([x_j, edge_attr], dim=1)
+        return self.edge_mlp(input_for_mlp)
+
+    def update(self, aggr_out, x):
+        # aggr_out is the aggregated messages from neighbors
+        # We can also add a skip connection from the original node feature
+        return aggr_out + self.node_mlp(x)
+
+
+class DirectionalGNN(nn.Module):
+    def __init__(
+        self,
+        in_channels=3,
+        hidden_channels=64,
+        num_layers=2,
+        pooling_fn=global_mean_pool,
+    ):
+        super().__init__()
+        self.pooling = pooling_fn
+        self.in_proj = nn.Linear(in_channels, hidden_channels)
+
+        self.conv_layers = nn.ModuleList()
+        for _ in range(num_layers):
+            conv = DirectionalConv(hidden_channels, hidden_channels)
+            self.conv_layers.append(conv)
+
+        self.fc1 = nn.Linear(hidden_channels, 128)
+        self.policy_head = nn.Linear(128, BOARD_WIDTH)
+        self.value_head = nn.Linear(128, 1)
+
+    def forward(self, data):
+        x, edge_index, edge_attr, batch = (
+            data.x,
+            data.edge_index,
+            data.edge_attr,
+            data.batch,
+        )
+
+        x = self.in_proj(x)
+        x = F.relu(x)
+
+        for layer in self.conv_layers:
+            x = layer(x, edge_index, edge_attr)
+            x = F.relu(x)
+
+        graph_embedding = self.pooling(x, batch)
+
+        x = F.relu(self.fc1(graph_embedding))
+        policy_logits = self.policy_head(x)
+        value = torch.tanh(self.value_head(x))
+
         return policy_logits, value
 
 
@@ -464,22 +586,43 @@ def main():
     print("\n--- Pre-processing data for GNNs ---")
     cell_train_graphs = [
         construct_graph_data(torch.from_numpy(board))
-        for board in tqdm(X_train, desc="Processing Cell graphs")
+        for board in tqdm(X_train, desc="Processing Hetero graphs")
     ]
     cell_test_graphs = [
         construct_graph_data(torch.from_numpy(board))
-        for board in tqdm(X_test, desc="Processing Cell graphs")
+        for board in tqdm(X_test, desc="Processing Hetero graphs")
+    ]
+
+    dir_train_graphs = [
+        get_connect4_graph_with_edge_attrs(torch.from_numpy(board))
+        for board in tqdm(X_train, desc="Processing Directional graphs")
+    ]
+    dir_test_graphs = [
+        get_connect4_graph_with_edge_attrs(torch.from_numpy(board))
+        for board in tqdm(X_test, desc="Processing Directional graphs")
     ]
 
     gnn_experiments = [
         {
-            "name": "CellGNN_ValueFocused",
+            "name": "CellGNN_HGT",
             "model_class": GraphNet,
             "train_graphs": cell_train_graphs,
             "test_graphs": cell_test_graphs,
             "params": {
                 "hidden_channels": 128,
                 "num_heads": 8,
+                "num_layers": 4,
+                "pooling_fn": global_add_pool,
+            },
+            "lr": 0.001,
+        },
+        {
+            "name": "DirectionalGNN_EdgeAttr",
+            "model_class": DirectionalGNN,
+            "train_graphs": dir_train_graphs,
+            "test_graphs": dir_test_graphs,
+            "params": {
+                "hidden_channels": 128,
                 "num_layers": 4,
                 "pooling_fn": global_add_pool,
             },
