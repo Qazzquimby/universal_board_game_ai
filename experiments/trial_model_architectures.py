@@ -1,10 +1,7 @@
-# Symmetricalize by x dim and player
-# repeat but with manually creating graph implementations and understanding them well.
-
-
 import json
 import time
 from pathlib import Path
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -14,16 +11,14 @@ import numpy as np
 from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 import pandas as pd
-import wandb
 from torch_geometric.data import Batch, Data, HeteroData
 from torch_geometric.nn import (
-    GATConv,
     HGTConv,
     MessagePassing,
-    global_add_pool,
     global_mean_pool,
 )
 
+import wandb
 from environments.connect4 import Connect4
 
 BOARD_HEIGHT = 6
@@ -251,14 +246,21 @@ class PieceTransformerNet(nn.Module):
         dropout=0.1,
     ):
         super().__init__()
+
         # Input features: [is_my_piece, is_opp_piece, norm_x, norm_y] -> 4 features
         self.input_proj = nn.Linear(4, embedding_dim)
 
         # Special token for global board representation
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embedding_dim))
 
+        max_pieces = BOARD_HEIGHT * BOARD_WIDTH
+        self.positional_encoder = nn.Embedding(max_pieces + 1, embedding_dim)
+        self.layer_norm = nn.LayerNorm(embedding_dim)
+        self.dropout = nn.Dropout(dropout)
+
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=embedding_dim,
+            dim_feedforward=embedding_dim * 4,
             nhead=num_heads,
             dropout=dropout,
             batch_first=True,
@@ -267,37 +269,47 @@ class PieceTransformerNet(nn.Module):
             encoder_layer, num_layers=num_encoder_layers
         )
 
-        self.fc1 = nn.Linear(embedding_dim, 128)
-        self.policy_head = nn.Linear(128, BOARD_WIDTH)
-        self.value_head = nn.Linear(128, 1)
+        fc1_out_size = 64
+        self.fc1 = nn.Linear(embedding_dim, fc1_out_size)
+        self.policy_head = nn.Linear(fc1_out_size, BOARD_WIDTH)
+        self.value_head = nn.Linear(fc1_out_size, 1)
 
     def forward(self, src, src_key_padding_mask):
         # src shape: (batch_size, seq_len, feature_dim=4)
         # src_key_padding_mask shape: (batch_size, seq_len)
 
         # Project input features to embedding dimension
-        src = self.input_proj(src)  # (batch_size, seq_len, embedding_dim)
+        src_embedded = self.input_proj(src)  # (batch_size, seq_len, embedding_dim)
 
         # Prepend CLS token
-        batch_size = src.shape[0]
+        batch_size, seq_len, _ = src_embedded.shape
         cls_tokens = self.cls_token.expand(batch_size, -1, -1)
-        src = torch.cat((cls_tokens, src), dim=1)
+        x = torch.cat((cls_tokens, src_embedded), dim=1)
+
+        # position encoding
+        position_ids = torch.arange(seq_len + 1, device=src.device).expand(
+            batch_size, -1
+        )
+        pos_encoding = self.positional_encoder(position_ids)
+        x = x + pos_encoding
+        x = self.layer_norm(x)
+        x = self.dropout(x)
 
         # Adjust padding mask for CLS token
         cls_mask = torch.zeros(batch_size, 1, device=src.device, dtype=torch.bool)
-        src_key_padding_mask = torch.cat((cls_mask, src_key_padding_mask), dim=1)
+        final_padding_mask = torch.cat((cls_mask, src_key_padding_mask), dim=1)
 
         # Pass through transformer encoder
         transformer_output = self.transformer_encoder(
-            src, src_key_padding_mask=src_key_padding_mask
+            x, src_key_padding_mask=final_padding_mask
         )
 
         # Use the output of the CLS token for prediction
         cls_output = transformer_output[:, 0, :]  # (batch_size, embedding_dim)
 
-        x = F.relu(self.fc1(cls_output))
-        policy_logits = self.policy_head(x)
-        value = torch.tanh(self.value_head(x))
+        out = F.relu(self.fc1(cls_output))
+        policy_logits = self.policy_head(out)
+        value = torch.tanh(self.value_head(out))
 
         return policy_logits, value
 
@@ -779,7 +791,7 @@ def main():
     transformer_exp = {
         "name": "PieceTransformer",
         "model_class": PieceTransformerNet,
-        "params": {"num_encoder_layers": 4, "embedding_dim": 128, "num_heads": 8},
+        "params": {},
         "lr": 0.001,
     }
 
@@ -828,31 +840,31 @@ def main():
     ]
 
     gnn_experiments = [
-        {
-            "name": "CellGNN_HGT",
-            "model_class": GraphNet,
-            "train_graphs": cell_train_graphs,
-            "test_graphs": cell_test_graphs,
-            "params": {
-                "hidden_channels": 128,
-                "num_heads": 8,
-                "num_layers": 4,
-                "pooling_fn": global_add_pool,
-            },
-            "lr": 0.001,
-        },
-        {
-            "name": "DirectionalGNN_EdgeAttr",
-            "model_class": DirectionalGNN,
-            "train_graphs": dir_train_graphs,
-            "test_graphs": dir_test_graphs,
-            "params": {
-                "hidden_channels": 128,
-                "num_layers": 4,
-                "pooling_fn": global_add_pool,
-            },
-            "lr": 0.001,
-        },
+        # {
+        #     "name": "CellGNN_HGT",
+        #     "model_class": GraphNet,
+        #     "train_graphs": cell_train_graphs,
+        #     "test_graphs": cell_test_graphs,
+        #     "params": {
+        #         "hidden_channels": 128,
+        #         "num_heads": 8,
+        #         "num_layers": 4,
+        #         "pooling_fn": global_add_pool,
+        #     },
+        #     "lr": 0.001,
+        # },
+        # { # very weak, no attention
+        #     "name": "DirectionalGNN_EdgeAttr",
+        #     "model_class": DirectionalGNN,
+        #     "train_graphs": dir_train_graphs,
+        #     "test_graphs": dir_test_graphs,
+        #     "params": {
+        #         "hidden_channels": 128,
+        #         "num_layers": 4,
+        #         "pooling_fn": global_add_pool,
+        #     },
+        #     "lr": 0.001,
+        # },
     ]
 
     for exp in gnn_experiments:
