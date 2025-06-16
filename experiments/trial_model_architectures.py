@@ -16,6 +16,7 @@ from torch_geometric.nn import (
     HGTConv,
     MessagePassing,
     global_mean_pool,
+    global_add_pool,
 )
 
 import wandb
@@ -773,7 +774,11 @@ def main():
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
     test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
-    models_to_train = {}  # {"MLP": MLPNet(), "CNN": CNNNet(), "ResNet": ResNet()}
+    models_to_train = {
+        # "MLP": MLPNet(),
+        # "CNN": CNNNet(),
+        # "ResNet": ResNet(),
+    }
 
     all_results = {}
     for name, model in models_to_train.items():
@@ -890,7 +895,7 @@ def main():
         #     },
         #     "lr": 0.001,
         # },
-        # { # very weak, no attention
+        # {  # very weak, no attention
         #     "name": "DirectionalGNN_EdgeAttr",
         #     "model_class": DirectionalGNN,
         #     "train_graphs": dir_train_graphs,
