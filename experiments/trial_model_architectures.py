@@ -76,6 +76,37 @@ def _process_raw_item(item, env):
     return input_tensor, policy_label, value
 
 
+def create_transformer_input(board_tensor):
+    """
+    Converts a board tensor into a sequence of piece tokens for a transformer.
+    Each token has features: [is_my_piece, is_opp_piece, norm_x, norm_y].
+    Returns a tensor of shape (num_pieces, 4).
+    """
+    p1_pieces = board_tensor[0]  # My pieces
+    p2_pieces = board_tensor[1]  # Opponent's pieces
+
+    piece_features = []
+
+    # My pieces
+    my_locs = torch.nonzero(p1_pieces)
+    for loc in my_locs:
+        r, c = loc[0].item(), loc[1].item()
+        features = [1.0, 0.0, c / (BOARD_WIDTH - 1), r / (BOARD_HEIGHT - 1)]
+        piece_features.append(features)
+
+    # Opponent's pieces
+    opp_locs = torch.nonzero(p2_pieces)
+    for loc in opp_locs:
+        r, c = loc[0].item(), loc[1].item()
+        features = [0.0, 1.0, c / (BOARD_WIDTH - 1), r / (BOARD_HEIGHT - 1)]
+        piece_features.append(features)
+
+    if not piece_features:  # Handle empty board
+        return torch.empty(0, 4, dtype=torch.float)
+
+    return torch.tensor(piece_features, dtype=torch.float)
+
+
 def load_and_process_data():
     print("Loading and processing data...")
     with open(DATA_PATH, "r") as f:
@@ -113,6 +144,23 @@ class Connect4Dataset(Dataset):
 
     def __getitem__(self, idx):
         return self.inputs[idx], self.policy_labels[idx], self.value_labels[idx]
+
+
+class Connect4TransformerDataset(Dataset):
+    def __init__(self, transformer_inputs, policy_labels, value_labels):
+        self.transformer_inputs = transformer_inputs
+        self.policy_labels = torch.from_numpy(policy_labels).long()
+        self.value_labels = torch.from_numpy(value_labels)
+
+    def __len__(self):
+        return len(self.transformer_inputs)
+
+    def __getitem__(self, idx):
+        return (
+            self.transformer_inputs[idx],
+            self.policy_labels[idx],
+            self.value_labels[idx],
+        )
 
 
 class MLPNet(nn.Module):
@@ -191,6 +239,66 @@ class ResNet(nn.Module):
         x = F.relu(self.fc1(x))
         policy_logits = self.policy_head(x)
         value = torch.tanh(self.value_head(x))
+        return policy_logits, value
+
+
+class PieceTransformerNet(nn.Module):
+    def __init__(
+        self,
+        num_encoder_layers=4,
+        embedding_dim=128,
+        num_heads=8,
+        dropout=0.1,
+    ):
+        super().__init__()
+        # Input features: [is_my_piece, is_opp_piece, norm_x, norm_y] -> 4 features
+        self.input_proj = nn.Linear(4, embedding_dim)
+
+        # Special token for global board representation
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, embedding_dim))
+
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=embedding_dim,
+            nhead=num_heads,
+            dropout=dropout,
+            batch_first=True,
+        )
+        self.transformer_encoder = nn.TransformerEncoder(
+            encoder_layer, num_layers=num_encoder_layers
+        )
+
+        self.fc1 = nn.Linear(embedding_dim, 128)
+        self.policy_head = nn.Linear(128, BOARD_WIDTH)
+        self.value_head = nn.Linear(128, 1)
+
+    def forward(self, src, src_key_padding_mask):
+        # src shape: (batch_size, seq_len, feature_dim=4)
+        # src_key_padding_mask shape: (batch_size, seq_len)
+
+        # Project input features to embedding dimension
+        src = self.input_proj(src)  # (batch_size, seq_len, embedding_dim)
+
+        # Prepend CLS token
+        batch_size = src.shape[0]
+        cls_tokens = self.cls_token.expand(batch_size, -1, -1)
+        src = torch.cat((cls_tokens, src), dim=1)
+
+        # Adjust padding mask for CLS token
+        cls_mask = torch.zeros(batch_size, 1, device=src.device, dtype=torch.bool)
+        src_key_padding_mask = torch.cat((cls_mask, src_key_padding_mask), dim=1)
+
+        # Pass through transformer encoder
+        transformer_output = self.transformer_encoder(
+            src, src_key_padding_mask=src_key_padding_mask
+        )
+
+        # Use the output of the CLS token for prediction
+        cls_output = transformer_output[:, 0, :]  # (batch_size, embedding_dim)
+
+        x = F.relu(self.fc1(cls_output))
+        policy_logits = self.policy_head(x)
+        value = torch.tanh(self.value_head(x))
+
         return policy_logits, value
 
 
@@ -381,6 +489,28 @@ def pyg_collate_fn(batch):
     return batched_graph, batched_policies, batched_values
 
 
+def transformer_collate_fn(batch):
+    """
+    Custom collate function for transformer.
+    Pads sequences to the max length in the batch and creates a padding mask.
+    """
+    inputs, policies, values = zip(*batch)
+
+    # Pad input sequences
+    padded_inputs = nn.utils.rnn.pad_sequence(inputs, batch_first=True, padding_value=0)
+
+    # Create attention mask (True for padded elements)
+    lengths = [len(x) for x in inputs]
+    attention_mask = (
+        torch.arange(padded_inputs.size(1))[None, :] >= torch.tensor(lengths)[:, None]
+    )
+
+    batched_policies = torch.stack(list(policies))
+    batched_values = torch.stack(list(values))
+
+    return (padded_inputs, attention_mask), batched_policies, batched_values
+
+
 class GraphNet(nn.Module):
     def __init__(
         self,
@@ -453,8 +583,35 @@ def _process_batch(model, data_batch, device, policy_criterion, value_criterion)
     return loss, loss_p.item(), loss_v.item(), policy_acc, value_mse
 
 
+def _process_batch_transformer(
+    model, data_batch, device, policy_criterion, value_criterion
+):
+    (inputs, attention_mask), policy_labels, value_labels = data_batch
+    inputs = inputs.to(device)
+    attention_mask = attention_mask.to(device)
+    policy_labels = policy_labels.to(device)
+    value_labels = value_labels.to(device)
+
+    policy_logits, value_preds = model(inputs, attention_mask)
+
+    loss_p = policy_criterion(policy_logits, policy_labels)
+    loss_v = value_criterion(value_preds.squeeze(), value_labels)
+    loss = loss_p + loss_v
+
+    _, predicted_policies = torch.max(policy_logits, 1)
+    policy_acc = (predicted_policies == policy_labels).int().sum().item()
+    value_mse = F.mse_loss(value_preds.squeeze(), value_labels).item()
+
+    return loss, loss_p.item(), loss_v.item(), policy_acc, value_mse
+
+
 def train_and_evaluate(
-    model, model_name, train_loader, test_loader, learning_rate=LEARNING_RATE
+    model,
+    model_name,
+    train_loader,
+    test_loader,
+    learning_rate=LEARNING_RATE,
+    process_batch_fn=_process_batch,
 ):
     print(f"\n--- Training {model_name} on {DEVICE} ---")
     start_time = time.time()
@@ -473,7 +630,7 @@ def train_and_evaluate(
 
         for data_batch in train_loader:
             optimizer.zero_grad()
-            loss, loss_p_item, loss_v_item, policy_acc, value_mse = _process_batch(
+            loss, loss_p_item, loss_v_item, policy_acc, value_mse = process_batch_fn(
                 model, data_batch, DEVICE, policy_criterion, value_criterion
             )
             loss.backward()
@@ -490,7 +647,13 @@ def train_and_evaluate(
         total_test_policy_loss, total_test_value_loss = 0, 0
         with torch.no_grad():
             for data_batch in test_loader:
-                loss, loss_p_item, loss_v_item, policy_acc, value_mse = _process_batch(
+                (
+                    loss,
+                    loss_p_item,
+                    loss_v_item,
+                    policy_acc,
+                    value_mse,
+                ) = process_batch_fn(
                     model, data_batch, DEVICE, policy_criterion, value_criterion
                 )
                 total_test_loss += loss.item()
@@ -564,7 +727,7 @@ def main():
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
     test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
-    models_to_train = {"MLP": MLPNet(), "CNN": CNNNet(), "ResNet": ResNet()}
+    models_to_train = {}  # {"MLP": MLPNet(), "CNN": CNNNet(), "ResNet": ResNet()}
 
     all_results = {}
     for name, model in models_to_train.items():
@@ -584,6 +747,68 @@ def main():
         )
         all_results[name] = {"df": results_df, "time": training_time}
         wandb.finish()
+
+    # --- Transformer Experiment ---
+    print("\n--- Pre-processing data for Transformer ---")
+    transformer_train_inputs = [
+        create_transformer_input(torch.from_numpy(board))
+        for board in tqdm(X_train, desc="Processing Transformer inputs")
+    ]
+    transformer_test_inputs = [
+        create_transformer_input(torch.from_numpy(board))
+        for board in tqdm(X_test, desc="Processing Transformer inputs")
+    ]
+
+    transformer_train_dataset = Connect4TransformerDataset(
+        transformer_train_inputs, p_train, v_train
+    )
+    transformer_test_dataset = Connect4TransformerDataset(
+        transformer_test_inputs, p_test, v_test
+    )
+
+    transformer_train_loader = DataLoader(
+        transformer_train_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=True,
+        collate_fn=transformer_collate_fn,
+    )
+    transformer_test_loader = DataLoader(
+        transformer_test_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=False,
+        collate_fn=transformer_collate_fn,
+    )
+
+    transformer_exp = {
+        "name": "PieceTransformer",
+        "model_class": PieceTransformerNet,
+        "params": {"num_encoder_layers": 4, "embedding_dim": 128, "num_heads": 8},
+        "lr": 0.001,
+    }
+
+    wandb.init(
+        project="connect4_arch_comparison",
+        name=transformer_exp["name"],
+        group=run_group_id,
+        reinit=True,
+        config={
+            "learning_rate": transformer_exp["lr"],
+            "batch_size": BATCH_SIZE,
+            "architecture": transformer_exp["model_class"].__name__,
+            **transformer_exp["params"],
+        },
+    )
+    model = transformer_exp["model_class"](**transformer_exp["params"]).to(DEVICE)
+    results_df, training_time = train_and_evaluate(
+        model=model,
+        model_name=transformer_exp["name"],
+        train_loader=transformer_train_loader,
+        test_loader=transformer_test_loader,
+        learning_rate=transformer_exp["lr"],
+        process_batch_fn=_process_batch_transformer,
+    )
+    all_results[transformer_exp["name"]] = {"df": results_df, "time": training_time}
+    wandb.finish()
 
     # --- GNN Experiments ---
     print("\n--- Pre-processing data for GNNs ---")
