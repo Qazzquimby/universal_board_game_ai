@@ -3,8 +3,6 @@ Trial:
 # Holding pieces as 1hot vs a channel for each player made no difference to performance. Same curves.
 
 #  Try homognn with directionality
-## This did terribly. Investigating why.
-
 Edge Features (The Best Approach)
 This is the most direct and powerful way to encode direction. We add features to the edges to describe their relationship.
 Modify the Graph Creation:
@@ -42,7 +40,8 @@ def get_connect4_graph_with_edge_attrs():
     edge_index = torch.tensor(edges, dtype=torch.long).t().contiguous()
     edge_attr = torch.tensor(edge_attrs, dtype=torch.float)
     return edge_index, edge_attr
-
+Use code with caution.
+Python
 Modify the GNN Layer:
 You can't use GCNConv anymore. You need a layer that can process edge features. The most common way is to write your own using the MessagePassing base class from torch_geometric.
 from torch_geometric.nn import MessagePassing

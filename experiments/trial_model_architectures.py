@@ -353,11 +353,9 @@ def get_connect4_graph_with_edge_attrs(board_tensor):
 class DirectionalConv(MessagePassing):
     def __init__(self, in_channels, out_channels):
         super().__init__(aggr="mean")  # "mean" aggregation.
-        self.edge_mlp = nn.Sequential(
-            nn.Linear(in_channels + 8, in_channels),
-            nn.ReLU(),
-            nn.Linear(in_channels, out_channels),
-        )
+        self.edge_mlp = nn.Linear(
+            in_channels + 8, out_channels
+        )  # Process node feature + edge feature
         self.node_mlp = nn.Linear(in_channels, out_channels)
 
     def forward(self, x, edge_index, edge_attr):
@@ -376,7 +374,6 @@ class DirectionalConv(MessagePassing):
 
 
 class DirectionalGNN(nn.Module):
-    # Does very poorly, possibly due to missing attention mechanism
     def __init__(
         self,
         in_channels=3,
@@ -831,21 +828,21 @@ def main():
     ]
 
     gnn_experiments = [
-        # {
-        #     "name": "CellGNN_HGT",
-        #     "model_class": GraphNet,
-        #     "train_graphs": cell_train_graphs,
-        #     "test_graphs": cell_test_graphs,
-        #     "params": {
-        #         "hidden_channels": 128,
-        #         "num_heads": 8,
-        #         "num_layers": 4,
-        #         "pooling_fn": global_add_pool,
-        #     },
-        #     "lr": 0.001,
-        # },
         {
-            "name": "DirectionalGNN_EdgeAttr_with_edge_mlp",
+            "name": "CellGNN_HGT",
+            "model_class": GraphNet,
+            "train_graphs": cell_train_graphs,
+            "test_graphs": cell_test_graphs,
+            "params": {
+                "hidden_channels": 128,
+                "num_heads": 8,
+                "num_layers": 4,
+                "pooling_fn": global_add_pool,
+            },
+            "lr": 0.001,
+        },
+        {
+            "name": "DirectionalGNN_EdgeAttr",
             "model_class": DirectionalGNN,
             "train_graphs": dir_train_graphs,
             "test_graphs": dir_test_graphs,
