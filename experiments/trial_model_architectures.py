@@ -102,6 +102,37 @@ def create_transformer_input(board_tensor):
     return torch.tensor(piece_features, dtype=torch.float)
 
 
+def _augment_and_append(
+    input_tensor, policy_label, value, inputs, policy_labels, value_labels
+):
+    """Appends original and augmented data points to the lists."""
+    # Original
+    inputs.append(input_tensor)
+    policy_labels.append(policy_label)
+    value_labels.append(value)
+
+    # Symmetrical (horizontal flip)
+    sym_input = np.flip(input_tensor, axis=2).copy()
+    sym_policy = (BOARD_WIDTH - 1) - policy_label
+    inputs.append(sym_input)
+    policy_labels.append(sym_policy)
+    value_labels.append(value)
+
+    # Player-swapped
+    # Note: input_tensor[0] is current player, input_tensor[1] is opponent
+    swapped_input = input_tensor[[1, 0], :, :].copy()
+    swapped_value = -value
+    inputs.append(swapped_input)
+    policy_labels.append(policy_label)
+    value_labels.append(swapped_value)
+
+    # Symmetrical and player-swapped
+    sym_swapped_input = np.flip(swapped_input, axis=2).copy()
+    inputs.append(sym_swapped_input)
+    policy_labels.append(sym_policy)
+    value_labels.append(swapped_value)
+
+
 def load_and_process_data():
     print("Loading and processing data...")
     with open(DATA_PATH, "r") as f:
@@ -116,11 +147,17 @@ def load_and_process_data():
     for item in tqdm(raw_data):
         processed_item = _process_raw_item(item, env)
         if processed_item:
-            input_tensor, policy_label, value_label = processed_item
-            inputs.append(input_tensor)
-            policy_labels.append(policy_label)
-            value_labels.append(value_label)
+            input_tensor, policy_label, value = processed_item
+            _augment_and_append(
+                input_tensor,
+                policy_label,
+                value,
+                inputs,
+                policy_labels,
+                value_labels,
+            )
 
+    print(f"Data augmentation complete. Total samples: {len(inputs)}")
     return (
         np.array(inputs),
         np.array(policy_labels),
