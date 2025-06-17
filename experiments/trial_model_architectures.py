@@ -403,9 +403,7 @@ class PieceTransformerNet_Sinusoidal(nn.Module):
         # coords: (batch_size, seq_len, 2) -> (row, col)
         d_model_half = embedding_dim // 2
         if d_model_half % 2 != 0:
-            raise ValueError(
-                "embedding_dim // 2 must be even for sinusoidal encoding."
-            )
+            raise ValueError("embedding_dim // 2 must be even for sinusoidal encoding.")
 
         rows = coords[:, :, 0].float()  # (batch_size, seq_len)
         cols = coords[:, :, 1].float()  # (batch_size, seq_len)
@@ -489,8 +487,8 @@ class PieceTransformerNet_Sinusoidal_Learnable(nn.Module):
             )
 
         # Input features: [is_my_piece, is_opp_piece] -> 2 features
-        self.input_proj = nn.Linear(2, embedding_dim)
-        self.pos_proj = nn.Linear(embedding_dim, embedding_dim)
+        self.input_proj = nn.Linear(2, 32)
+        self.pos_proj = nn.Linear(32, embedding_dim)
 
         # Special token for global board representation
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embedding_dim))
@@ -518,9 +516,7 @@ class PieceTransformerNet_Sinusoidal_Learnable(nn.Module):
         # coords: (batch_size, seq_len, 2) -> (row, col)
         d_model_half = embedding_dim // 2
         if d_model_half % 2 != 0:
-            raise ValueError(
-                "embedding_dim // 2 must be even for sinusoidal encoding."
-            )
+            raise ValueError("embedding_dim // 2 must be even for sinusoidal encoding.")
 
         rows = coords[:, :, 0].float()  # (batch_size, seq_len)
         cols = coords[:, :, 1].float()  # (batch_size, seq_len)
@@ -796,8 +792,7 @@ def transformer_collate_fn(batch):
     # Create attention mask (True for padded elements)
     lengths = [len(x) for x in feature_list]
     attention_mask = (
-        torch.arange(padded_features.size(1))[None, :]
-        >= torch.tensor(lengths)[:, None]
+        torch.arange(padded_features.size(1))[None, :] >= torch.tensor(lengths)[:, None]
     )
 
     batched_policies = torch.stack(list(policies))
@@ -1083,125 +1078,66 @@ def main():
         collate_fn=transformer_collate_fn,
     )
 
-    transformer_exp = {
-        "name": "PieceTransformer_v2",
-        "model_class": PieceTransformerNet,
-        "params": {
-            "num_encoder_layers": 4,
-            "embedding_dim": 128,
-            "num_heads": 8,
-            "dropout": 0.1,
+    transformer_experiments = [
+        # {
+        #     "name": "PieceTransformer_v2",
+        #     "model_class": PieceTransformerNet,
+        #     "params": {
+        #         "num_encoder_layers": 4,
+        #         "embedding_dim": 128,
+        #         "num_heads": 8,
+        #         "dropout": 0.1,
+        #     },
+        #     "lr": 0.001,
+        # },
+        # {
+        #     "name": "PieceTransformer_Sinusoidal",
+        #     "model_class": PieceTransformerNet_Sinusoidal,
+        #     "params": {
+        #         "num_encoder_layers": 4,
+        #         "embedding_dim": 128,
+        #         "num_heads": 8,
+        #         "dropout": 0.1,
+        #     },
+        #     "lr": 0.001,
+        # },
+        {
+            "name": "PieceTransformer_Sinusoidal_Learnable",
+            "model_class": PieceTransformerNet_Sinusoidal_Learnable,
+            "params": {
+                "num_encoder_layers": 4,
+                "embedding_dim": 128,
+                "num_heads": 8,
+                "dropout": 0.1,
+            },
+            "lr": 0.001,
         },
-        "lr": 0.001,
-    }
+    ]
 
-    wandb.init(
-        project="connect4_arch_comparison",
-        name=transformer_exp["name"],
-        group=run_group_id,
-        reinit=True,
-        config={
-            "learning_rate": transformer_exp["lr"],
-            "batch_size": BATCH_SIZE,
-            "architecture": transformer_exp["model_class"].__name__,
-            **transformer_exp["params"],
-        },
-    )
-    model = transformer_exp["model_class"](**transformer_exp["params"]).to(DEVICE)
-    results_df, training_time = train_and_evaluate(
-        model=model,
-        model_name=transformer_exp["name"],
-        train_loader=transformer_train_loader,
-        test_loader=transformer_test_loader,
-        learning_rate=transformer_exp["lr"],
-        process_batch_fn=_process_batch_transformer,
-    )
-    all_results[transformer_exp["name"]] = {"df": results_df, "time": training_time}
-    wandb.finish()
-
-    # --- Sinusoidal Transformer Experiment ---
-    sinusoidal_transformer_exp = {
-        "name": "PieceTransformer_Sinusoidal",
-        "model_class": PieceTransformerNet_Sinusoidal,
-        "params": {
-            "num_encoder_layers": 4,
-            "embedding_dim": 128,
-            "num_heads": 8,
-            "dropout": 0.1,
-        },
-        "lr": 0.001,
-    }
-
-    wandb.init(
-        project="connect4_arch_comparison",
-        name=sinusoidal_transformer_exp["name"],
-        group=run_group_id,
-        reinit=True,
-        config={
-            "learning_rate": sinusoidal_transformer_exp["lr"],
-            "batch_size": BATCH_SIZE,
-            "architecture": sinusoidal_transformer_exp["model_class"].__name__,
-            **sinusoidal_transformer_exp["params"],
-        },
-    )
-    model = sinusoidal_transformer_exp["model_class"](
-        **sinusoidal_transformer_exp["params"]
-    ).to(DEVICE)
-    results_df, training_time = train_and_evaluate(
-        model=model,
-        model_name=sinusoidal_transformer_exp["name"],
-        train_loader=transformer_train_loader,
-        test_loader=transformer_test_loader,
-        learning_rate=sinusoidal_transformer_exp["lr"],
-        process_batch_fn=_process_batch_transformer,
-    )
-    all_results[sinusoidal_transformer_exp["name"]] = {
-        "df": results_df,
-        "time": training_time,
-    }
-    wandb.finish()
-
-    # --- Learnable Sinusoidal Transformer Experiment ---
-    learnable_sin_transformer_exp = {
-        "name": "PieceTransformer_Sinusoidal_Learnable",
-        "model_class": PieceTransformerNet_Sinusoidal_Learnable,
-        "params": {
-            "num_encoder_layers": 4,
-            "embedding_dim": 128,
-            "num_heads": 8,
-            "dropout": 0.1,
-        },
-        "lr": 0.001,
-    }
-
-    wandb.init(
-        project="connect4_arch_comparison",
-        name=learnable_sin_transformer_exp["name"],
-        group=run_group_id,
-        reinit=True,
-        config={
-            "learning_rate": learnable_sin_transformer_exp["lr"],
-            "batch_size": BATCH_SIZE,
-            "architecture": learnable_sin_transformer_exp["model_class"].__name__,
-            **learnable_sin_transformer_exp["params"],
-        },
-    )
-    model = learnable_sin_transformer_exp["model_class"](
-        **learnable_sin_transformer_exp["params"]
-    ).to(DEVICE)
-    results_df, training_time = train_and_evaluate(
-        model=model,
-        model_name=learnable_sin_transformer_exp["name"],
-        train_loader=transformer_train_loader,
-        test_loader=transformer_test_loader,
-        learning_rate=learnable_sin_transformer_exp["lr"],
-        process_batch_fn=_process_batch_transformer,
-    )
-    all_results[learnable_sin_transformer_exp["name"]] = {
-        "df": results_df,
-        "time": training_time,
-    }
-    wandb.finish()
+    for exp in transformer_experiments:
+        wandb.init(
+            project="connect4_arch_comparison",
+            name=exp["name"],
+            group=run_group_id,
+            reinit=True,
+            config={
+                "learning_rate": exp["lr"],
+                "batch_size": BATCH_SIZE,
+                "architecture": exp["model_class"].__name__,
+                **exp["params"],
+            },
+        )
+        model = exp["model_class"](**exp["params"]).to(DEVICE)
+        results_df, training_time = train_and_evaluate(
+            model=model,
+            model_name=exp["name"],
+            train_loader=transformer_train_loader,
+            test_loader=transformer_test_loader,
+            learning_rate=exp["lr"],
+            process_batch_fn=_process_batch_transformer,
+        )
+        all_results[exp["name"]] = {"df": results_df, "time": training_time}
+        wandb.finish()
 
     # --- GNN Experiments ---
     print("\n--- Pre-processing data for GNNs ---")
