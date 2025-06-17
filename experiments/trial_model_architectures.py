@@ -474,6 +474,122 @@ class PieceTransformerNet_Sinusoidal(nn.Module):
         return policy_logits, value
 
 
+class PieceTransformerNet_Sinusoidal_Learnable(nn.Module):
+    def __init__(
+        self,
+        num_encoder_layers=4,
+        embedding_dim=128,
+        num_heads=8,
+        dropout=0.1,
+    ):
+        super().__init__()
+        if embedding_dim % 4 != 0:
+            raise ValueError(
+                "embedding_dim must be divisible by 4 for 2D sinusoidal encoding."
+            )
+
+        # Input features: [is_my_piece, is_opp_piece] -> 2 features
+        self.input_proj = nn.Linear(2, embedding_dim)
+        self.pos_proj = nn.Linear(embedding_dim, embedding_dim)
+
+        # Special token for global board representation
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, embedding_dim))
+
+        self.dropout = nn.Dropout(dropout)
+
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=embedding_dim,
+            dim_feedforward=embedding_dim * 4,
+            nhead=num_heads,
+            dropout=dropout,
+            batch_first=True,
+            norm_first=True,
+        )
+        self.transformer_encoder = nn.TransformerEncoder(
+            encoder_layer, num_layers=num_encoder_layers
+        )
+
+        fc1_out_size = 64
+        self.fc1 = nn.Linear(embedding_dim, fc1_out_size)
+        self.policy_head = nn.Linear(fc1_out_size, BOARD_WIDTH)
+        self.value_head = nn.Linear(fc1_out_size, 1)
+
+    def _generate_sinusoidal_embeddings(self, coords, embedding_dim):
+        # coords: (batch_size, seq_len, 2) -> (row, col)
+        d_model_half = embedding_dim // 2
+        if d_model_half % 2 != 0:
+            raise ValueError(
+                "embedding_dim // 2 must be even for sinusoidal encoding."
+            )
+
+        rows = coords[:, :, 0].float()  # (batch_size, seq_len)
+        cols = coords[:, :, 1].float()  # (batch_size, seq_len)
+
+        div_term = torch.exp(
+            torch.arange(0, d_model_half, 2).float()
+            * (-math.log(10000.0) / d_model_half)
+        ).to(coords.device)
+
+        # Positional encoding for rows
+        pe_rows = torch.zeros(
+            rows.shape[0], rows.shape[1], d_model_half, device=coords.device
+        )
+        pe_rows[:, :, 0::2] = torch.sin(rows.unsqueeze(-1) * div_term)
+        pe_rows[:, :, 1::2] = torch.cos(rows.unsqueeze(-1) * div_term)
+
+        # Positional encoding for columns
+        pe_cols = torch.zeros(
+            cols.shape[0], cols.shape[1], d_model_half, device=coords.device
+        )
+        pe_cols[:, :, 0::2] = torch.sin(cols.unsqueeze(-1) * div_term)
+        pe_cols[:, :, 1::2] = torch.cos(cols.unsqueeze(-1) * div_term)
+
+        # Concatenate row and column embeddings
+        pos_encoding = torch.cat([pe_rows, pe_cols], dim=-1)
+        return pos_encoding
+
+    def forward(self, src, coords, src_key_padding_mask):
+        # src shape: (batch_size, seq_len, feature_dim=2)
+        # coords shape: (batch_size, seq_len, 2) -> (row, col)
+        # src_key_padding_mask shape: (batch_size, seq_len)
+
+        # Project input features to embedding dimension
+        src_embedded = self.input_proj(src)  # (batch_size, seq_len, embedding_dim)
+
+        # Create positional encoding from coordinates and make it learnable
+        pos_encoding = self._generate_sinusoidal_embeddings(
+            coords, src_embedded.shape[-1]
+        )
+        pos_encoding = F.relu(self.pos_proj(pos_encoding))
+        src_with_pos = src_embedded + pos_encoding
+
+        # Prepend CLS token
+        batch_size, seq_len, _ = src_with_pos.shape
+        cls_tokens = self.cls_token.expand(batch_size, -1, -1)
+        x = torch.cat((cls_tokens, src_with_pos), dim=1)
+
+        # Apply dropout to the combined token sequence
+        x = self.dropout(x)
+
+        # Adjust padding mask for CLS token
+        cls_mask = torch.zeros(batch_size, 1, device=src.device, dtype=torch.bool)
+        final_padding_mask = torch.cat((cls_mask, src_key_padding_mask), dim=1)
+
+        # Pass through transformer encoder
+        transformer_output = self.transformer_encoder(
+            x, src_key_padding_mask=final_padding_mask
+        )
+
+        # Use the output of the CLS token for prediction
+        cls_output = transformer_output[:, 0, :]  # (batch_size, embedding_dim)
+
+        out = F.relu(self.fc1(cls_output))
+        policy_logits = self.policy_head(out)
+        value = torch.tanh(self.value_head(out))
+
+        return policy_logits, value
+
+
 def get_connect4_graph_with_edge_attrs(board_tensor):
     """Constructs a PyG Data object with edge attributes for direction."""
     p1_pieces = board_tensor[0].numpy()
@@ -1040,6 +1156,48 @@ def main():
         process_batch_fn=_process_batch_transformer,
     )
     all_results[sinusoidal_transformer_exp["name"]] = {
+        "df": results_df,
+        "time": training_time,
+    }
+    wandb.finish()
+
+    # --- Learnable Sinusoidal Transformer Experiment ---
+    learnable_sin_transformer_exp = {
+        "name": "PieceTransformer_Sinusoidal_Learnable",
+        "model_class": PieceTransformerNet_Sinusoidal_Learnable,
+        "params": {
+            "num_encoder_layers": 4,
+            "embedding_dim": 128,
+            "num_heads": 8,
+            "dropout": 0.1,
+        },
+        "lr": 0.001,
+    }
+
+    wandb.init(
+        project="connect4_arch_comparison",
+        name=learnable_sin_transformer_exp["name"],
+        group=run_group_id,
+        reinit=True,
+        config={
+            "learning_rate": learnable_sin_transformer_exp["lr"],
+            "batch_size": BATCH_SIZE,
+            "architecture": learnable_sin_transformer_exp["model_class"].__name__,
+            **learnable_sin_transformer_exp["params"],
+        },
+    )
+    model = learnable_sin_transformer_exp["model_class"](
+        **learnable_sin_transformer_exp["params"]
+    ).to(DEVICE)
+    results_df, training_time = train_and_evaluate(
+        model=model,
+        model_name=learnable_sin_transformer_exp["name"],
+        train_loader=transformer_train_loader,
+        test_loader=transformer_test_loader,
+        learning_rate=learnable_sin_transformer_exp["lr"],
+        process_batch_fn=_process_batch_transformer,
+    )
+    all_results[learnable_sin_transformer_exp["name"]] = {
         "df": results_df,
         "time": training_time,
     }
