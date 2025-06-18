@@ -108,6 +108,20 @@ def create_transformer_input(board_tensor):
     )
 
 
+def create_cell_transformer_input(board_tensor):
+    """
+    Converts a board tensor into a sequence of tokens for each cell.
+    Returns a tensor of shape (H * W,) with integer class labels:
+    0=empty, 1=my_piece, 2=opp_piece.
+    """
+    p1_board = board_tensor[0]  # My pieces
+    p2_board = board_tensor[1]  # Opponent's pieces
+    cell_states = torch.zeros(BOARD_HEIGHT, BOARD_WIDTH, dtype=torch.long)
+    cell_states[p1_board == 1] = 1
+    cell_states[p2_board == 1] = 2
+    return cell_states.flatten()
+
+
 def _augment_and_append(
     input_tensor, policy_label, value, inputs, policy_labels, value_labels
 ):
@@ -196,6 +210,23 @@ class Connect4TransformerDataset(Dataset):
     def __getitem__(self, idx):
         return (
             self.transformer_inputs[idx],
+            self.policy_labels[idx],
+            self.value_labels[idx],
+        )
+
+
+class Connect4CellTransformerDataset(Dataset):
+    def __init__(self, cell_inputs, policy_labels, value_labels):
+        self.cell_inputs = cell_inputs  # This will be a list of tensors
+        self.policy_labels = torch.from_numpy(policy_labels).long()
+        self.value_labels = torch.from_numpy(value_labels)
+
+    def __len__(self):
+        return len(self.cell_inputs)
+
+    def __getitem__(self, idx):
+        return (
+            self.cell_inputs[idx],
             self.policy_labels[idx],
             self.value_labels[idx],
         )
@@ -485,10 +516,11 @@ class PieceTransformerNet_Sinusoidal_Learnable(nn.Module):
             raise ValueError(
                 "embedding_dim must be divisible by 4 for 2D sinusoidal encoding."
             )
+        self.embedding_dim = embedding_dim
 
         # Input features: [is_my_piece, is_opp_piece] -> 2 features
-        self.input_proj = nn.Linear(2, 32)
-        self.pos_proj = nn.Linear(32, embedding_dim)
+        self.input_proj = nn.Linear(2, embedding_dim)
+        self.pos_proj = nn.Linear(embedding_dim, embedding_dim)
 
         # Special token for global board representation
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embedding_dim))
@@ -553,9 +585,7 @@ class PieceTransformerNet_Sinusoidal_Learnable(nn.Module):
         src_embedded = self.input_proj(src)  # (batch_size, seq_len, embedding_dim)
 
         # Create positional encoding from coordinates and make it learnable
-        pos_encoding = self._generate_sinusoidal_embeddings(
-            coords, src_embedded.shape[-1]
-        )
+        pos_encoding = self._generate_sinusoidal_embeddings(coords, self.embedding_dim)
         pos_encoding = F.relu(self.pos_proj(pos_encoding))
         src_with_pos = src_embedded + pos_encoding
 
@@ -575,6 +605,159 @@ class PieceTransformerNet_Sinusoidal_Learnable(nn.Module):
         transformer_output = self.transformer_encoder(
             x, src_key_padding_mask=final_padding_mask
         )
+
+        # Use the output of the CLS token for prediction
+        cls_output = transformer_output[:, 0, :]  # (batch_size, embedding_dim)
+
+        out = F.relu(self.fc1(cls_output))
+        policy_logits = self.policy_head(out)
+        value = torch.tanh(self.value_head(out))
+
+        return policy_logits, value
+
+
+class PieceTransformerNet_ConcatPos(nn.Module):
+    # Stronger than learnable pos
+    def __init__(
+        self,
+        num_encoder_layers=4,
+        embedding_dim=128,
+        num_heads=8,
+        dropout=0.1,
+        pos_embedding_dim=4,
+    ):
+        super().__init__()
+
+        # Input features: [is_my_piece, is_opp_piece] -> 2 features
+        # Positional features: x, y -> pos_embedding_dim * 2
+        self.input_proj = nn.Linear(2 + pos_embedding_dim * 2, embedding_dim)
+
+        # Learnable embeddings for each grid position
+        self.row_embedding = nn.Embedding(BOARD_HEIGHT, pos_embedding_dim)
+        self.col_embedding = nn.Embedding(BOARD_WIDTH, pos_embedding_dim)
+
+        # Special token for global board representation
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, embedding_dim))
+
+        self.dropout = nn.Dropout(dropout)
+
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=embedding_dim,
+            dim_feedforward=embedding_dim * 4,
+            nhead=num_heads,
+            dropout=dropout,
+            batch_first=True,
+            norm_first=True,
+        )
+        self.transformer_encoder = nn.TransformerEncoder(
+            encoder_layer, num_layers=num_encoder_layers
+        )
+
+        fc1_out_size = 64
+        self.fc1 = nn.Linear(embedding_dim, fc1_out_size)
+        self.policy_head = nn.Linear(fc1_out_size, BOARD_WIDTH)
+        self.value_head = nn.Linear(fc1_out_size, 1)
+
+    def forward(self, src, coords, src_key_padding_mask):
+        # src shape: (batch_size, seq_len, feature_dim=2)
+        # coords shape: (batch_size, seq_len, 2) -> (row, col)
+        # src_key_padding_mask shape: (batch_size, seq_len)
+
+        # Create positional encoding from coordinates
+        row_emb = self.row_embedding(coords[:, :, 0])
+        col_emb = self.col_embedding(coords[:, :, 1])
+
+        # Concatenate features and positional embeddings
+        combined_input = torch.cat([src, row_emb, col_emb], dim=-1)
+        src_embedded = self.input_proj(combined_input)
+
+        # Prepend CLS token
+        batch_size, seq_len, _ = src_embedded.shape
+        cls_tokens = self.cls_token.expand(batch_size, -1, -1)
+        x = torch.cat((cls_tokens, src_embedded), dim=1)
+
+        # Apply dropout to the combined token sequence
+        x = self.dropout(x)
+
+        # Adjust padding mask for CLS token
+        cls_mask = torch.zeros(batch_size, 1, device=src.device, dtype=torch.bool)
+        final_padding_mask = torch.cat((cls_mask, src_key_padding_mask), dim=1)
+
+        # Pass through transformer encoder
+        transformer_output = self.transformer_encoder(
+            x, src_key_padding_mask=final_padding_mask
+        )
+
+        # Use the output of the CLS token for prediction
+        cls_output = transformer_output[:, 0, :]  # (batch_size, embedding_dim)
+
+        out = F.relu(self.fc1(cls_output))
+        policy_logits = self.policy_head(out)
+        value = torch.tanh(self.value_head(out))
+
+        return policy_logits, value
+
+
+class CellTransformerNet(nn.Module):
+    def __init__(
+        self,
+        num_encoder_layers=4,
+        embedding_dim=128,
+        num_heads=8,
+        dropout=0.1,
+    ):
+        super().__init__()
+        num_patches = BOARD_HEIGHT * BOARD_WIDTH
+
+        # Embedding for the state of each cell (patch)
+        self.patch_embedding = nn.Embedding(
+            3, embedding_dim
+        )  # 0: empty, 1: mine, 2: opp
+
+        # Learnable positional embeddings for each patch + CLS token
+        self.positional_embedding = nn.Parameter(
+            torch.zeros(1, num_patches + 1, embedding_dim)
+        )
+
+        # Special token for global board representation
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, embedding_dim))
+
+        self.dropout = nn.Dropout(dropout)
+
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=embedding_dim,
+            dim_feedforward=embedding_dim * 4,
+            nhead=num_heads,
+            dropout=dropout,
+            batch_first=True,
+            norm_first=True,
+        )
+        self.transformer_encoder = nn.TransformerEncoder(
+            encoder_layer, num_layers=num_encoder_layers
+        )
+
+        fc1_out_size = 64
+        self.fc1 = nn.Linear(embedding_dim, fc1_out_size)
+        self.policy_head = nn.Linear(fc1_out_size, BOARD_WIDTH)
+        self.value_head = nn.Linear(fc1_out_size, 1)
+
+    def forward(self, src):
+        # src shape: (batch_size, seq_len=42)
+
+        # Get patch embeddings from integer states
+        x = self.patch_embedding(src)  # (batch_size, seq_len, embedding_dim)
+
+        # Prepend CLS token
+        batch_size = src.shape[0]
+        cls_tokens = self.cls_token.expand(batch_size, -1, -1)
+        x = torch.cat((cls_tokens, x), dim=1)
+
+        # Add positional embeddings
+        x = x + self.positional_embedding
+        x = self.dropout(x)
+
+        # Pass through transformer encoder (no mask needed for fixed-size input)
+        transformer_output = self.transformer_encoder(x)
 
         # Use the output of the CLS token for prediction
         cls_output = transformer_output[:, 0, :]  # (batch_size, embedding_dim)
@@ -900,6 +1083,27 @@ def _process_batch_transformer(
     return loss, loss_p.item(), loss_v.item(), policy_acc, value_mse
 
 
+def _process_batch_cell_transformer(
+    model, data_batch, device, policy_criterion, value_criterion
+):
+    inputs, policy_labels, value_labels = data_batch
+    inputs = inputs.to(device)
+    policy_labels = policy_labels.to(device)
+    value_labels = value_labels.to(device)
+
+    policy_logits, value_preds = model(inputs)
+
+    loss_p = policy_criterion(policy_logits, policy_labels)
+    loss_v = value_criterion(value_preds.squeeze(), value_labels)
+    loss = loss_p + loss_v
+
+    _, predicted_policies = torch.max(policy_logits, 1)
+    policy_acc = (predicted_policies == policy_labels).int().sum().item()
+    value_mse = F.mse_loss(value_preds.squeeze(), value_labels).item()
+
+    return loss, loss_p.item(), loss_v.item(), policy_acc, value_mse
+
+
 def train_and_evaluate(
     model,
     model_name,
@@ -1112,6 +1316,18 @@ def main():
             },
             "lr": 0.001,
         },
+        {
+            "name": "PieceTransformer_ConcatPos",
+            "model_class": PieceTransformerNet_ConcatPos,
+            "params": {
+                "num_encoder_layers": 4,
+                "embedding_dim": 128,
+                "num_heads": 8,
+                "dropout": 0.1,
+                "pos_embedding_dim": 4,
+            },
+            "lr": 0.001,
+        },
     ]
 
     for exp in transformer_experiments:
@@ -1135,6 +1351,72 @@ def main():
             test_loader=transformer_test_loader,
             learning_rate=exp["lr"],
             process_batch_fn=_process_batch_transformer,
+        )
+        all_results[exp["name"]] = {"df": results_df, "time": training_time}
+        wandb.finish()
+
+    # --- Cell Transformer Experiment ---
+    print("\n--- Pre-processing data for Cell Transformer ---")
+    cell_train_inputs = [
+        create_cell_transformer_input(torch.from_numpy(board))
+        for board in tqdm(X_train, desc="Processing Cell Transformer inputs")
+    ]
+    cell_test_inputs = [
+        create_cell_transformer_input(torch.from_numpy(board))
+        for board in tqdm(X_test, desc="Processing Cell Transformer inputs")
+    ]
+
+    cell_train_dataset = Connect4CellTransformerDataset(
+        cell_train_inputs, p_train, v_train
+    )
+    cell_test_dataset = Connect4CellTransformerDataset(cell_test_inputs, p_test, v_test)
+
+    cell_train_loader = DataLoader(
+        cell_train_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=True,
+    )
+    cell_test_loader = DataLoader(
+        cell_test_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=False,
+    )
+
+    cell_transformer_experiments = [
+        {
+            "name": "CellTransformer",
+            "model_class": CellTransformerNet,
+            "params": {
+                "num_encoder_layers": 4,
+                "embedding_dim": 128,
+                "num_heads": 8,
+                "dropout": 0.1,
+            },
+            "lr": 0.001,
+        },
+    ]
+
+    for exp in cell_transformer_experiments:
+        wandb.init(
+            project="connect4_arch_comparison",
+            name=exp["name"],
+            group=run_group_id,
+            reinit=True,
+            config={
+                "learning_rate": exp["lr"],
+                "batch_size": BATCH_SIZE,
+                "architecture": exp["model_class"].__name__,
+                **exp["params"],
+            },
+        )
+        model = exp["model_class"](**exp["params"]).to(DEVICE)
+        results_df, training_time = train_and_evaluate(
+            model=model,
+            model_name=exp["name"],
+            train_loader=cell_train_loader,
+            test_loader=cell_test_loader,
+            learning_rate=exp["lr"],
+            process_batch_fn=_process_batch_cell_transformer,
         )
         all_results[exp["name"]] = {"df": results_df, "time": training_time}
         wandb.finish()
