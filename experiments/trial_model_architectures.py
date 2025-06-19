@@ -41,7 +41,10 @@ from experiments.architectures.transformers import (
     _process_batch_transformer,
     _process_batch_cell_transformer,
     transformer_collate_fn,
+    PieceTransformer_OnehotLoc,
 )
+
+TINY_RUN = False
 
 
 def _process_raw_item(item, env):
@@ -113,6 +116,9 @@ def load_and_process_data():
     print("Loading and processing data...")
     with open(DATA_PATH, "r") as f:
         raw_data = json.load(f)
+
+    if TINY_RUN:
+        raw_data = raw_data[:100]
 
     inputs = []
     policy_labels = []
@@ -245,7 +251,8 @@ def train_and_evaluate(
             "test_mse": test_mse,
         }
 
-        wandb.log(log_info)
+        if not TINY_RUN:
+            wandb.log(log_info)
         results.append(log_info)
 
         if test_loss < best_test_loss:
@@ -290,22 +297,24 @@ def main():
 
     all_results = {}
     for name, model in models_to_train.items():
-        wandb.init(
-            project="connect4_arch_comparison",
-            name=name,
-            group=run_group_id,
-            config={
-                "learning_rate": LEARNING_RATE,
-                "batch_size": BATCH_SIZE,
-                "architecture": name,
-            },
-        )
+        if not TINY_RUN:
+            wandb.init(
+                project="connect4_arch_comparison",
+                name=name,
+                group=run_group_id,
+                config={
+                    "learning_rate": LEARNING_RATE,
+                    "batch_size": BATCH_SIZE,
+                    "architecture": name,
+                },
+            )
         model.to(DEVICE)
         results_df, training_time = train_and_evaluate(
             model, name, train_loader, test_loader
         )
         all_results[name] = {"df": results_df, "time": training_time}
-        wandb.finish()
+        if not TINY_RUN:
+            wandb.finish()
 
     # --- Transformer Experiment ---
     print("\n--- Pre-processing data for Transformer ---")
@@ -361,9 +370,32 @@ def main():
         #     },
         #     "lr": 0.001,
         # },
+        # {
+        #     "name": "PieceTransformer_Sinusoidal_Learnable",
+        #     "model_class": PieceTransformerNet_Sinusoidal_Learnable,
+        #     "params": {
+        #         "num_encoder_layers": 4,
+        #         "embedding_dim": 128,
+        #         "num_heads": 8,
+        #         "dropout": 0.1,
+        #     },
+        #     "lr": 0.001,
+        # },
+        # {
+        #     "name": "PieceTransformer_ConcatPos",
+        #     "model_class": PieceTransformerNet_ConcatPos,
+        #     "params": {
+        #         "num_encoder_layers": 4,
+        #         "embedding_dim": 128,
+        #         "num_heads": 8,
+        #         "dropout": 0.1,
+        #         "pos_embedding_dim": 4,
+        #     },
+        #     "lr": 0.001,
+        # },
         {
-            "name": "PieceTransformer_Sinusoidal_Learnable",
-            "model_class": PieceTransformerNet_Sinusoidal_Learnable,
+            "name": "PieceTransformer_onehotloc",
+            "model_class": PieceTransformer_OnehotLoc,
             "params": {
                 "num_encoder_layers": 4,
                 "embedding_dim": 128,
@@ -373,16 +405,37 @@ def main():
             "lr": 0.001,
         },
         {
-            "name": "PieceTransformer_ConcatPos",
-            "model_class": PieceTransformerNet_ConcatPos,
+            "name": "PieceTransformer_onehotloc_small",
+            "model_class": PieceTransformer_OnehotLoc,
+            "params": {
+                "num_encoder_layers": 4,
+                "embedding_dim": 32,
+                "num_heads": 2,
+                "dropout": 0.1,
+            },
+            "lr": 0.001,
+        },
+        {
+            "name": "PieceTransformer_onehotloc_nodropout",
+            "model_class": PieceTransformer_OnehotLoc,
+            "params": {
+                "num_encoder_layers": 4,
+                "embedding_dim": 128,
+                "num_heads": 8,
+                "dropout": 0.0,
+            },
+            "lr": 0.001,
+        },
+        {
+            "name": "PieceTransformer_onehotloc_highlr",
+            "model_class": PieceTransformer_OnehotLoc,
             "params": {
                 "num_encoder_layers": 4,
                 "embedding_dim": 128,
                 "num_heads": 8,
                 "dropout": 0.1,
-                "pos_embedding_dim": 4,
             },
-            "lr": 0.001,
+            "lr": 0.01,
         },
     ]
 
@@ -439,17 +492,17 @@ def main():
     )
 
     cell_transformer_experiments = [
-        {
-            "name": "CellTransformer",
-            "model_class": CellTransformerNet,
-            "params": {
-                "num_encoder_layers": 4,
-                "embedding_dim": 128,
-                "num_heads": 8,
-                "dropout": 0.1,
-            },
-            "lr": 0.001,
-        },
+        # {
+        #     "name": "CellTransformer",
+        #     "model_class": CellTransformerNet,
+        #     "params": {
+        #         "num_encoder_layers": 4,
+        #         "embedding_dim": 128,
+        #         "num_heads": 8,
+        #         "dropout": 0.1,
+        #     },
+        #     "lr": 0.001,
+        # },
     ]
 
     for exp in cell_transformer_experiments:

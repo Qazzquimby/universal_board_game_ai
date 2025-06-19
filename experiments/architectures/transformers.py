@@ -1,6 +1,7 @@
 import math
-
+import einops
 import torch
+from einops import rearrange, repeat
 from torch import nn as nn
 from torch.nn import functional as F
 from torch.utils.data import Dataset
@@ -440,6 +441,91 @@ class PieceTransformerNet_ConcatPos(nn.Module):
         out = F.relu(self.fc1(cls_output))
         policy_logits = self.policy_head(out)
         value = torch.tanh(self.value_head(out))
+
+        return policy_logits, value
+
+
+class PieceTransformer_OnehotLoc(nn.Module):
+    def __init__(
+        self,
+        num_encoder_layers=4,
+        embedding_dim=128,
+        num_heads=8,
+        dropout=0.1,
+    ):
+        super().__init__()
+
+        owner_ = 2
+        row_ = BOARD_HEIGHT
+        col_ = BOARD_WIDTH
+        input_size = owner_ + row_ + col_
+        self.piece_proj = nn.Linear(input_size, embedding_dim)
+
+        # this could be a game input * a game_proj, but I don't really see any game input here
+        # so itd be simpler to just make it a learnable parameter.
+        self.game_size = 1
+        self.game_proj = nn.Linear(self.game_size, embedding_dim)
+        # self.cls_token = nn.Parameter(torch.zeros(1, 1, embedding_dim))
+
+        self.dropout = nn.Dropout(dropout)
+
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=embedding_dim,
+            dim_feedforward=embedding_dim * 4,
+            nhead=num_heads,
+            dropout=dropout,
+            batch_first=True,
+            norm_first=True,
+        )
+        self.transformer_encoder = nn.TransformerEncoder(
+            encoder_layer, num_layers=num_encoder_layers
+        )
+
+        self.policy_head = nn.Linear(3 * embedding_dim, BOARD_WIDTH)
+        self.value_head = nn.Linear(3 * embedding_dim, 1)
+
+    def forward(self, owner, coords, src_key_padding_mask):
+        row_range = torch.arange(BOARD_HEIGHT).to(owner.device)
+        col_range = torch.arange(BOARD_WIDTH).to(owner.device)
+
+        # src shape: (batch_size, seq_len, feature_dim=2)
+        # coords shape: (batch_size, seq_len, 2) -> (row, col)
+        # src_key_padding_mask shape: (batch_size, seq_len)
+        row = rearrange(coords[:, :, 0], "batch piece -> batch piece 1") > row_range
+        # row = (torch.arange(coords[:, :, 0]) < BOARD_HEIGHT).float()
+
+        col = rearrange(coords[:, :, 1], "batch piece -> batch piece 1") > col_range
+        # col = (torch.arange(coords[:, :, 1]) < BOARD_WIDTH).float()
+        piece_raw = torch.concat([owner, row, col], dim=-1)
+
+        # Project input features to embedding dimension
+        piece_embedded = self.piece_proj(piece_raw)
+        # (batch_size, seq_len, embedding_dim)
+
+        ## Game token
+        # normally input wouldn't be hardcoded. This is somewhat silly but meant to resemble more normal situations.
+        game_input = torch.ones(self.game_size).to(owner.device)
+        game_embedded = self.game_proj(game_input)
+        game_embedded = repeat(
+            game_embedded, "game -> batch game", batch=piece_embedded.shape[0]
+        )
+        game_embedded = rearrange(game_embedded, "batch emb -> batch 1 emb")
+
+        tokens = torch.concat((piece_embedded, game_embedded), dim=1)
+        tokens = self.dropout(tokens)
+
+        # Pass through transformer encoder
+        transformer_output = self.transformer_encoder(tokens)
+
+        cards_out = transformer_output[:, :-1, :]  # (batch_size, embedding_dim)
+        cards_max = torch.max(cards_out, dim=1).values
+        cards_mean = torch.mean(cards_out, dim=1)
+        game_out = transformer_output[:, -1, :]  # (batch_size, embedding_dim)
+        full_out = torch.concat((cards_max, cards_mean, game_out), dim=-1)
+        # batch, 3*embedding dim
+
+        policy_logits = self.policy_head(full_out)
+        value = torch.tanh(self.value_head(full_out))
 
         return policy_logits, value
 
