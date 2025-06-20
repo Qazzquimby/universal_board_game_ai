@@ -485,86 +485,6 @@ class PieceTransformer_OnehotLoc(nn.Module):
         self.value_head = nn.Linear(3 * embedding_dim, 1)
 
     def forward(self, owner, coords, src_key_padding_mask):
-        row_coords = coords[:, :, 0].long()
-        col_coords = coords[:, :, 1].long()
-
-        row_onehot = F.one_hot(row_coords, num_classes=BOARD_HEIGHT)
-        col_onehot = F.one_hot(col_coords, num_classes=BOARD_WIDTH)
-        piece_raw = torch.concat([owner, row_onehot, col_onehot], dim=-1)
-
-        piece_embedded = self.piece_proj(piece_raw)
-        # (batch_size, seq_len, embedding_dim)
-
-        ## Game token
-        # normally input wouldn't be hardcoded. This is somewhat silly but meant to resemble more normal situations.
-        game_input = torch.ones(self.game_size).to(owner.device)
-        game_embedded = self.game_proj(game_input)
-        game_embedded = repeat(
-            game_embedded, "game -> batch game", batch=piece_embedded.shape[0]
-        )
-        game_embedded = rearrange(game_embedded, "batch emb -> batch 1 emb")
-
-        tokens = torch.concat((piece_embedded, game_embedded), dim=1)
-        tokens = self.dropout(tokens)
-
-        # Pass through transformer encoder
-        transformer_output = self.transformer_encoder(
-            tokens,  # src_key_padding_mask=src_key_padding_mask
-        )
-
-        cards_out = transformer_output[:, :-1, :]  # (batch_size, embedding_dim)
-        cards_max = torch.max(cards_out, dim=1).values
-        cards_mean = torch.mean(cards_out, dim=1)
-        game_out = transformer_output[:, -1, :]  # (batch_size, embedding_dim)
-        full_out = torch.concat((cards_max, cards_mean, game_out), dim=-1)
-        # batch, 3*embedding dim
-
-        policy_logits = self.policy_head(full_out)
-        value = torch.tanh(self.value_head(full_out))
-
-        return policy_logits, value
-
-
-class PieceTransformer_OnehotLoc_FixMask(nn.Module):
-    def __init__(
-        self,
-        num_encoder_layers=4,
-        embedding_dim=128,
-        num_heads=8,
-        dropout=0.1,
-    ):
-        super().__init__()
-
-        owner_ = 2
-        row_ = BOARD_HEIGHT
-        col_ = BOARD_WIDTH
-        input_size = owner_ + row_ + col_
-        self.piece_proj = nn.Linear(input_size, embedding_dim)
-
-        # this could be a game input * a game_proj, but I don't really see any game input here
-        # so itd be simpler to just make it a learnable parameter.
-        self.game_size = 1
-        self.game_proj = nn.Linear(self.game_size, embedding_dim)
-        # self.cls_token = nn.Parameter(torch.zeros(1, 1, embedding_dim))
-
-        self.dropout = nn.Dropout(dropout)
-
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=embedding_dim,
-            dim_feedforward=embedding_dim * 4,
-            nhead=num_heads,
-            dropout=dropout,
-            batch_first=True,
-            norm_first=True,
-        )
-        self.transformer_encoder = nn.TransformerEncoder(
-            encoder_layer, num_layers=num_encoder_layers
-        )
-
-        self.policy_head = nn.Linear(3 * embedding_dim, BOARD_WIDTH)
-        self.value_head = nn.Linear(3 * embedding_dim, 1)
-
-    def forward(self, owner, coords, src_key_padding_mask):
         piece_mask = src_key_padding_mask
         row_coords = coords[:, :, 0].long()
         col_coords = coords[:, :, 1].long()
@@ -605,6 +525,7 @@ class PieceTransformer_OnehotLoc_FixMask(nn.Module):
         value = torch.tanh(self.value_head(full_out))
 
         return policy_logits, value
+
 
 
 class CellTransformerNet(nn.Module):
