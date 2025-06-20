@@ -485,18 +485,22 @@ class PieceTransformer_OnehotLoc(nn.Module):
         self.value_head = nn.Linear(3 * embedding_dim, 1)
 
     def forward(self, owner, coords, src_key_padding_mask):
-        row_range = torch.arange(BOARD_HEIGHT).to(owner.device)
-        col_range = torch.arange(BOARD_WIDTH).to(owner.device)
+        # row_range = torch.arange(BOARD_HEIGHT).to(owner.device)
+        # col_range = torch.arange(BOARD_WIDTH).to(owner.device)
+        row_coords = coords[:, :, 0].long()
+        col_coords = coords[:, :, 1].long()
 
         # src shape: (batch_size, seq_len, feature_dim=2)
         # coords shape: (batch_size, seq_len, 2) -> (row, col)
         # src_key_padding_mask shape: (batch_size, seq_len)
-        row = rearrange(coords[:, :, 0], "batch piece -> batch piece 1") > row_range
+        # row = rearrange(coords[:, :, 0], "batch piece -> batch piece 1") > row_range
         # row = (torch.arange(coords[:, :, 0]) < BOARD_HEIGHT).float()
-
-        col = rearrange(coords[:, :, 1], "batch piece -> batch piece 1") > col_range
+        # col = rearrange(coords[:, :, 1], "batch piece -> batch piece 1") > col_range
         # col = (torch.arange(coords[:, :, 1]) < BOARD_WIDTH).float()
-        piece_raw = torch.concat([owner, row, col], dim=-1)
+
+        row_onehot = F.one_hot(row_coords, num_classes=BOARD_HEIGHT)
+        col_onehot = F.one_hot(col_coords, num_classes=BOARD_WIDTH)
+        piece_raw = torch.concat([owner, row_onehot, col_onehot], dim=-1)
 
         # Project input features to embedding dimension
         piece_embedded = self.piece_proj(piece_raw)
