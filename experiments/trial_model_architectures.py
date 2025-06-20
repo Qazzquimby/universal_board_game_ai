@@ -33,17 +33,13 @@ from experiments.architectures.shared import (
 from experiments.architectures.transformers import (
     create_transformer_input,
     create_cell_transformer_input,
-    PieceTransformerNet_Sinusoidal_Learnable,
-    PieceTransformerNet_ConcatPos,
-    CellTransformerNet,
     Connect4TransformerDataset,
     Connect4CellTransformerDataset,
     _process_batch_transformer,
     _process_batch_cell_transformer,
     transformer_collate_fn,
-    PieceTransformer_OnehotLoc,
-    PieceTransformerNet,
-    PieceTransformer_OnehotLoc_FixMask,
+    PieceTransformer_OnehotLoc_SimpleOut,
+    PieceTransformer_OnehotLoc_BottleneckOut,
 )
 
 TINY_RUN = False
@@ -422,20 +418,42 @@ def main():
         #     },
         #     "lr": 0.0001,
         # },
+        # {
+        #     "name": "PieceTransformer_onehotloc_highdropout",
+        #     "model_class": PieceTransformer_OnehotLoc,
+        #     "params": {
+        #         "num_encoder_layers": 4,
+        #         "embedding_dim": 128,
+        #         "num_heads": 8,
+        #         "dropout": 0.25,
+        #     },
+        #     "lr": 0.001,
+        # },
         {
-            "name": "PieceTransformer_onehotloc_highdropout",
-            "model_class": PieceTransformer_OnehotLoc,
+            "name": "PieceTransformer_onehotloc_simpleout",
+            "model_class": PieceTransformer_OnehotLoc_SimpleOut,
             "params": {
                 "num_encoder_layers": 4,
                 "embedding_dim": 128,
                 "num_heads": 8,
-                "dropout": 0.25,
+                "dropout": 0.1,
             },
             "lr": 0.001,
         },
         {
-            "name": "PieceTransformer_onehotloc_fixingmask",
-            "model_class": PieceTransformer_OnehotLoc_FixMask,
+            "name": "PieceTransformer_encodersum_simpleout",
+            "model_class": PieceTransformer_OnehotLoc_SimpleOut,
+            "params": {
+                "num_encoder_layers": 4,
+                "embedding_dim": 128,
+                "num_heads": 8,
+                "dropout": 0.1,
+            },
+            "lr": 0.001,
+        },
+        {
+            "name": "PieceTransformer_OnehotLoc_BottleneckOut",
+            "model_class": PieceTransformer_OnehotLoc_BottleneckOut,
             "params": {
                 "num_encoder_layers": 4,
                 "embedding_dim": 128,
