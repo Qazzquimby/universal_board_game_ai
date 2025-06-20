@@ -43,9 +43,10 @@ from experiments.architectures.transformers import (
     transformer_collate_fn,
     PieceTransformer_OnehotLoc,
     PieceTransformerNet,
+    PieceTransformer_OnehotLoc_FixMask,
 )
 
-TINY_RUN = True
+TINY_RUN = False
 
 
 def _process_raw_item(item, env):
@@ -318,48 +319,18 @@ def main():
             wandb.finish()
 
     # --- Transformer Experiment ---
-    print("\n--- Pre-processing data for Transformer ---")
-    transformer_train_inputs = [
-        create_transformer_input(torch.from_numpy(board))
-        for board in tqdm(X_train, desc="Processing Train Transformer inputs")
-    ]
-    transformer_test_inputs = [
-        create_transformer_input(torch.from_numpy(board))
-        for board in tqdm(X_test, desc="Processing Test Transformer inputs")
-    ]
-
-    transformer_train_dataset = Connect4TransformerDataset(
-        transformer_train_inputs, p_train, v_train
-    )
-    transformer_test_dataset = Connect4TransformerDataset(
-        transformer_test_inputs, p_test, v_test
-    )
-
-    transformer_train_loader = DataLoader(
-        transformer_train_dataset,
-        batch_size=BATCH_SIZE,
-        shuffle=True,
-        collate_fn=transformer_collate_fn,
-    )
-    transformer_test_loader = DataLoader(
-        transformer_test_dataset,
-        batch_size=BATCH_SIZE,
-        shuffle=False,
-        collate_fn=transformer_collate_fn,
-    )
-
     transformer_experiments = [
-        {
-            "name": "PieceTransformer_v2",
-            "model_class": PieceTransformerNet,
-            "params": {
-                "num_encoder_layers": 4,
-                "embedding_dim": 128,
-                "num_heads": 8,
-                "dropout": 0.1,
-            },
-            "lr": 0.001,
-        },
+        # {
+        #     "name": "PieceTransformer_v2",
+        #     "model_class": PieceTransformerNet,
+        #     "params": {
+        #         "num_encoder_layers": 4,
+        #         "embedding_dim": 128,
+        #         "num_heads": 8,
+        #         "dropout": 0.1,
+        #     },
+        #     "lr": 0.001,
+        # },
         # {
         #     "name": "PieceTransformer_Sinusoidal",
         #     "model_class": PieceTransformerNet_Sinusoidal,
@@ -451,19 +422,8 @@ def main():
         #     },
         #     "lr": 0.0001,
         # },
-        # {
-        #     "name": "PieceTransformer_onehotloc_highdropout",
-        #     "model_class": PieceTransformer_OnehotLoc,
-        #     "params": {
-        #         "num_encoder_layers": 4,
-        #         "embedding_dim": 128,
-        #         "num_heads": 8,
-        #         "dropout": 0.25,
-        #     },
-        #     "lr": 0.0001,
-        # },
         {
-            "name": "PieceTransformer_onehotloc_fixingmask",
+            "name": "PieceTransformer_onehotloc_highdropout",
             "model_class": PieceTransformer_OnehotLoc,
             "params": {
                 "num_encoder_layers": 4,
@@ -471,10 +431,51 @@ def main():
                 "num_heads": 8,
                 "dropout": 0.25,
             },
-            "lr": 0.0001,
+            "lr": 0.001,
+        },
+        {
+            "name": "PieceTransformer_onehotloc_fixingmask",
+            "model_class": PieceTransformer_OnehotLoc_FixMask,
+            "params": {
+                "num_encoder_layers": 4,
+                "embedding_dim": 128,
+                "num_heads": 8,
+                "dropout": 0.1,
+            },
+            "lr": 0.001,
         },
     ]
 
+    if transformer_experiments:
+        print("\n--- Pre-processing data for Transformer ---")
+        transformer_train_inputs = [
+            create_transformer_input(torch.from_numpy(board))
+            for board in tqdm(X_train, desc="Processing Train Transformer inputs")
+        ]
+        transformer_test_inputs = [
+            create_transformer_input(torch.from_numpy(board))
+            for board in tqdm(X_test, desc="Processing Test Transformer inputs")
+        ]
+
+        transformer_train_dataset = Connect4TransformerDataset(
+            transformer_train_inputs, p_train, v_train
+        )
+        transformer_test_dataset = Connect4TransformerDataset(
+            transformer_test_inputs, p_test, v_test
+        )
+
+        transformer_train_loader = DataLoader(
+            transformer_train_dataset,
+            batch_size=BATCH_SIZE,
+            shuffle=True,
+            collate_fn=transformer_collate_fn,
+        )
+        transformer_test_loader = DataLoader(
+            transformer_test_dataset,
+            batch_size=BATCH_SIZE,
+            shuffle=False,
+            collate_fn=transformer_collate_fn,
+        )
     for exp in transformer_experiments:
         wandb.init(
             project="connect4_arch_comparison",
@@ -501,32 +502,6 @@ def main():
         wandb.finish()
 
     # --- Cell Transformer Experiment ---
-    print("\n--- Pre-processing data for Cell Transformer ---")
-    cell_train_inputs = [
-        create_cell_transformer_input(torch.from_numpy(board))
-        for board in tqdm(X_train, desc="Processing Cell Transformer inputs")
-    ]
-    cell_test_inputs = [
-        create_cell_transformer_input(torch.from_numpy(board))
-        for board in tqdm(X_test, desc="Processing Cell Transformer inputs")
-    ]
-
-    cell_train_dataset = Connect4CellTransformerDataset(
-        cell_train_inputs, p_train, v_train
-    )
-    cell_test_dataset = Connect4CellTransformerDataset(cell_test_inputs, p_test, v_test)
-
-    cell_train_loader = DataLoader(
-        cell_train_dataset,
-        batch_size=BATCH_SIZE,
-        shuffle=True,
-    )
-    cell_test_loader = DataLoader(
-        cell_test_dataset,
-        batch_size=BATCH_SIZE,
-        shuffle=False,
-    )
-
     cell_transformer_experiments = [
         # {
         #     "name": "CellTransformer",
@@ -540,7 +515,34 @@ def main():
         #     "lr": 0.001,
         # },
     ]
+    if cell_transformer_experiments:
+        print("\n--- Pre-processing data for Cell Transformer ---")
+        cell_train_inputs = [
+            create_cell_transformer_input(torch.from_numpy(board))
+            for board in tqdm(X_train, desc="Processing Cell Transformer inputs")
+        ]
+        cell_test_inputs = [
+            create_cell_transformer_input(torch.from_numpy(board))
+            for board in tqdm(X_test, desc="Processing Cell Transformer inputs")
+        ]
 
+        cell_train_dataset = Connect4CellTransformerDataset(
+            cell_train_inputs, p_train, v_train
+        )
+        cell_test_dataset = Connect4CellTransformerDataset(
+            cell_test_inputs, p_test, v_test
+        )
+
+        cell_train_loader = DataLoader(
+            cell_train_dataset,
+            batch_size=BATCH_SIZE,
+            shuffle=True,
+        )
+        cell_test_loader = DataLoader(
+            cell_test_dataset,
+            batch_size=BATCH_SIZE,
+            shuffle=False,
+        )
     for exp in cell_transformer_experiments:
         wandb.init(
             project="connect4_arch_comparison",
@@ -567,25 +569,6 @@ def main():
         wandb.finish()
 
     # --- GNN Experiments ---
-    print("\n--- Pre-processing data for GNNs ---")
-    cell_train_graphs = [
-        construct_graph_data(torch.from_numpy(board))
-        for board in tqdm(X_train, desc="Processing Hetero graphs")
-    ]
-    cell_test_graphs = [
-        construct_graph_data(torch.from_numpy(board))
-        for board in tqdm(X_test, desc="Processing Hetero graphs")
-    ]
-
-    dir_train_graphs = [
-        get_connect4_graph_with_edge_attrs(torch.from_numpy(board))
-        for board in tqdm(X_train, desc="Processing Directional graphs")
-    ]
-    dir_test_graphs = [
-        get_connect4_graph_with_edge_attrs(torch.from_numpy(board))
-        for board in tqdm(X_test, desc="Processing Directional graphs")
-    ]
-
     gnn_experiments = [
         # {
         #     "name": "CellGNN_HGT",
@@ -613,7 +596,25 @@ def main():
         #     "lr": 0.001,
         # },
     ]
+    if gnn_experiments:
+        print("\n--- Pre-processing data for GNNs ---")
+        cell_train_graphs = [
+            construct_graph_data(torch.from_numpy(board))
+            for board in tqdm(X_train, desc="Processing Hetero graphs")
+        ]
+        cell_test_graphs = [
+            construct_graph_data(torch.from_numpy(board))
+            for board in tqdm(X_test, desc="Processing Hetero graphs")
+        ]
 
+        dir_train_graphs = [
+            get_connect4_graph_with_edge_attrs(torch.from_numpy(board))
+            for board in tqdm(X_train, desc="Processing Directional graphs")
+        ]
+        dir_test_graphs = [
+            get_connect4_graph_with_edge_attrs(torch.from_numpy(board))
+            for board in tqdm(X_test, desc="Processing Directional graphs")
+        ]
     for exp in gnn_experiments:
         train_dataset = Connect4GraphDataset(
             exp["train_graphs"], X_train, p_train, v_train
