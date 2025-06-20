@@ -42,9 +42,10 @@ from experiments.architectures.transformers import (
     _process_batch_cell_transformer,
     transformer_collate_fn,
     PieceTransformer_OnehotLoc,
+    PieceTransformerNet,
 )
 
-TINY_RUN = False
+TINY_RUN = True
 
 
 def _process_raw_item(item, env):
@@ -348,17 +349,17 @@ def main():
     )
 
     transformer_experiments = [
-        # {
-        #     "name": "PieceTransformer_v2",
-        #     "model_class": PieceTransformerNet,
-        #     "params": {
-        #         "num_encoder_layers": 4,
-        #         "embedding_dim": 128,
-        #         "num_heads": 8,
-        #         "dropout": 0.1,
-        #     },
-        #     "lr": 0.001,
-        # },
+        {
+            "name": "PieceTransformer_v2",
+            "model_class": PieceTransformerNet,
+            "params": {
+                "num_encoder_layers": 4,
+                "embedding_dim": 128,
+                "num_heads": 8,
+                "dropout": 0.1,
+            },
+            "lr": 0.001,
+        },
         # {
         #     "name": "PieceTransformer_Sinusoidal",
         #     "model_class": PieceTransformerNet_Sinusoidal,
@@ -393,49 +394,84 @@ def main():
         #     },
         #     "lr": 0.001,
         # },
+        ###
+        # {
+        #     "name": "PieceTransformer_onehotloc",
+        #     "model_class": PieceTransformer_OnehotLoc,
+        #     "params": {
+        #         "num_encoder_layers": 4,
+        #         "embedding_dim": 128,
+        #         "num_heads": 8,
+        #         "dropout": 0.1,
+        #     },
+        #     "lr": 0.001,
+        # },
+        # {
+        #     "name": "PieceTransformer_onehotloc_small",
+        #     "model_class": PieceTransformer_OnehotLoc,
+        #     "params": {
+        #         "num_encoder_layers": 4,
+        #         "embedding_dim": 32,
+        #         "num_heads": 2,
+        #         "dropout": 0.1,
+        #     },
+        #     "lr": 0.001,
+        # },
+        # {
+        #     "name": "PieceTransformer_onehotloc_nodropout",
+        #     "model_class": PieceTransformer_OnehotLoc,
+        #     "params": {
+        #         "num_encoder_layers": 4,
+        #         "embedding_dim": 128,
+        #         "num_heads": 8,
+        #         "dropout": 0.0,
+        #     },
+        #     "lr": 0.001,
+        # },
+        # {
+        #     "name": "PieceTransformer_onehotloc_highlr",
+        # Performance is terrible
+        #     "model_class": PieceTransformer_OnehotLoc,
+        #     "params": {
+        #         "num_encoder_layers": 4,
+        #         "embedding_dim": 128,
+        #         "num_heads": 8,
+        #         "dropout": 0.1,
+        #     },
+        #     "lr": 0.01,
+        # },
+        # {
+        #     "name": "PieceTransformer_onehotloc_lowlr",
+        #     "model_class": PieceTransformer_OnehotLoc,
+        #     "params": {
+        #         "num_encoder_layers": 4,
+        #         "embedding_dim": 128,
+        #         "num_heads": 8,
+        #         "dropout": 0.1,
+        #     },
+        #     "lr": 0.0001,
+        # },
+        # {
+        #     "name": "PieceTransformer_onehotloc_highdropout",
+        #     "model_class": PieceTransformer_OnehotLoc,
+        #     "params": {
+        #         "num_encoder_layers": 4,
+        #         "embedding_dim": 128,
+        #         "num_heads": 8,
+        #         "dropout": 0.25,
+        #     },
+        #     "lr": 0.0001,
+        # },
         {
-            "name": "PieceTransformer_onehotloc",
+            "name": "PieceTransformer_onehotloc_fixingmask",
             "model_class": PieceTransformer_OnehotLoc,
             "params": {
                 "num_encoder_layers": 4,
                 "embedding_dim": 128,
                 "num_heads": 8,
-                "dropout": 0.1,
+                "dropout": 0.25,
             },
-            "lr": 0.001,
-        },
-        {
-            "name": "PieceTransformer_onehotloc_small",
-            "model_class": PieceTransformer_OnehotLoc,
-            "params": {
-                "num_encoder_layers": 4,
-                "embedding_dim": 32,
-                "num_heads": 2,
-                "dropout": 0.1,
-            },
-            "lr": 0.001,
-        },
-        {
-            "name": "PieceTransformer_onehotloc_nodropout",
-            "model_class": PieceTransformer_OnehotLoc,
-            "params": {
-                "num_encoder_layers": 4,
-                "embedding_dim": 128,
-                "num_heads": 8,
-                "dropout": 0.0,
-            },
-            "lr": 0.001,
-        },
-        {
-            "name": "PieceTransformer_onehotloc_highlr",
-            "model_class": PieceTransformer_OnehotLoc,
-            "params": {
-                "num_encoder_layers": 4,
-                "embedding_dim": 128,
-                "num_heads": 8,
-                "dropout": 0.1,
-            },
-            "lr": 0.01,
+            "lr": 0.0001,
         },
     ]
 
