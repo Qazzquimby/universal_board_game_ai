@@ -604,7 +604,7 @@ class PieceTransformer_OnehotLoc_BottleneckOut(nn.Module):
         game_out = transformer_output[:, -1, :]  # (batch_size, embedding_dim)
         full_out = torch.concat((cards_max, cards_mean, game_out), dim=-1)
         # batch, 3*embedding dim
-        out = F.relu(self.fc1(game_out))
+        out = F.relu(self.fc_out(full_out))
 
         policy_logits = self.policy_head(out)
         value = torch.tanh(self.value_head(out))
@@ -658,6 +658,8 @@ class PieceTransformer_OnehotLoc_SimpleOut(nn.Module):
         row_coords = coords[:, :, 0].long()
         col_coords = coords[:, :, 1].long()
 
+        # for some reason this overfits while encodersum doesn't.
+
         row_onehot = F.one_hot(row_coords, num_classes=BOARD_HEIGHT)
         col_onehot = F.one_hot(col_coords, num_classes=BOARD_WIDTH)
         piece_raw = torch.concat([owner, row_onehot, col_onehot], dim=-1)
@@ -683,7 +685,7 @@ class PieceTransformer_OnehotLoc_SimpleOut(nn.Module):
         # Pass through transformer encoder
         transformer_output = self.transformer_encoder(tokens, src_key_padding_mask=mask)
         game_out = transformer_output[:, -1, :]  # (batch_size, embedding_dim)
-        out = F.relu(self.fc1(game_out))
+        out = F.relu(self.fc_out(game_out))
 
         policy_logits = self.policy_head(out)
         value = torch.tanh(self.value_head(out))
@@ -761,11 +763,10 @@ class PieceTransformer_EncoderSum_SimpleOut(nn.Module):
         # Pass through transformer encoder
         transformer_output = self.transformer_encoder(tokens, src_key_padding_mask=mask)
         game_out = transformer_output[:, -1, :]  # (batch_size, embedding_dim)
+        out = F.relu(self.fc_out(game_out))
 
-        fc_out = F.relu(self.fc_out(game_out))
-
-        policy_logits = self.policy_head(fc_out)
-        value = torch.tanh(self.value_head(fc_out))
+        policy_logits = self.policy_head(out)
+        value = torch.tanh(self.value_head(out))
 
         return policy_logits, value
 
