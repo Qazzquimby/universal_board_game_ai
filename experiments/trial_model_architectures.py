@@ -43,6 +43,7 @@ from experiments.architectures.transformers import (
     PieceTransformerNet,
     PieceTransformerNet_ConcatPos,
     PieceTransformerNet_Sinusoidal_Learnable,
+    PieceTransformer_EncoderSum_SimpleOut_ParamGameToken,
 )
 
 TINY_RUN = False
@@ -322,59 +323,26 @@ def main():
         {
             "name": "PieceTransformer_v2",
             "model_class": PieceTransformerNet,
-            "params": {
-                "num_encoder_layers": 4,
-                "embedding_dim": 128,
-                "num_heads": 8,
-                "dropout": 0.1,
-            },
-            "lr": 0.001,
         },
         # {
         #     "name": "PieceTransformer_Sinusoidal",
         #     "model_class": PieceTransformerNet_Sinusoidal,
-        #     "params": {
-        #         "num_encoder_layers": 4,
-        #         "embedding_dim": 128,
-        #         "num_heads": 8,
-        #         "dropout": 0.1,
-        #     },
-        #     "lr": 0.001,
         # },
-        {
-            "name": "PieceTransformer_Sinusoidal_Learnable",
-            "model_class": PieceTransformerNet_Sinusoidal_Learnable,
-            "params": {
-                "num_encoder_layers": 4,
-                "embedding_dim": 128,
-                "num_heads": 8,
-                "dropout": 0.1,
-            },
-            "lr": 0.001,
-        },
+        # {
+        #     "name": "PieceTransformer_Sinusoidal_Learnable",
+        #     "model_class": PieceTransformerNet_Sinusoidal_Learnable,
+        # },
         {
             "name": "PieceTransformer_ConcatPos",
             "model_class": PieceTransformerNet_ConcatPos,
             "params": {
-                "num_encoder_layers": 4,
-                "embedding_dim": 128,
-                "num_heads": 8,
-                "dropout": 0.1,
                 "pos_embedding_dim": 4,
             },
-            "lr": 0.001,
         },
         ###
         # {
         #     "name": "PieceTransformer_onehotloc",
         #     "model_class": PieceTransformer_OnehotLoc,
-        #     "params": {
-        #         "num_encoder_layers": 4,
-        #         "embedding_dim": 128,
-        #         "num_heads": 8,
-        #         "dropout": 0.1,
-        #     },
-        #     "lr": 0.001,
         # },
         # {
         #     "name": "PieceTransformer_onehotloc_small",
@@ -383,176 +351,118 @@ def main():
         #         "num_encoder_layers": 4,
         #         "embedding_dim": 32,
         #         "num_heads": 2,
-        #         "dropout": 0.1,
         #     },
-        #     "lr": 0.001,
         # },
         # {
         #     "name": "PieceTransformer_onehotloc_nodropout",
         #     "model_class": PieceTransformer_OnehotLoc,
         #     "params": {
-        #         "num_encoder_layers": 4,
-        #         "embedding_dim": 128,
-        #         "num_heads": 8,
         #         "dropout": 0.0,
         #     },
-        #     "lr": 0.001,
         # },
         # {
         #     "name": "PieceTransformer_onehotloc_highlr",
         # Performance is terrible
         #     "model_class": PieceTransformer_OnehotLoc,
-        #     "params": {
-        #         "num_encoder_layers": 4,
-        #         "embedding_dim": 128,
-        #         "num_heads": 8,
-        #         "dropout": 0.1,
-        #     },
         #     "lr": 0.01,
         # },
         # {
         #     "name": "PieceTransformer_onehotloc_lowlr",
         #     "model_class": PieceTransformer_OnehotLoc,
-        #     "params": {
-        #         "num_encoder_layers": 4,
-        #         "embedding_dim": 128,
-        #         "num_heads": 8,
-        #         "dropout": 0.1,
-        #     },
         #     "lr": 0.0001,
         # },
         # {
         #     "name": "PieceTransformer_onehotloc_highdropout",
         #     "model_class": PieceTransformer_OnehotLoc,
         #     "params": {
-        #         "num_encoder_layers": 4,
-        #         "embedding_dim": 128,
-        #         "num_heads": 8,
         #         "dropout": 0.25,
         #     },
-        #     "lr": 0.001,
         # },
         # {
         #     "name": "PieceTransformer_onehotloc_simpleout",
         #     "model_class": PieceTransformer_OnehotLoc_SimpleOut,
-        #     "params": {
-        #         "num_encoder_layers": 4,
-        #         "embedding_dim": 128,
-        #         "num_heads": 8,
-        #         "dropout": 0.1,
-        #     },
-        #     "lr": 0.001,
         # },
         # {
         #     "name": "PieceTransformer_encodersum_simpleout",
         #     "model_class": PieceTransformer_OnehotLoc_SimpleOut,
-        #     "params": {
-        #         "num_encoder_layers": 4,
-        #         "embedding_dim": 128,
-        #         "num_heads": 8,
-        #         "dropout": 0.1,
-        #     },
-        #     "lr": 0.001,
         # },
         # {
         #     "name": "PieceTransformer_OnehotLoc_BottleneckOut",
         #     "model_class": PieceTransformer_OnehotLoc_BottleneckOut,
-        #     "params": {
-        #         "num_encoder_layers": 4,
-        #         "embedding_dim": 128,
-        #         "num_heads": 8,
-        #         "dropout": 0.1,
-        #     },
-        #     "lr": 0.001,
         # },
         # {
         #     "name": "PieceTransformer_v2_2layers",
         #     "model_class": PieceTransformerNet,
         #     "params": {
         #         "num_encoder_layers": 2,
-        #         "embedding_dim": 128,
-        #         "num_heads": 8,
-        #         "dropout": 0.1,
         #     },
-        #     "lr": 0.001,
         # },
         # {
         #     "name": "PieceTransformer_v2_6layers",
         #     "model_class": PieceTransformerNet,
         #     "params": {
         #         "num_encoder_layers": 6,
-        #         "embedding_dim": 128,
-        #         "num_heads": 8,
-        #         "dropout": 0.1,
         #     },
-        #     "lr": 0.001,
         # },
         # {
         #     "name": "PieceTransformer_v2_64dim",
         #     "model_class": PieceTransformerNet,
         #     "params": {
-        #         "num_encoder_layers": 4,
         #         "embedding_dim": 64,
-        #         "num_heads": 8,
-        #         "dropout": 0.1,
         #     },
-        #     "lr": 0.001,
         # },
         # {
         #     "name": "PieceTransformer_v2_256dim",
         #     "model_class": PieceTransformerNet,
         #     "params": {
-        #         "num_encoder_layers": 4,
         #         "embedding_dim": 256,
-        #         "num_heads": 8,
-        #         "dropout": 0.1,
         #     },
-        #     "lr": 0.001,
         # },
         # {
         #     "name": "PieceTransformer_v2_4heads",
         #     "model_class": PieceTransformerNet,
         #     "params": {
-        #         "num_encoder_layers": 4,
-        #         "embedding_dim": 128,
         #         "num_heads": 4,
-        #         "dropout": 0.1,
         #     },
-        #     "lr": 0.001,
         # },
         # {
         #     "name": "PieceTransformer_v16heads",
         #     "model_class": PieceTransformerNet,
         #     "params": {
-        #         "num_encoder_layers": 4,
-        #         "embedding_dim": 128,
         #         "num_heads": 16,
-        #         "dropout": 0.1,
         #     },
-        #     "lr": 0.001,
         # },
         # {
         #     "name": "PieceTransformer_v2_0.002lr",
         #     "model_class": PieceTransformerNet,
-        #     "params": {
-        #         "num_encoder_layers": 4,
-        #         "embedding_dim": 128,
-        #         "num_heads": 8,
-        #         "dropout": 0.1,
-        #     },
         #     "lr": 0.002,
         # },
         # {
         #     "name": "PieceTransformer_v2_0.0005lr",
         #     "model_class": PieceTransformerNet,
-        #     "params": {
-        #         "num_encoder_layers": 4,
-        #         "embedding_dim": 128,
-        #         "num_heads": 8,
-        #         "dropout": 0.1,
-        #     },
         #     "lr": 0.0005,
         # },
+        {
+            "name": "PieceTransformer_EncoderSum_SimpleOut_ParamGameToken",
+            "model_class": PieceTransformer_EncoderSum_SimpleOut_ParamGameToken,
+        },
+        {
+            "name": "PieceTransformer_EncoderSum_SimpleOut_ParamGameToken_Small",
+            "model_class": PieceTransformer_EncoderSum_SimpleOut_ParamGameToken,
+            "params": {
+                "embedding_dim": 32,
+                "num_heads": 2,
+            },
+        },
+        {
+            "name": "PieceTransformer_EncoderSum_SimpleOut_ParamGameToken_Small_Highlr",
+            "model_class": PieceTransformer_EncoderSum_SimpleOut_ParamGameToken,
+            "params": {
+                "embedding_dim": 32,
+                "num_heads": 2,
+            },
+            "lr": 0.005,
+        },
     ]
 
     if transformer_experiments:

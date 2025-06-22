@@ -363,8 +363,8 @@ class PieceTransformerNet_Sinusoidal_Learnable(nn.Module):
         return policy_logits, value
 
 
+# Stronger than learnable pos
 class PieceTransformerNet_ConcatPos(nn.Module):
-    # Stronger than learnable pos
     def __init__(
         self,
         num_encoder_layers=4,
@@ -757,6 +757,79 @@ class PieceTransformer_EncoderSum_SimpleOut(nn.Module):
         game_mask = torch.zeros(batch_size, 1, device=owner.device, dtype=torch.bool)
 
         tokens = torch.concat((piece_embedded, game_embedded), dim=1)
+        mask = torch.concat((piece_mask, game_mask), dim=1)
+        tokens = self.dropout(tokens)
+
+        # Pass through transformer encoder
+        transformer_output = self.transformer_encoder(tokens, src_key_padding_mask=mask)
+        game_out = transformer_output[:, -1, :]  # (batch_size, embedding_dim)
+        out = F.relu(self.fc_out(game_out))
+
+        policy_logits = self.policy_head(out)
+        value = torch.tanh(self.value_head(out))
+
+        return policy_logits, value
+
+
+class PieceTransformer_EncoderSum_SimpleOut_ParamGameToken(nn.Module):
+    def __init__(
+        self,
+        num_encoder_layers=4,
+        embedding_dim=128,
+        num_heads=8,
+        dropout=0.1,
+    ):
+        super().__init__()
+
+        self.owner_embedding = nn.Embedding(2, embedding_dim)
+        # This could also be a bool "is my piece" with a linear, which is slightly more efficient
+
+        self.row_embedding = nn.Embedding(BOARD_HEIGHT, embedding_dim)
+        self.col_embedding = nn.Embedding(BOARD_WIDTH, embedding_dim)
+
+        self.game_token = nn.Parameter(torch.zeros(1, 1, embedding_dim))
+        # self.cls_token = nn.Parameter(torch.zeros(1, 1, embedding_dim))
+
+        self.dropout = nn.Dropout(dropout)
+
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=embedding_dim,
+            dim_feedforward=embedding_dim * 4,
+            nhead=num_heads,
+            dropout=dropout,
+            batch_first=True,
+            norm_first=True,
+        )
+        self.transformer_encoder = nn.TransformerEncoder(
+            encoder_layer, num_layers=num_encoder_layers
+        )
+
+        fc_out_size = 64
+        self.fc_out = nn.Linear(embedding_dim, fc_out_size)
+        self.policy_head = nn.Linear(fc_out_size, BOARD_WIDTH)
+        self.value_head = nn.Linear(fc_out_size, 1)
+
+    def forward(self, owner, coords, src_key_padding_mask):
+        piece_mask = src_key_padding_mask
+        row_coords = coords[:, :, 0].long()
+        col_coords = coords[:, :, 1].long()
+
+        owner_emb = self.owner_embedding(owner)
+        row_emb = self.row_embedding(row_coords)
+        col_emb = self.col_embedding(col_coords)
+        piece_embedded = owner_emb + row_emb + col_emb
+        # (batch_size, seq_len, embedding_dim)
+
+        ## Game token
+        # normally input wouldn't be hardcoded. This is somewhat silly but meant to resemble more normal situations.
+        batch_size = owner.shape[0]
+        game_input = torch.ones(self.game_size).to(owner.device)
+        game_tokens = self.cls_tokens = self.cls_token.expand(
+            batch_size, -1, -1
+        ).expand(batch_size, -1, -1)
+        game_mask = torch.zeros(batch_size, 1, device=owner.device, dtype=torch.bool)
+
+        tokens = torch.concat((piece_embedded, game_tokens), dim=1)
         mask = torch.concat((piece_mask, game_mask), dim=1)
         tokens = self.dropout(tokens)
 
