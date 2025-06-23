@@ -1,5 +1,5 @@
 import math
-import einops
+
 import torch
 from einops import rearrange, repeat
 from torch import nn as nn
@@ -739,7 +739,8 @@ class PieceTransformer_EncoderSum_SimpleOut(nn.Module):
         row_coords = coords[:, :, 0].long()
         col_coords = coords[:, :, 1].long()
 
-        owner_emb = self.owner_embedding(owner)
+        owner_indices = torch.argmax(owner, dim=-1)
+        owner_emb = self.owner_embedding(owner_indices)
         row_emb = self.row_embedding(row_coords)
         col_emb = self.col_embedding(col_coords)
         piece_embedded = owner_emb + row_emb + col_emb
@@ -814,7 +815,8 @@ class PieceTransformer_EncoderSum_SimpleOut_ParamGameToken(nn.Module):
         row_coords = coords[:, :, 0].long()
         col_coords = coords[:, :, 1].long()
 
-        owner_emb = self.owner_embedding(owner)
+        owner_indices = torch.argmax(owner, dim=-1)
+        owner_emb = self.owner_embedding(owner_indices)
         row_emb = self.row_embedding(row_coords)
         col_emb = self.col_embedding(col_coords)
         piece_embedded = owner_emb + row_emb + col_emb
@@ -823,10 +825,9 @@ class PieceTransformer_EncoderSum_SimpleOut_ParamGameToken(nn.Module):
         ## Game token
         # normally input wouldn't be hardcoded. This is somewhat silly but meant to resemble more normal situations.
         batch_size = owner.shape[0]
-        game_input = torch.ones(self.game_size).to(owner.device)
-        game_tokens = self.cls_tokens = self.cls_token.expand(
+        game_tokens = self.game_token.expand(batch_size, -1, -1).expand(
             batch_size, -1, -1
-        ).expand(batch_size, -1, -1)
+        )
         game_mask = torch.zeros(batch_size, 1, device=owner.device, dtype=torch.bool)
 
         tokens = torch.concat((piece_embedded, game_tokens), dim=1)

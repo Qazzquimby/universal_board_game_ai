@@ -44,6 +44,7 @@ from experiments.architectures.transformers import (
     PieceTransformerNet_ConcatPos,
     PieceTransformerNet_Sinusoidal_Learnable,
     PieceTransformer_EncoderSum_SimpleOut_ParamGameToken,
+    PieceTransformer_EncoderSum_SimpleOut,
 )
 
 TINY_RUN = False
@@ -320,10 +321,10 @@ def main():
 
     # --- Transformer Experiment ---
     transformer_experiments = [
-        {
-            "name": "PieceTransformer_v2",
-            "model_class": PieceTransformerNet,
-        },
+        # {
+        #     "name": "PieceTransformer_v2",
+        #     "model_class": PieceTransformerNet,
+        # },
         # {
         #     "name": "PieceTransformer_Sinusoidal",
         #     "model_class": PieceTransformerNet_Sinusoidal,
@@ -332,13 +333,13 @@ def main():
         #     "name": "PieceTransformer_Sinusoidal_Learnable",
         #     "model_class": PieceTransformerNet_Sinusoidal_Learnable,
         # },
-        {
-            "name": "PieceTransformer_ConcatPos",
-            "model_class": PieceTransformerNet_ConcatPos,
-            "params": {
-                "pos_embedding_dim": 4,
-            },
-        },
+        # {
+        #     "name": "PieceTransformer_ConcatPos",
+        #     "model_class": PieceTransformerNet_ConcatPos,
+        #     "params": {
+        #         "pos_embedding_dim": 4,
+        #     },
+        # },
         ###
         # {
         #     "name": "PieceTransformer_onehotloc",
@@ -442,6 +443,10 @@ def main():
         #     "model_class": PieceTransformerNet,
         #     "lr": 0.0005,
         # },
+        # {
+        #     "name": "PieceTransformer_EncoderSum_SimpleOut",
+        #     "model_class": PieceTransformer_EncoderSum_SimpleOut,
+        # },
         {
             "name": "PieceTransformer_EncoderSum_SimpleOut_ParamGameToken",
             "model_class": PieceTransformer_EncoderSum_SimpleOut_ParamGameToken,
@@ -496,25 +501,27 @@ def main():
             collate_fn=transformer_collate_fn,
         )
     for exp in transformer_experiments:
+        lr = exp.get("lr", 0.001)
+        params = exp.get("params", {})
         wandb.init(
             project="connect4_arch_comparison",
             name=exp["name"],
             group=run_group_id,
             reinit=True,
             config={
-                "learning_rate": exp["lr"],
+                "learning_rate": lr,
                 "batch_size": BATCH_SIZE,
                 "architecture": exp["model_class"].__name__,
-                **exp["params"],
+                **params,
             },
         )
-        model = exp["model_class"](**exp["params"]).to(DEVICE)
+        model = exp["model_class"](**params).to(DEVICE)
         results_df, training_time = train_and_evaluate(
             model=model,
             model_name=exp["name"],
             train_loader=transformer_train_loader,
             test_loader=transformer_test_loader,
-            learning_rate=exp["lr"],
+            learning_rate=lr,
             process_batch_fn=_process_batch_transformer,
         )
         all_results[exp["name"]] = {"df": results_df, "time": training_time}
