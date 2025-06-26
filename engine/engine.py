@@ -1,36 +1,26 @@
-import inspect
 from collections import deque, namedtuple
+from dataclasses import dataclass
+from typing import Callable, Any
 
 # ==============================================================================
-# 1. Core Data Structures
+# 1. Core Data Structures & Engine
 # ==============================================================================
 
-# A Hook is the internal representation of an ability.
-Hook = namedtuple("Hook", ["hook_type", "target", "action_name", "handler", "owner"])
+# Internal representation of a registered ability
+Hook = namedtuple(
+    "Hook", ["hook_type", "target_filter", "action_name", "handler", "owner"]
+)
 
-# A LogEntry stores what actually happened.
-LogEntry = namedtuple("LogEntry", ["action_name", "params", "turn"])
-
-# An Event is a request to perform an action, which travels through the system.
-class Event:
-    def __init__(self, action_name, params):
-        self.action_name = action_name
-        self.params = params
-
-    def __repr__(self):
-        params_str = ", ".join(f"{k}={v}" for k, v in self.params.items())
-        return f"{self.action_name}({params_str})"
-
-
-# ==============================================================================
-# 2. The Engine
-# ==============================================================================
+# A LogEntry stores the final state of a resolved event
+LogEntry = namedtuple("LogEntry", ["action_name", "event_data", "turn"])
 
 
 class GameEngine:
     def __init__(self):
         self.players = {}
-        self.hooks = []
+
+        self.action_resolvers = {}
+        self.hooks = []  # Probably want to make this into one list per action type
         self.event_stack = deque()
         self.game_log = []
         self.turn = 0
@@ -39,6 +29,20 @@ class GameEngine:
     def add_player(self, player):
         self.players[player.name] = player
         player.engine = self
+
+    def define_action(self, name: str, event_dataclass: type, resolver: Callable):
+        """Defines a new action, its data structure, and its resolution logic."""
+        self.action_resolvers[name] = resolver
+
+        def action_caller(**kwargs):
+            event = event_dataclass(**kwargs)
+            self.event_stack.append((name, event))
+            if not self.is_processing:
+                self.run()
+
+        action_caller.__name__ = name
+
+        return action_caller
 
     def run(self):
         self.is_processing = True
@@ -51,87 +55,65 @@ class GameEngine:
                     f"Event chain limit ({MAX_DEPTH}) exceeded. Potential infinite loop."
                 )
 
-            event = self.event_stack.popleft()
-            print(f"\n--- Processing: {event} ---")
+            action_name, event = self.event_stack.popleft()
+            print(f"\n--- Processing: {action_name}({event}) ---")
             chain_depth += 1
 
             # 1. REPLACEMENT PHASE
-            # A replacement cancels the current event and puts a new one on the stack.
             replaced = False
-            for hook in self._get_hooks_for_event("replace", event):
+            for hook in self._get_hooks_for_event("replace", action_name, event):
                 print(f"  - Applying 'replace' hook from {hook.owner.name}'s ability")
-                # We temporarily stop processing to see if the handler queues a new event.
                 start_len = len(self.event_stack)
-                hook.handler(event.params)
+                hook.handler(event)
                 if len(self.event_stack) > start_len:
-                    print(f"    -> Event was REPLACED. New event is on the stack.")
+                    print(f"    -> Event was REPLACED.")
                     replaced = True
-                    break  # Only one replacement allowed per event
-
+                    break
             if replaced:
-                continue  # Restart the loop with the new event
+                continue
 
             # 2. MODIFICATION PHASE
-            # Modifiers serially update the event's parameters.
-            for hook in self._get_hooks_for_event("modify", event):
+            for hook in self._get_hooks_for_event("modify", action_name, event):
                 print(f"  - Applying 'modify' hook from {hook.owner.name}'s ability")
-                new_params = hook.handler(dict(event.params))  # Pass a copy
-                event.params.update(new_params)
-                print(f"    -> Params modified to: {event.params}")
+                # The handler now mutates the event object directly.
+                hook.handler(event)
+                print(f"    -> Event modified to: {event}")
 
             # 3. RESOLUTION PHASE
-            # The action's effect on the game state happens here.
-            print(f"  - Resolving: {event}")
-            self._resolve_action(event)
-            self.game_log.append(LogEntry(event.action_name, event.params, self.turn))
+            print(f"  - Resolving: {action_name}({event})")
+            resolver = self.action_resolvers.get(action_name)
+            if resolver:
+                resolver(event)
+            else:
+                print(f"    -> WARNING: No resolver found for action '{action_name}'")
+            self.game_log.append(LogEntry(action_name, event, self.turn))
 
             # 4. AFTER PHASE
-            # These hooks trigger new, separate events.
-            for hook in self._get_hooks_for_event("after", event):
+            for hook in self._get_hooks_for_event("after", action_name, event):
                 print(f"  - Applying 'after' hook from {hook.owner.name}'s ability")
-                hook.handler(event.params)
+                hook.handler(event)
 
             chain_depth -= 1
 
         self.is_processing = False
         print("\n--- Event queue empty ---")
 
-    def _get_hooks_for_event(self, hook_type, event):
+    def _get_hooks_for_event(self, hook_type, action_name, event):
+        """Finds hooks using the new flexible target filters."""
         matching_hooks = []
         for h in self.hooks:
-            is_correct_type = h.hook_type == hook_type
-            is_correct_action = h.action_name == event.action_name
-
-            is_targeted_correctly = False
-            if h.target == "self" and event.params.get("player") == h.owner:
-                is_targeted_correctly = True
-            elif h.target == "other" and event.params.get("player") != h.owner:
-                is_targeted_correctly = True
-            elif h.target == event.params.get("player"):  # Direct player object target
-                is_targeted_correctly = True
-
-            if is_correct_type and is_correct_action and is_targeted_correctly:
-                matching_hooks.append(h)
+            if h.hook_type == hook_type and h.action_name == action_name:
+                # The target is now a callable filter function.
+                if h.target_filter(h.owner, event):
+                    matching_hooks.append(h)
         return matching_hooks
 
-    def _resolve_action(self, event):
-        """The hardcoded effects of base game actions."""
-        if event.action_name == "gain":
-            if event.params["amount"] > 0:
-                event.params["player"].amount += event.params["amount"]
-        elif event.action_name == "lose":
-            if event.params["amount"] > 0:
-                event.params["player"].amount -= event.params["amount"]
-        elif event.action_name == "start_turn":
-            self.turn += 1
-            print(f"*** TURN {self.turn} (Player: {event.params['player'].name}) ***")
-
 
 # ==============================================================================
-# 3. Scripter-Facing API
+# 2. Scripter-Facing API
 # ==============================================================================
 
-# Global engine instance for simplicity in scripting
+# Global engine instance
 engine = GameEngine()
 
 
@@ -145,41 +127,67 @@ class Player:
         return f"<Player {self.name}|{self.amount}>"
 
 
-# --- Action Functions ---
-def _create_action(name):
-    def action(**kwargs):
-        event = Event(name, kwargs)
-        engine.event_stack.append(event)
-        # If the engine isn't running, start it.
-        if not engine.is_processing:
-            engine.run()
-
-    return action
+# --- Define Actions ---
+# This part would be in the core game setup, not necessarily the ability scripts.
 
 
-gain = _create_action("gain")
-lose = _create_action("lose")
-start_turn = _create_action("start_turn")
+@dataclass
+class GainEvent:
+    player: Player
+    amount: int
 
-# --- Ability Definition Functions ---
+
+@dataclass
+class LoseEvent:
+    player: Player
+    amount: int
+
+
+@dataclass
+class TurnStartEvent:
+    player: Player
+
+
+def _resolve_gain(event: GainEvent):
+    if event.amount > 0:
+        event.player.amount += event.amount
+
+
+def _resolve_lose(event: LoseEvent):
+    if event.amount > 0:
+        event.player.amount -= event.amount
+
+
+def _resolve_turn_start(event: TurnStartEvent):
+    engine.turn += 1
+    print(f"*** TURN {engine.turn} (Player: {event.player.name}) ***")
+
+
+gain = engine.define_action("gain", GainEvent, _resolve_gain)
+lose = engine.define_action("lose", LoseEvent, _resolve_lose)
+start_turn = engine.define_action("start_turn", TurnStartEvent, _resolve_turn_start)
+
+
+# --- Define Abilities ---
 def add_ability(owner, hook):
-    # The hook functions below will return a partial Hook object.
-    # We complete it here with the owner.
-    full_hook = Hook(owner=owner, **hook._asdict())
-    engine.hooks.append(full_hook)
+    engine.hooks.append(Hook(**dict(hook._asdict(), owner=owner)))
 
 
-def modify(target, action, handler):
-    return Hook("modify", target, action.__name__, handler, owner=None)
+def modify(target_filter, action, handler):
+    return Hook("modify", target_filter, action.__name__, handler, owner=None)
 
 
-def replace(target, action, handler):
-    return Hook("replace", target, action.__name__, handler, owner=None)
+def replace(target_filter, action, handler):
+    return Hook("replace", target_filter, action.__name__, handler, owner=None)
 
 
-def after(target, action, handler):
-    return Hook("after", target, action.__name__, handler, owner=None)
+def after(target_filter, action, handler):
+    return Hook("after", target_filter, action.__name__, handler, owner=None)
 
+
+# --- Define Target Filters ---
+this_player = lambda owner, event: event.player == owner
+another_player = lambda owner, event: hasattr(event, "player") and event.player != owner
 
 # --- Game Log Query ---
 class QuerySet:
@@ -207,70 +215,53 @@ def get(action):
 
 
 # ==============================================================================
-# 4. Example Game Script
+# 3. Example Game Script
 # ==============================================================================
 
-# --- Handler Definitions ---
-def gain_3_on_turn_start(params):
-    gain(player=params["player"], amount=3)
+if __name__ == "__main__":
+    p1 = Player("Alice")
+    p2 = Player("Bob")
+    engine.add_player(p1)
+    engine.add_player(p2)
 
+    print("--- Setting up abilities ---")
 
-def gain_twice(params):
-    return {"amount": params["amount"] * 2}
+    # Ability 1: At the start of your turn, gain 3. (Using a local handler)
+    def _gain_3_on_turn_start(event: TurnStartEvent):
+        gain(player=event.player, amount=3)
 
+    add_ability(p1, after(this_player, start_turn, _gain_3_on_turn_start))
 
-def gain_instead_of_lose(params):
-    gain(player=params["player"], amount=params["amount"])
+    # Ability 2: When you would gain, gain twice that amount. (Mutating handler)
+    def _gain_twice(event: GainEvent):
+        event.amount *= 2
 
+    add_ability(p1, modify(this_player, gain, _gain_twice))
 
-def gain_1_less(params):
-    return {"amount": max(0, params["amount"] - 1)}
+    # Ability 3: When you would lose, instead gain that much. (Replacing handler)
+    def _gain_instead_of_lose(event: LoseEvent):
+        gain(player=event.player, amount=event.amount)
 
+    add_ability(p1, replace(this_player, lose, _gain_instead_of_lose))
 
-# --- Setup ---
-p1 = Player("Alice")
-p2 = Player("Bob")
-engine.add_player(p1)
-engine.add_player(p2)
+    # Ability 4: When someone else would gain, they gain one less. (Local lambda-like handler)
+    def _weaken_gain(event: GainEvent):
+        event.amount = max(0, event.amount - 1)
 
-print("--- Setting up abilities ---")
-# At the start of your turn, gain 3
-add_ability(p1, after("self", start_turn, gain_3_on_turn_start))
-# When you would gain, gain twice that amount
-add_ability(p1, modify("self", gain, gain_twice))
-# When you would lose, instead gain that much
-add_ability(p1, replace("self", lose, gain_instead_of_lose))
-# When someone else would gain, they gain one less
-add_ability(p1, modify("other", gain, gain_1_less))
+    add_ability(p1, modify(another_player, gain, _weaken_gain))
 
-add_ability(p2, after("self", start_turn, gain_3_on_turn_start))
+    # Bob just gets the basic turn start ability.
+    add_ability(p2, after(this_player, start_turn, _gain_3_on_turn_start))
 
-# --- Game Start ---
-print("\n\n--- STARTING GAME ---")
-print(f"Initial State: {p1}, {p2}")
+    # --- Game Start ---
+    print("\n\n--- STARTING GAME ---")
+    print(f"Initial State: {p1}, {p2}")
 
-start_turn(player=p1)
-# Expected outcome for Alice's turn:
-# 1. start_turn(p1) resolves.
-# 2. 'after' hook triggers gain(p1, 3).
-# 3. 'gain' event is processed.
-# 4. 'modify' hook (gain_twice) fires. params['amount'] becomes 6.
-# 5. gain(p1, 6) resolves. Alice's amount becomes 10 + 6 = 16.
+    for i in range(5):
+        start_turn(player=p1)
+        start_turn(player=p2)
 
-start_turn(player=p2)
-# Expected outcome for Bob's turn:
-# 1. start_turn(p2) resolves.
-# 2. 'after' hook triggers gain(p2, 3).
-# 3. 'gain' event is processed.
-# 4. p1's 'modify(other)' hook fires. params['amount'] becomes 3 - 1 = 2.
-# 5. gain(p2, 2) resolves. Bob's amount becomes 10 + 2 = 12.
+    print("p1 arbitrary penalty")
+    lose(player=p1, amount=5)
 
-lose(player=p1, amount=5)
-# Expected outcome for Alice losing:
-# 1. lose(p1, 5) is processed.
-# 2. 'replace' hook fires, calling gain(p1, 5). The lose event is cancelled.
-# 3. gain(p1, 5) is processed.
-# 4. 'modify' hook (gain_twice) fires. params['amount'] becomes 10.
-# 5. gain(p1, 10) resolves. Alice's amount becomes 16 + 10 = 26.
-
-print(f"\nFinal State: {p1}, {p2}")
+    print(f"\nFinal State: {p1}, {p2}")
