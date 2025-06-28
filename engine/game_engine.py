@@ -35,7 +35,6 @@ class GameEngine:
     # Not sure but this may want to reuse a more generic add entity. The toy game doesn't have other entities but most games do, eg cards.
     def add_player(self, player):
         self.players[player.name] = player
-        player.game = self
 
     def define_action(self, name: str, event_dataclass: type, resolver: Callable):
         """Defines a new action, its data structure, and its resolution logic."""
@@ -150,6 +149,64 @@ class GameEngine:
                 if h.target_filter(h.owner, event):
                     matching_hooks.append(h)
         return matching_hooks
+
+
+# TODO make hook type a literal
+
+
+class GameEntity:
+    def __init__(self, game: GameEngine, id_: str):
+        self.game = game
+        self.id = id_
+        game.players[self.id] = self
+
+    def _add_hook(
+        self,
+        hook_type: str,
+        target_filter: Callable,
+        action: Callable,
+        handler: Callable,
+    ):
+        hook = Hook(
+            hook_type=hook_type,
+            target_filter=target_filter,
+            action_name=action.__name__,
+            handler=handler,
+            owner=self,
+        )
+        self.game.hooks[hook.action_name].append(hook)
+
+    def modify(self, target_filter: Callable, action: Callable, handler: Callable):
+        self._add_hook(
+            hook_type="modify",
+            target_filter=target_filter,
+            action=action,
+            handler=handler,
+        )
+
+    def replace(self, target_filter: Callable, action: Callable, handler: Callable):
+        self._add_hook(
+            hook_type="replace",
+            target_filter=target_filter,
+            action=action,
+            handler=handler,
+        )
+
+    def before(self, target_filter: Callable, action: Callable, handler: Callable):
+        self._add_hook(
+            hook_type="before",
+            target_filter=target_filter,
+            action=action,
+            handler=handler,
+        )
+
+    def after(self, target_filter: Callable, action: Callable, handler: Callable):
+        self._add_hook(
+            hook_type="after",
+            target_filter=target_filter,
+            action=action,
+            handler=handler,
+        )
 
 
 class QuerySet:
