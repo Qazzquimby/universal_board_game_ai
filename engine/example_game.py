@@ -1,8 +1,8 @@
 from dataclasses import dataclass
 
-from engine.engine import GameEngine, Hook
+from game_engine import GameEngine, Hook
 
-engine = GameEngine()
+game = GameEngine()
 
 
 class Player:
@@ -43,29 +43,30 @@ def _resolve_lose(event: LoseEvent):
 
 
 def _resolve_turn_start(event: TurnStartEvent):
-    engine.turn += 1
-    print(f"*** TURN {engine.turn} (Player: {event.player.name}) ***")
+    game.turn += 1
+    print(f"*** TURN {game.turn} (Player: {event.player.name}) ***")
 
 
-gain = engine.define_action("gain", GainEvent, _resolve_gain)
-lose = engine.define_action("lose", LoseEvent, _resolve_lose)
-start_turn = engine.define_action("start_turn", TurnStartEvent, _resolve_turn_start)
+gain = game.define_action("gain", GainEvent, _resolve_gain)
+lose = game.define_action("lose", LoseEvent, _resolve_lose)
+start_turn = game.define_action("start_turn", TurnStartEvent, _resolve_turn_start)
 
 # TODO replace all this with engine.modify, etc. Should include the add_ability call
 def add_ability(owner, hook):
-    engine.hooks.append(Hook(**dict(hook._asdict(), owner=owner)))
+    hook.owner = owner
+    game.hooks[hook.action_name].append(hook)
 
 
 def modify(target_filter, action, handler):
-    return Hook("modify", target_filter, action.__name__, handler, owner=None)
+    return Hook("modify", target_filter, action.__name__, handler)
 
 
 def replace(target_filter, action, handler):
-    return Hook("replace", target_filter, action.__name__, handler, owner=None)
+    return Hook("replace", target_filter, action.__name__, handler)
 
 
 def after(target_filter, action, handler):
-    return Hook("after", target_filter, action.__name__, handler, owner=None)
+    return Hook("after", target_filter, action.__name__, handler)
 
 
 # --- Define Target Filters ---
@@ -76,8 +77,8 @@ another_player = lambda owner, event: hasattr(event, "player") and event.player 
 if __name__ == "__main__":
     p1 = Player("Alice")
     p2 = Player("Bob")
-    engine.add_player(p1)
-    engine.add_player(p2)
+    game.add_player(p1)
+    game.add_player(p2)
 
     print("--- Setting up abilities ---")
 

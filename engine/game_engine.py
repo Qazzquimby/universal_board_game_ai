@@ -1,26 +1,31 @@
-from collections import deque, namedtuple, defaultdict
+from collections import deque, defaultdict
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, Any
 
 
-# TODO change to dataclass
-Hook = namedtuple(
-    "Hook", ["hook_type", "target_filter", "action_name", "handler", "owner"]
-)
+@dataclass
+class Hook:
+    hook_type: str
+    target_filter: Callable
+    action_name: str
+    handler: Callable
+    owner: Any = None
 
-# TODO change to dataclass
-LogEntry = namedtuple("LogEntry", ["action_name", "event_data", "turn"])
+
+@dataclass
+class LogEntry:
+    action_name: str
+    event_data: Any
+    turn: int
 
 
 class GameEngine:
     def __init__(self):
         self.players = {}
 
-        # TODO is callable the right type here?
-        self.action_resolvers: dict[str, Callable] = {}
+        self.action_resolvers: dict[str, Callable[[Any], None]] = {}
 
-        # TODO type as defaultdict and key and value types
-        self.hooks = defaultdict(list)
+        self.hooks: defaultdict[str, list[Hook]] = defaultdict(list)
 
         self.event_stack = deque()
         self.game_log = []
@@ -30,7 +35,7 @@ class GameEngine:
     # Not sure but this may want to reuse a more generic add entity. The toy game doesn't have other entities but most games do, eg cards.
     def add_player(self, player):
         self.players[player.name] = player
-        player.engine = self
+        player.game = self
 
     def define_action(self, name: str, event_dataclass: type, resolver: Callable):
         """Defines a new action, its data structure, and its resolution logic."""
@@ -84,9 +89,7 @@ class GameEngine:
 
             # MODIFICATION PHASE
             for hook in self._get_hooks_for_event("modify", action_name, event):
-                print(
-                    f"  - Applying 'modify' hook from {hook.owner.name}'s ability {hook.name}"
-                )
+                print(f"  - Applying 'modify' hook from {hook.owner.name}'s ability")
                 hook.handler(event)
                 print(f"    -> Event modified to: {event}")
 
@@ -113,12 +116,13 @@ class GameEngine:
 
         self.is_processing = False
 
-    # todo add typing
-    def _get_hooks_for_event(self, hook_type, action_name, event):
+    def _get_hooks_for_event(
+        self, hook_type: str, action_name: str, event: Any
+    ) -> list[Hook]:
         """Finds hooks using the new flexible target filters."""
         matching_hooks = []
-        for h in self.hooks:
-            if h.hook_type == hook_type and h.action_name == action_name:
+        for h in self.hooks[action_name]:
+            if h.hook_type == hook_type:
                 if h.target_filter(h.owner, event):
                     matching_hooks.append(h)
         return matching_hooks
