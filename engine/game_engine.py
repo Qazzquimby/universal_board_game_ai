@@ -1,15 +1,20 @@
 from collections import deque, defaultdict
 from dataclasses import dataclass
-from typing import Callable, Any
+from typing import Callable, Any, Literal
+
+TriggerTiming = Literal["before", "after", "modify", "replace"]
 
 
 @dataclass
-class Hook:
-    hook_type: str
-    target_filter: Callable
-    action_name: str
-    handler: Callable
+class TriggeredAbility:
+    timing: TriggerTiming
+    filter: Callable
+    on_event: str
+    response: Callable
     owner: Any = None
+
+
+# TODO make timing a literal
 
 
 @dataclass
@@ -25,7 +30,7 @@ class GameEngine:
 
         self.action_resolvers: dict[str, Callable[[Any], None]] = {}
 
-        self.hooks: defaultdict[str, list[Hook]] = defaultdict(list)
+        self.hooks: defaultdict[str, list[TriggeredAbility]] = defaultdict(list)
 
         self.event_stack = deque()
         self.game_log = []
@@ -53,26 +58,32 @@ class GameEngine:
     def modify(
         self, owner: Any, target_filter: Callable, action: Callable, handler: Callable
     ):
-        hook = Hook("modify", target_filter, action.__name__, handler, owner)
-        self.hooks[hook.action_name].append(hook)
+        hook = TriggeredAbility(
+            "modify", target_filter, action.__name__, handler, owner
+        )
+        self.hooks[hook.on_event].append(hook)
 
     def replace(
         self, owner: Any, target_filter: Callable, action: Callable, handler: Callable
     ):
-        hook = Hook("replace", target_filter, action.__name__, handler, owner)
-        self.hooks[hook.action_name].append(hook)
+        hook = TriggeredAbility(
+            "replace", target_filter, action.__name__, handler, owner
+        )
+        self.hooks[hook.on_event].append(hook)
 
     def before(
         self, owner: Any, target_filter: Callable, action: Callable, handler: Callable
     ):
-        hook = Hook("before", target_filter, action.__name__, handler, owner)
-        self.hooks[hook.action_name].append(hook)
+        hook = TriggeredAbility(
+            "before", target_filter, action.__name__, handler, owner
+        )
+        self.hooks[hook.on_event].append(hook)
 
     def after(
         self, owner: Any, target_filter: Callable, action: Callable, handler: Callable
     ):
-        hook = Hook("after", target_filter, action.__name__, handler, owner)
-        self.hooks[hook.action_name].append(hook)
+        hook = TriggeredAbility("after", target_filter, action.__name__, handler, owner)
+        self.hooks[hook.on_event].append(hook)
 
     def run(self):
         self.is_processing = True
@@ -102,7 +113,7 @@ class GameEngine:
             for hook in self._get_hooks_for_event("replace", action_name, event):
                 print(f"  - Applying 'replace' hook from {hook.owner.name}'s ability")
                 start_len = len(self.event_stack)
-                hook.handler(event)
+                hook.response(event)
                 if len(self.event_stack) > start_len:
                     print(f"    -> Event was REPLACED.")
                     replaced = True
@@ -113,13 +124,13 @@ class GameEngine:
             # MODIFICATION PHASE
             for hook in self._get_hooks_for_event("modify", action_name, event):
                 print(f"  - Applying 'modify' hook from {hook.owner.name}'s ability")
-                hook.handler(event)
+                hook.response(event)
                 print(f"    -> Event modified to: {event}")
 
             # BEFORE PHASE
             for hook in self._get_hooks_for_event("before", action_name, event):
                 print(f"  - Applying 'before' hook from {hook.owner.name}'s ability")
-                hook.handler(event)
+                hook.response(event)
 
             # RESOLUTION PHASE
             print(f"  - Resolving: {action_name}({event})")
@@ -133,25 +144,22 @@ class GameEngine:
             # AFTER PHASE
             for hook in self._get_hooks_for_event("after", action_name, event):
                 print(f"  - Applying 'after' hook from {hook.owner.name}'s ability")
-                hook.handler(event)
+                hook.response(event)
 
             chain_depth -= 1
 
         self.is_processing = False
 
     def _get_hooks_for_event(
-        self, hook_type: str, action_name: str, event: Any
-    ) -> list[Hook]:
+        self, trigger_type: str, action_name: str, event: Any
+    ) -> list[TriggeredAbility]:
         """Finds hooks using the new flexible target filters."""
         matching_hooks = []
         for h in self.hooks[action_name]:
-            if h.hook_type == hook_type:
-                if h.target_filter(h.owner, event):
+            if h.timing == trigger_type:
+                if h.filter(h.owner, event):
                     matching_hooks.append(h)
         return matching_hooks
-
-
-# TODO make hook type a literal
 
 
 class GameEntity:
@@ -162,23 +170,23 @@ class GameEntity:
 
     def _add_hook(
         self,
-        hook_type: str,
+        timing: TriggerTiming,
         target_filter: Callable,
         action: Callable,
         handler: Callable,
     ):
-        hook = Hook(
-            hook_type=hook_type,
-            target_filter=target_filter,
-            action_name=action.__name__,
-            handler=handler,
+        hook = TriggeredAbility(
+            timing=timing,
+            filter=target_filter,
+            on_event=action.__name__,
+            response=handler,
             owner=self,
         )
-        self.game.hooks[hook.action_name].append(hook)
+        self.game.hooks[hook.on_event].append(hook)
 
     def modify(self, target_filter: Callable, action: Callable, handler: Callable):
         self._add_hook(
-            hook_type="modify",
+            timing="modify",
             target_filter=target_filter,
             action=action,
             handler=handler,
@@ -186,7 +194,7 @@ class GameEntity:
 
     def replace(self, target_filter: Callable, action: Callable, handler: Callable):
         self._add_hook(
-            hook_type="replace",
+            timing="replace",
             target_filter=target_filter,
             action=action,
             handler=handler,
@@ -194,7 +202,7 @@ class GameEntity:
 
     def before(self, target_filter: Callable, action: Callable, handler: Callable):
         self._add_hook(
-            hook_type="before",
+            timing="before",
             target_filter=target_filter,
             action=action,
             handler=handler,
@@ -202,7 +210,7 @@ class GameEntity:
 
     def after(self, target_filter: Callable, action: Callable, handler: Callable):
         self._add_hook(
-            hook_type="after",
+            timing="after",
             target_filter=target_filter,
             action=action,
             handler=handler,
