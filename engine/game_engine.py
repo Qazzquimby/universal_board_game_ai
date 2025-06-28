@@ -51,6 +51,30 @@ class GameEngine:
 
         return action_caller
 
+    def modify(
+        self, owner: Any, target_filter: Callable, action: Callable, handler: Callable
+    ):
+        hook = Hook("modify", target_filter, action.__name__, handler, owner)
+        self.hooks[hook.action_name].append(hook)
+
+    def replace(
+        self, owner: Any, target_filter: Callable, action: Callable, handler: Callable
+    ):
+        hook = Hook("replace", target_filter, action.__name__, handler, owner)
+        self.hooks[hook.action_name].append(hook)
+
+    def before(
+        self, owner: Any, target_filter: Callable, action: Callable, handler: Callable
+    ):
+        hook = Hook("before", target_filter, action.__name__, handler, owner)
+        self.hooks[hook.action_name].append(hook)
+
+    def after(
+        self, owner: Any, target_filter: Callable, action: Callable, handler: Callable
+    ):
+        hook = Hook("after", target_filter, action.__name__, handler, owner)
+        self.hooks[hook.action_name].append(hook)
+
     def run(self):
         self.is_processing = True
         chain_depth = 0
@@ -93,7 +117,7 @@ class GameEngine:
                 hook.handler(event)
                 print(f"    -> Event modified to: {event}")
 
-            # AFTER PHASE
+            # BEFORE PHASE
             for hook in self._get_hooks_for_event("before", action_name, event):
                 print(f"  - Applying 'before' hook from {hook.owner.name}'s ability")
                 hook.handler(event)
