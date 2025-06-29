@@ -1,28 +1,30 @@
 from dataclasses import dataclass
 
-from game_engine import GameEngine, GameEntity
+from game_engine import GameEngine, GameEntity, Selector
 
 game = GameEngine()
 
 
 class Player(GameEntity):
-    def __init__(self, game: GameEngine, name):
-        super().__init__(game=game, id_=name)  # todo how would you typically name id?
+    def __init__(self, game: GameEngine, name: str):
+        # A descriptive string like `name` is often better for an entity's primary
+        # identifier than a generic `id`, unless it's a UUID or integer.
+        super().__init__(game=game, name=name)
         self.amount = 10
 
     def __repr__(self):
-        return f"<Player {self.id}|{self.amount}>"
+        return f"<Player {self.name}|{self.amount}>"
 
 
 @dataclass
 class GainEvent:
-    player: Player
+    actor: Player
     amount: int
 
 
 @dataclass
 class LoseEvent:
-    player: Player
+    actor: Player
     amount: int
 
 
@@ -32,16 +34,16 @@ class TurnStartEvent:
 
 
 def _resolve_gain(event: GainEvent):
-    event.player.amount += event.amount
+    event.actor.amount += event.amount
 
 
 def _resolve_lose(event: LoseEvent):
-    event.player.amount -= event.amount
+    event.actor.amount -= event.amount
 
 
 def _resolve_turn_start(event: TurnStartEvent):
     game.turn += 1
-    print(f"*** TURN {game.turn} (Player: {event.player.id}) ***")
+    print(f"*** TURN {game.turn} (Player: {event.player.name}) ***")
 
 
 gain = game.define_action("gain", GainEvent, _resolve_gain)
@@ -49,8 +51,11 @@ lose = game.define_action("lose", LoseEvent, _resolve_lose)
 start_turn = game.define_action("start_turn", TurnStartEvent, _resolve_turn_start)
 
 
-this_player = lambda owner, event: event.player == owner
-another_player = lambda owner, event: hasattr(event, "player") and event.player != owner
+this_player = Selector("target is owner", lambda owner, target: target is owner)
+another_player = Selector(
+    "target is not owner",
+    lambda owner, target: target is not None and target is not owner,
+)
 
 
 if __name__ == "__main__":
@@ -70,7 +75,7 @@ if __name__ == "__main__":
     p1.modify(this_player, gain, _gain_twice)
 
     def _gain_instead_of_lose(event: LoseEvent):
-        gain(player=event.player, amount=event.amount)
+        gain(actor=event.actor, amount=event.amount)
 
     p1.replace(this_player, lose, _gain_instead_of_lose)
 
@@ -91,6 +96,6 @@ if __name__ == "__main__":
         start_turn(player=p2)
 
     print("p1 arbitrary penalty")
-    lose(player=p1, amount=5)
+    lose(actor=p1, amount=5)
 
     print(f"\nFinal State: {p1}, {p2}")

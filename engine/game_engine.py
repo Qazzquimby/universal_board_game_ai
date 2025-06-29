@@ -1,37 +1,29 @@
 from collections import deque, defaultdict
 from dataclasses import dataclass
-from typing import Callable, Any, Literal, Type
+from typing import Callable, Any, Literal, Type, Union
 
 TriggerTiming = Literal["before", "after", "modify", "replace"]
 
 
-class TriggerFilter:
-    def __init__(
-        self, base_type: Type, description: str, filter_func: Callable[[Any], bool]
-    ):
-        self.base_type = base_type
+class Selector:
+    """An object that represents a query for a target, not a specific target."""
+
+    def __init__(self, description: str, filter_func: Callable[[Any, Any], bool]):
         self.description = description  # For debugging and logging
         self.filter_func = filter_func
 
-    def matches(self, instance: Any) -> bool:
+    def matches(self, owner: Any, target: Any) -> bool:
         """Checks if a given instance matches the selector's criteria."""
-        # Fast path: if it's not even an instance of the base type, fail.
-        if not isinstance(instance, self.base_type):
-            return False
-        # If it is the right type, apply the detailed filter logic.
-        return self.filter_func(instance)
+        return self.filter_func(owner, target)
 
 
 @dataclass
 class TriggeredAbility:
     timing: TriggerTiming
-    filter: TriggerFilter
+    filter: Union[Selector, Type, Any]
     on_event: str
     response: Callable
     owner: Any = None
-
-
-# TODO make timing a literal
 
 
 @dataclass
@@ -71,36 +63,6 @@ class GameEngine:
         action_caller.__name__ = name
 
         return action_caller
-
-    def modify(
-        self, owner: Any, target_filter: Callable, action: Callable, handler: Callable
-    ):
-        hook = TriggeredAbility(
-            "modify", target_filter, action.__name__, handler, owner
-        )
-        self.hooks[hook.on_event].append(hook)
-
-    def replace(
-        self, owner: Any, target_filter: Callable, action: Callable, handler: Callable
-    ):
-        hook = TriggeredAbility(
-            "replace", target_filter, action.__name__, handler, owner
-        )
-        self.hooks[hook.on_event].append(hook)
-
-    def before(
-        self, owner: Any, target_filter: Callable, action: Callable, handler: Callable
-    ):
-        hook = TriggeredAbility(
-            "before", target_filter, action.__name__, handler, owner
-        )
-        self.hooks[hook.on_event].append(hook)
-
-    def after(
-        self, owner: Any, target_filter: Callable, action: Callable, handler: Callable
-    ):
-        hook = TriggeredAbility("after", target_filter, action.__name__, handler, owner)
-        self.hooks[hook.on_event].append(hook)
 
     def run(self):
         self.is_processing = True
@@ -172,23 +134,39 @@ class GameEngine:
     ) -> list[TriggeredAbility]:
         """Finds hooks using the new flexible target filters."""
         matching_hooks = []
-        for h in self.hooks[action_name]:
-            if h.timing == trigger_type:
-                if h.filter(h.owner, event):
-                    matching_hooks.append(h)
+        actor = getattr(event, "actor", None)
+
+        for hook in self.hooks[action_name]:
+            if hook.timing != trigger_type:
+                continue
+
+            owner = hook.owner
+            match = None
+            if isinstance(hook.filter, Selector):
+                match = hook.filter.matches(owner, actor)
+            elif isinstance(hook.filter, type) and actor:
+                match = isinstance(actor, hook.filter)
+            elif actor:  # actor is an instance
+                match = actor is hook.filter  # check .id match?
+
+            if match:
+                matching_hooks.append(hook)
         return matching_hooks
 
 
+TargetFilter = Union[Selector, Type, Any]
+
+
 class GameEntity:
-    def __init__(self, game: GameEngine, id_: str):
+    def __init__(self, game: GameEngine, name: str):
         self.game = game
-        self.id = id_
-        game.players[self.id] = self
+        self.name = name
+        game.players[self.name] = self
 
     def _add_hook(
         self,
         timing: TriggerTiming,
-        target_filter: Callable,
+        target_filter: Union[Selector, Type, Any],
         action: Callable,
         handler: Callable,
     ):
@@ -201,7 +179,7 @@ class GameEntity:
         )
         self.game.hooks[hook.on_event].append(hook)
 
-    def modify(self, target_filter: Callable, action: Callable, handler: Callable):
+    def modify(self, target_filter: TargetFilter, action: Callable, handler: Callable):
         self._add_hook(
             timing="modify",
             target_filter=target_filter,
@@ -209,7 +187,7 @@ class GameEntity:
             handler=handler,
         )
 
-    def replace(self, target_filter: Callable, action: Callable, handler: Callable):
+    def replace(self, target_filter: TargetFilter, action: Callable, handler: Callable):
         self._add_hook(
             timing="replace",
             target_filter=target_filter,
@@ -217,7 +195,7 @@ class GameEntity:
             handler=handler,
         )
 
-    def before(self, target_filter: Callable, action: Callable, handler: Callable):
+    def before(self, target_filter: TargetFilter, action: Callable, handler: Callable):
         self._add_hook(
             timing="before",
             target_filter=target_filter,
@@ -225,7 +203,7 @@ class GameEntity:
             handler=handler,
         )
 
-    def after(self, target_filter: Callable, action: Callable, handler: Callable):
+    def after(self, target_filter: TargetFilter, action: Callable, handler: Callable):
         self._add_hook(
             timing="after",
             target_filter=target_filter,
