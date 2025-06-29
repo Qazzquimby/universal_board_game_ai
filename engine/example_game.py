@@ -1,3 +1,4 @@
+from asyncio import Protocol
 from dataclasses import dataclass
 
 from game_engine import GameEngine, GameEntity, Selector
@@ -21,34 +22,50 @@ class GainEvent:
     actor: Player
     amount: int
 
+    def resolve(self):
+        self.actor.amount += self.amount
+
+
+class GainProto(Protocol):
+    def __call__(self, actor: Player, amount: int) -> None:
+        ...
+
+
+gain: GainProto = game.define_action("gain", GainEvent)
+
 
 @dataclass
 class LoseEvent:
     actor: Player
     amount: int
 
+    def resolve(self):
+        self.actor.amount -= self.amount
+
+
+class LoseProto(Protocol):
+    def __call__(self, actor: Player, amount: int) -> None:
+        ...
+
+
+lose: LoseProto = game.define_action("lose", LoseEvent)
+
 
 @dataclass
-class TurnStartEvent:
+class StartTurnEvent:
     actor: Player
 
-
-def _resolve_gain(event: GainEvent):
-    event.actor.amount += event.amount
-
-
-def _resolve_lose(event: LoseEvent):
-    event.actor.amount -= event.amount
+    def resolve(self):
+        game.turn += 1  # todo is this global?
+        print(f"*** TURN {game.turn} (Player: {self.actor.name}) ***")
 
 
-def _resolve_turn_start(event: TurnStartEvent):
-    game.turn += 1
-    print(f"*** TURN {game.turn} (Player: {event.actor.name}) ***")
+class StartTurnProto(Protocol):
+    def __call__(self, actor: Player) -> None:
+        ...
 
 
-gain = game.define_action("gain", GainEvent, _resolve_gain)
-lose = game.define_action("lose", LoseEvent, _resolve_lose)
-start_turn = game.define_action("start_turn", TurnStartEvent, _resolve_turn_start)
+start_turn = game.define_action("start_turn", StartTurnEvent)
 
 
 this_player = Selector("target is owner", lambda owner, target: target is owner)
@@ -64,7 +81,7 @@ if __name__ == "__main__":
 
     print("--- Setting up abilities ---")
 
-    def _gain_3_on_turn_start(event: TurnStartEvent):
+    def _gain_3_on_turn_start(event: StartTurnEvent):
         gain(actor=event.actor, amount=3)
 
     p1.after(this_player, start_turn, _gain_3_on_turn_start)
@@ -93,9 +110,14 @@ if __name__ == "__main__":
 
     for i in range(5):
         start_turn(actor=p1)
-        start_turn(actorf=p2)
+        start_turn(actor=p2)
 
     print("p1 arbitrary penalty")
     lose(actor=p1, amount=5)
 
     print(f"\nFinal State: {p1}, {p2}")
+
+
+###
+
+print(GainEvent.__text_signature__)
