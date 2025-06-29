@@ -30,7 +30,7 @@ class LoseEvent:
 
 @dataclass
 class TurnStartEvent:
-    player: Player
+    actor: Player
 
 
 def _resolve_gain(event: GainEvent):
@@ -43,7 +43,7 @@ def _resolve_lose(event: LoseEvent):
 
 def _resolve_turn_start(event: TurnStartEvent):
     game.turn += 1
-    print(f"*** TURN {game.turn} (Player: {event.player.name}) ***")
+    print(f"*** TURN {game.turn} (Player: {event.actor.name}) ***")
 
 
 gain = game.define_action("gain", GainEvent, _resolve_gain)
@@ -65,7 +65,7 @@ if __name__ == "__main__":
     print("--- Setting up abilities ---")
 
     def _gain_3_on_turn_start(event: TurnStartEvent):
-        gain(player=event.player, amount=3)
+        gain(actor=event.actor, amount=3)
 
     p1.after(this_player, start_turn, _gain_3_on_turn_start)
 
@@ -92,8 +92,8 @@ if __name__ == "__main__":
     print(f"Initial State: {p1}, {p2}")
 
     for i in range(5):
-        start_turn(player=p1)
-        start_turn(player=p2)
+        start_turn(actor=p1)
+        start_turn(actorf=p2)
 
     print("p1 arbitrary penalty")
     lose(actor=p1, amount=5)

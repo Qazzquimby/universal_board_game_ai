@@ -1,8 +1,13 @@
+import functools
 from collections import deque, defaultdict
 from dataclasses import dataclass
-from typing import Callable, Any, Literal, Type, Union
+from typing import Callable, Any, Literal, Type, Union, TypeVar
+from typing_extensions import ParamSpec
 
 TriggerTiming = Literal["before", "after", "modify", "replace"]
+
+EventT = TypeVar("EventT")
+P = ParamSpec("P")
 
 
 class Selector:
@@ -50,18 +55,23 @@ class GameEngine:
     def add_player(self, player):
         self.players[player.name] = player
 
-    def define_action(self, name: str, event_dataclass: type, resolver: Callable):
+    def define_action(
+        self,
+        name: str,
+        event_dataclass: Callable[P, EventT],
+        resolver: Callable[[EventT], None],
+    ) -> Callable[P, None]:
         """Defines a new action, its data structure, and its resolution logic."""
         self.action_resolvers[name] = resolver
 
-        def action_caller(**kwargs):
-            event = event_dataclass(**kwargs)
+        @functools.wraps(event_dataclass)
+        def action_caller(*args: P.args, **kwargs: P.kwargs) -> None:
+            event = event_dataclass(*args, **kwargs)
             self.event_stack.append((name, event))
             if not self.is_processing:
                 self.run()
 
         action_caller.__name__ = name
-
         return action_caller
 
     def run(self):
