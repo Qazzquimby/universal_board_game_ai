@@ -86,20 +86,12 @@ class GameEngine:
             chain_depth += 1
 
             # REPLACEMENT PHASE
-            # todo seems messy
-            # Cases:
-            # - There is no replacement, nothing happens. Event may require conditions that aren't met
-            # - Handler triggers one or more events and this event is replaced
-            # - Event is replaced by nothing. Could be called prevent.
-            # There's probably a difference between "gets cancelled by some reaction" and "is made an illegal move" and the illegal moves should be understood by get_legal_moves
-            # Note that events shouldn't be replaced with the same event type, that's modify
-            # Maybe should return True, or call evt.cancel() or something to cancel the original
+            # A 'replace' hook cancels the original event by default.
+            # The handler can return False to prevent this and let the event resolve.
             replaced = False
             for hook in self._get_hooks_for_event("replace", action_name, event):
                 print(f"  - Applying 'replace' hook from {hook.owner.name}'s ability")
-                start_len = len(self.event_stack)
-                hook.response(event)
-                if len(self.event_stack) > start_len:
+                if hook.response(event) is not False:
                     print(f"    -> Event was REPLACED.")
                     replaced = True
                     break

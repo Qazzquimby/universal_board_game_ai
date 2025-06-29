@@ -1,0 +1,12 @@
+Making a new game environment called tttf_1
+
+Two players
+Each player controls two heroes, which will have a variety of classes
+Control alternates Player 1 controls their first hero, player 2 controls their first hero, player 1 controls second hero, etc
+A character takes an action. Available actions depend entirely on class, and more classes will be added over time.
+Heroes have some amount of health.
+There is no concept of location, movement, range, etc.
+Last team to have a hero alive wins.
+
+Heroes will have complex abilities with event handling, so will use the 'game_engine' prototype in tne engine file.
+This may need to be merged in to BaseEnvironment, or may not. They were developed separately.
