@@ -1,14 +1,31 @@
 from collections import deque, defaultdict
 from dataclasses import dataclass
-from typing import Callable, Any, Literal
+from typing import Callable, Any, Literal, Type
 
 TriggerTiming = Literal["before", "after", "modify", "replace"]
+
+
+class TriggerFilter:
+    def __init__(
+        self, base_type: Type, description: str, filter_func: Callable[[Any], bool]
+    ):
+        self.base_type = base_type
+        self.description = description  # For debugging and logging
+        self.filter_func = filter_func
+
+    def matches(self, instance: Any) -> bool:
+        """Checks if a given instance matches the selector's criteria."""
+        # Fast path: if it's not even an instance of the base type, fail.
+        if not isinstance(instance, self.base_type):
+            return False
+        # If it is the right type, apply the detailed filter logic.
+        return self.filter_func(instance)
 
 
 @dataclass
 class TriggeredAbility:
     timing: TriggerTiming
-    filter: Callable
+    filter: TriggerFilter
     on_event: str
     response: Callable
     owner: Any = None
