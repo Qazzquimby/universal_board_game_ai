@@ -63,22 +63,6 @@ class BaseEnvironment(abc.ABC):
         """Returns the shape of the flattened observation tensor for network input."""
         pass
 
-    @property
-    @abc.abstractmethod
-    def policy_vector_size(self) -> int:
-        """Returns the fixed size of the policy vector that networks should output."""
-        pass
-
-    @abc.abstractmethod
-    def map_action_to_policy_index(self, action: ActionType) -> Optional[int]:
-        """Maps an environment action to its corresponding policy vector index."""
-        pass
-
-    @abc.abstractmethod
-    def map_policy_index_to_action(self, index: int) -> Optional[ActionType]:
-        """Maps a policy vector index back to a valid environment action."""
-        pass
-
     def reset(self) -> StateWithKey:
         """
         Reset the environment to its initial state.
@@ -170,16 +154,6 @@ class BaseEnvironment(abc.ABC):
 
         Args:
             state: The state dictionary to load.
-        """
-        pass
-
-    @abc.abstractmethod
-    def get_sanity_check_states(self) -> List[SanityCheckState]:
-        """
-        Get a list of predefined states for sanity checking agent predictions.
-
-        Returns:
-            A list of SanityCheckState objects.
         """
         pass
 

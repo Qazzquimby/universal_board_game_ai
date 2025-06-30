@@ -1,5 +1,6 @@
 import inspect
 import math
+import random
 from dataclasses import dataclass
 from typing import List, Tuple, Optional, Protocol, Callable
 
@@ -17,9 +18,10 @@ def halve(number: int):
     return int(math.ceil(number / 2))
 
 
-def action(default=False, target_filter_func: Callable[["Hero", "Hero"], bool] = None):
+def action(default=False, targeter: Callable[["Hero", "TTTF_1"], List["Hero"]] = None):
     """
-    Decorator to mark a method as an action and optionally provide a target filter.
+    Decorator to mark a method as an action and provide a targeter function.
+    The targeter function is responsible for returning a list of valid targets.
     When applied to a method on a Hero subclass, it will be discoverable by
     `get_legal_actions`.
     """
@@ -27,15 +29,15 @@ def action(default=False, target_filter_func: Callable[["Hero", "Hero"], bool] =
     def decorator(func):
         func._is_default = default
         func._is_action = True
-        func._target_filter = target_filter_func
+        func._targeter = targeter
         return func
 
     return decorator
 
 
-def any_living_hero(actor: "Hero", target: "Hero") -> bool:
-    """Target filter that allows targeting any hero that is alive."""
-    return target.is_alive()
+def target_any_living_hero(actor: "Hero", env: "TTTF_1") -> List["Hero"]:
+    """Targeter that returns all living heroes."""
+    return [h for h in env.heroes if h.is_alive()]
 
 
 @dataclass
@@ -92,21 +94,17 @@ class TTTF_1(BaseEnvironment):
         self,
         num_players: int = 2,
         num_heroes_per_player: int = 2,
-        hero_health: int = 10,
     ):
         super().__init__()
         assert num_players == 2, "TTTF_1 currently only supports 2 players."
         self._num_players = num_players
         self._num_heroes_per_player = num_heroes_per_player
-        self._hero_health = hero_health
-        self.action_names = ["attack", "battle_hunger"]  # TODO: Discover dynamically
 
-        self.engine: Optional[GameEngine] = None
+        self.engine: GameEngine = None
         self.heroes: List[Hero] = []
         self.turn_order_ids: List[int] = []
         self.current_turn_index: int = 0
         self.winner: Optional[int] = None
-        self.engine = GameEngine()
 
         self.reset()
 
@@ -138,7 +136,7 @@ class TTTF_1(BaseEnvironment):
             for j in range(self._num_players):
                 player_id = j
                 hero_name = f"p{player_id}_h{i}"
-                hero = Axe(self, hero_name, player_id, self._hero_health)
+                hero = Axe(self, hero_name, player_id)
                 self.heroes.append(hero)
 
         self.turn_order_ids = list(range(len(self.heroes)))
@@ -149,31 +147,16 @@ class TTTF_1(BaseEnvironment):
         return self.get_state_with_key()
 
     def _step(self, action: ActionType) -> ActionResult:
-        if self.done:
-            return ActionResult(
-                next_state_with_key=self.get_state_with_key(),
-                reward=0.0,
-                done=True,
-            )
-
         acting_hero = self.heroes[self.turn_order_ids[self.current_turn_index]]
         acting_player_id = acting_hero.player_owner_id
 
-        # This is again very fragile targeting logic
+        # todo make this more generalizable targeting logic.
         action_name, target_id = action
         target_hero = self.heroes[target_id]
 
         action_method = getattr(acting_hero, action_name, None)
-        if action_method and getattr(action_method, "_is_action", False):
-            action_method(target_hero)
-        else:
-            raise ValueError(
-                f"Invalid action: {action_name} for hero {acting_hero.name}"
-            )
-
-        self.engine.run()
+        action_method(target_hero)
         self.end_of_turn(actor=acting_hero)
-        self.engine.run()
         self._check_for_winner()
 
         reward = 0.0
@@ -218,6 +201,8 @@ class TTTF_1(BaseEnvironment):
     def get_legal_actions(self) -> List[ActionType]:
         assert not self.done
 
+        # todo pass turn should always be a legal action
+
         acting_hero = self.heroes[self.turn_order_ids[self.current_turn_index]]
         return acting_hero.get_legal_actions()
 
@@ -227,8 +212,9 @@ class TTTF_1(BaseEnvironment):
         return self.heroes[acting_hero_id].player_owner_id
 
     def _get_state(self) -> StateType:
+        # this should be nested, showing each entities state.
+        # Needs to have same engine state as well, which was part of why I expected engine might be merged with BaseEnvironment
         return {
-            "hero_healths": [h.health for h in self.heroes],
             "current_turn_index": self.current_turn_index,
             "done": self.done,
             "winner": self.winner,
@@ -241,21 +227,14 @@ class TTTF_1(BaseEnvironment):
         new_env = TTTF_1(
             num_players=self._num_players,
             num_heroes_per_player=self._num_heroes_per_player,
-            hero_health=self._hero_health,
         )
         new_env.set_state(self._get_state())
         return new_env
 
     def set_state(self, state: StateType) -> None:
-        # To restore state, we need to rebuild the hero list and engine state.
-        # A full reset is easiest to ensure engine is clean.
         self._reset()
 
-        # Apply the saved state
-        healths = state["hero_healths"]
-        for i, hero in enumerate(self.heroes):
-            hero.health = healths[i]
-
+        # this should be nested, showing each entities state.
         self.current_turn_index = state["current_turn_index"]
         self.done = state["done"]
         self.winner = state["winner"]
@@ -304,20 +283,23 @@ class Hero(GameEntity):
     def get_legal_actions(self) -> List[ActionType]:
         """
         Returns a list of legal actions for this hero by checking all decorated
-        @action methods and their target filters.
+        @action methods and their targeters.
         """
         legal_actions: List[ActionType] = []
+        hero_to_id = {hero: i for i, hero in enumerate(self.env.heroes)}
+
         for action_name, method in self.actions.items():
-            target_filter = getattr(method, "_target_filter", None)
-            if not target_filter:
+            targeter = getattr(method, "_targeter", None)
+            if not targeter:
                 # Action has no targets, e.g. a self-buff
                 # legal_actions.append((action_name, None)) # Not supported yet
                 continue
 
-            # todo this assumes there's one target (and its a hero, which is true atm). Would be nice to expand target filter to handle its own custom logic.
-            for i, hero in enumerate(self.env.heroes):
-                if target_filter(actor=self, target=hero):
-                    legal_actions.append((action_name, i))
+            valid_targets = targeter(self, self.env)
+            for target in valid_targets:
+                target_id = hero_to_id.get(target)
+                if target_id is not None:
+                    legal_actions.append((action_name, target_id))
         return legal_actions
 
     def is_alive(self) -> bool:
@@ -327,30 +309,37 @@ class Hero(GameEntity):
         return f"<Hero {self.name}|p{self.player_owner_id}|hp:{self.health}>"
 
 
-im_targeted_with = Selector(
+im_targeted = Selector(
     "when owner is target",
     lambda owner, event_target: event_target is owner,
     event_attr="target",
 )
 
+im_targeted_by_default_ability = Selector(
+    "when owner is target of default ability",
+    lambda owner, event_target: event_target is owner,
+    event_attr="target",
+    event_props={"is_default_ability": True},
+)
+
 
 class Axe(Hero):
-    def __init__(self, env: TTTF_1, name: str, player_owner_id: int, max_health: int):
+    def __init__(self, env: TTTF_1, name: str, player_owner_id: int):
         super().__init__(
             env=env,
             name=name,
             player_owner_id=player_owner_id,
-            max_health=max_health,
+            max_health=12,
         )
 
         self.after(
-            im_targeted_with,
+            im_targeted,
             self.env.damage,
             self._1dmg_aoe,
         )
 
         self.before(
-            im_targeted_with,
+            im_targeted_by_default_ability,
             self.env.damage,
             self._on_damaged_by_default_ability,
         )
@@ -363,38 +352,46 @@ class Axe(Hero):
                 self.env.damage(actor=self, target=hero, amount=1)
 
     def _on_damaged_by_default_ability(self, event: DamageEvent):
-        if event.is_default_ability:
-            reflected_damage = halve(event.amount)
-            if reflected_damage > 0:
-                print(
-                    f"-> {self.name}'s passive: reflects {reflected_damage} damage to {event.actor.name}!"
-                )
-                self.env.damage(actor=self, target=event.actor, amount=reflected_damage)
+        """Reflects half of incoming damage back to the attacker."""
+        reflected_damage = halve(event.amount)
+        if reflected_damage > 0:
+            print(
+                f"-> {self.name}'s passive: reflects {reflected_damage} damage to {event.actor.name}!"
+            )
+            self.env.damage(actor=self, target=event.actor, amount=reflected_damage)
 
-    @action(default=True, target_filter_func=any_living_hero)
-    def attack(self, target: Hero):
+    @action(default=True, targeter=target_any_living_hero)
+    def axe_attack(self, target: Hero):
         self.env.damage(actor=self, target=target, amount=2, is_default_ability=True)
 
-    @action(target_filter_func=any_living_hero)
+    @action(targeter=target_any_living_hero)
     def battle_hunger(self, target: Hero):
         print(f"-> {self.name} applies Battle Hunger to {target.name}")
 
-        def on_target_turn_end(event: EndOfTurnEvent):
-            # This handler is a closure, it captures `self` (Axe) and `target`.
-            print(f"-> {target.name} takes 1 damage from {self.name}'s Battle Hunger!")
+        def take_1_damage(event: EndOfTurnEvent):
+            print(f"-> {target.name} takes 1 damage from {self.name}'s Battle Hunger.")
             self.env.damage(actor=self, target=target, amount=1)
 
-        # Note that later this will make a token entity attached to the target, and the passive will belong to the token.
-        # The hook is owned by `self` (Axe).
-        # It triggers when an EndOfTurnEvent's actor is the original target.
-        turn_end_filter = Selector(
-            f"event actor is {target.name}",
-            lambda owner, event_actor: event_actor is target and target.is_alive(),
+        self.after(target, self.env.end_of_turn, take_1_damage)
+
+
+if __name__ == "__main__":
+    # Setup and run a 2v2 game of all Axes
+    env = TTTF_1(num_heroes_per_player=2)
+    env.render()
+
+    while not env.done:
+        legal_actions = env.get_legal_actions()
+        chosen_action = random.choice(legal_actions)
+        acting_hero = env.heroes[env.turn_order_ids[env.current_turn_index]]
+        target_hero = env.heroes[chosen_action[1]]
+        print(
+            f"\n*** Player {env.get_current_player()} ({acting_hero.name}) "
+            f"uses {chosen_action[0]} on {target_hero.name} ***"
         )
 
-        self._add_hook(
-            timing="after",
-            target_filter=turn_end_filter,
-            action=self.env.end_of_turn,
-            handler=on_target_turn_end,
-        )
+        env.step(chosen_action)
+        env.render()
+
+    print("\n--- FINAL ---")
+    env.render()

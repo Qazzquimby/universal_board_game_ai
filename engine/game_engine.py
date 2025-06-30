@@ -16,15 +16,24 @@ class Selector:
         description: str,
         filter_func: Callable[[Any, Any], bool],
         event_attr: str = "actor",
+        event_props: dict = None,
     ):
         self.description = description  # For debugging and logging
         self.filter_func = filter_func
         self.event_attr = event_attr
+        self.event_props = event_props or {}
 
     def matches(self, owner: Any, event: Any) -> bool:
         """Checks if a given instance matches the selector's criteria."""
         target_obj = getattr(event, self.event_attr, None)
-        return self.filter_func(owner, target_obj)
+        if not self.filter_func(owner, target_obj):
+            return False
+
+        for prop, value in self.event_props.items():
+            if getattr(event, prop, None) != value:
+                return False
+
+        return True
 
 
 @dataclass
