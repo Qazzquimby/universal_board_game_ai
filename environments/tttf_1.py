@@ -1,5 +1,6 @@
+import inspect
 from dataclasses import dataclass
-from typing import List, Tuple, Optional, Protocol
+from typing import List, Tuple, Optional, Protocol, Callable
 
 from environments.base import (
     BaseEnvironment,
@@ -10,6 +11,27 @@ from environments.base import (
     ActionType,
 )
 from engine.game_engine import GameEngine, GameEntity
+
+
+def action(default=False, target_filter_func: Callable[["Hero", "Hero"], bool] = None):
+    """
+    Decorator to mark a method as an action and optionally provide a target filter.
+    When applied to a method on a Hero subclass, it will be discoverable by
+    `get_legal_actions`.
+    """
+
+    def decorator(func):
+        func._is_default = default
+        func._is_action = True
+        func._target_filter = target_filter_func
+        return func
+
+    return decorator
+
+
+def any_living_hero(actor: "Hero", target: "Hero") -> bool:
+    """Target filter that allows targeting any hero that is alive."""
+    return target.is_alive()
 
 
 @dataclass
@@ -50,6 +72,7 @@ class TTTF_1(BaseEnvironment):
         self._num_players = num_players
         self._num_heroes_per_player = num_heroes_per_player
         self._hero_health = hero_health
+        self.action_names = ["attack"]  # TODO: Discover dynamically
 
         self.engine: Optional[GameEngine] = None
         self.heroes: List[Hero] = []
@@ -74,17 +97,7 @@ class TTTF_1(BaseEnvironment):
         num_features = len(self.heroes)
         return (num_features,)
 
-    # TODO later, replace this with one head per verb and choice type
-    @property
-    def policy_vector_size(self) -> int:
-        # Max possible actions: attack any of the heroes.
-        return len(self.heroes)
-
-    def map_action_to_policy_index(self, action: ActionType) -> Optional[int]:
-        return action
-
-    def map_policy_index_to_action(self, index: int) -> Optional[ActionType]:
-        return index
+    # dont worry about the policy handling. That'd be handled differently
 
     def _reset(self) -> StateWithKey:
         self.engine = GameEngine()
@@ -116,8 +129,17 @@ class TTTF_1(BaseEnvironment):
         acting_hero = self.heroes[self.turn_order_ids[self.current_turn_index]]
         acting_player_id = acting_hero.player_owner_id
 
-        target_hero = self.heroes[action]
-        acting_hero.attack(target_hero)
+        # This is again very fragile targeting logic
+        action_name, target_id = action
+        target_hero = self.heroes[target_id]
+
+        action_method = getattr(acting_hero, action_name, None)
+        if action_method and getattr(action_method, "_is_action", False):
+            action_method(target_hero)
+        else:
+            raise ValueError(
+                f"Invalid action: {action_name} for hero {acting_hero.name}"
+            )
 
         self.engine.run()
         self._check_for_winner()
@@ -241,21 +263,30 @@ class Hero(GameEntity):
 
         self.health = self.max_health
 
+        # Discover methods decorated with @action
+        self.actions = {}
+        for name, method in inspect.getmembers(self, predicate=inspect.ismethod):
+            if hasattr(method, "_is_action"):
+                self.actions[name] = method
+
     def get_legal_actions(self) -> List[ActionType]:
         """
-        Returns a list of legal actions for this hero.
-        Base hero has no actions. Subclasses should override this.
+        Returns a list of legal actions for this hero by checking all decorated
+        @action methods and their target filters.
         """
-        return []
+        legal_actions: List[ActionType] = []
+        for action_name, method in self.actions.items():
+            target_filter = getattr(method, "_target_filter", None)
+            if not target_filter:
+                # Action has no targets, e.g. a self-buff
+                # legal_actions.append((action_name, None)) # Not supported yet
+                continue
 
-    def attack(self, target: "Hero"):
-        """
-        Performs an attack on a target.
-        Base hero cannot attack. Subclasses should override this.
-        """
-        raise NotImplementedError(
-            f"Hero {self.name} of class {self.__class__.__name__} does not have an 'attack' action."
-        )
+            # todo this assumes there's one target (and its a hero, which is true atm). Would be nice to expand target filter to handle its own custom logic.
+            for i, hero in enumerate(self.env.heroes):
+                if target_filter(actor=self, target=hero):
+                    legal_actions.append((action_name, i))
+        return legal_actions
 
     def is_alive(self) -> bool:
         return self.health > 0
@@ -273,15 +304,18 @@ class Axe(Hero):
             max_health=max_health,
         )
 
-    def get_legal_actions(self) -> List[ActionType]:
-        """Axe can attack any living enemy hero."""
-        legal_targets = []
-        for i, hero in enumerate(self.env.heroes):
-            is_enemy = hero.player_owner_id != self.player_owner_id
-            if is_enemy and hero.is_alive():
-                legal_targets.append(i)  # Action is target hero ID
-        return legal_targets
+    # passives
+    # Receive damage
+    # All Enemies 1dmg
 
-    def attack(self, target: Hero):
-        """Axe's attack deals 1 damage to the target."""
-        self.env.damage(actor=self, target=target, amount=1)
+    # Receive damage from a Default Ability
+    # The attacker takes 1/2 the damage received, before Armor.
+
+    @action(default=True, target_filter_func=any_living_hero)
+    def axe_attack(self, target: Hero):
+        self.env.damage(actor=self, target=target, amount=2)
+
+    @action(target_filter_func=any_living_hero)
+    def battle_hunger(self, target: Hero):
+        pass
+        # register passive on target "at end of turn, take 1 damage"
