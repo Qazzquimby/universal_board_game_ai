@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Protocol
 
 from environments.base import (
     BaseEnvironment,
@@ -22,6 +22,11 @@ class DamageEvent:
 
     def resolve(self):
         self.target.health -= self.amount
+
+
+class DamageProto(Protocol):
+    def __call__(self, actor: "Hero", target: "Hero", amount: int) -> None:
+        ...
 
 
 class TTTF_1(BaseEnvironment):
@@ -55,9 +60,7 @@ class TTTF_1(BaseEnvironment):
 
         self.reset()
 
-        self.damage = self.engine.define_action(
-            "damage", DamageEvent
-        )  # todo type with protocol
+        self.damage: DamageProto = self.engine.define_action("damage", DamageEvent)
 
     @property
     def num_players(self) -> int:
@@ -77,6 +80,12 @@ class TTTF_1(BaseEnvironment):
         # Max possible actions: attack any of the heroes.
         return len(self.heroes)
 
+    def map_action_to_policy_index(self, action: ActionType) -> Optional[int]:
+        return action
+
+    def map_policy_index_to_action(self, index: int) -> Optional[ActionType]:
+        return index
+
     def _reset(self) -> StateWithKey:
         self.engine = GameEngine()
         self.heroes = []
@@ -86,7 +95,7 @@ class TTTF_1(BaseEnvironment):
             for j in range(self._num_players):
                 player_id = j
                 hero_name = f"p{player_id}_h{i}"
-                hero = Hero(self.engine, hero_name, player_id, self._hero_health)
+                hero = Axe(self, hero_name, player_id, self._hero_health)
                 self.heroes.append(hero)
 
         self.turn_order_ids = list(range(len(self.heroes)))
@@ -107,7 +116,8 @@ class TTTF_1(BaseEnvironment):
         acting_hero = self.heroes[self.turn_order_ids[self.current_turn_index]]
         acting_player_id = acting_hero.player_owner_id
 
-        # TODO call action's resolve
+        target_hero = self.heroes[action]
+        acting_hero.attack(target_hero)
 
         self.engine.run()
         self._check_for_winner()
@@ -154,7 +164,8 @@ class TTTF_1(BaseEnvironment):
     def get_legal_actions(self) -> List[ActionType]:
         assert not self.done
 
-        # todo get from active hero
+        acting_hero = self.heroes[self.turn_order_ids[self.current_turn_index]]
+        return acting_hero.get_legal_actions()
 
     def get_current_player(self) -> int:
         # Before a move, current_turn_index points to the currently acting hero.
@@ -230,6 +241,22 @@ class Hero(GameEntity):
 
         self.health = self.max_health
 
+    def get_legal_actions(self) -> List[ActionType]:
+        """
+        Returns a list of legal actions for this hero.
+        Base hero has no actions. Subclasses should override this.
+        """
+        return []
+
+    def attack(self, target: "Hero"):
+        """
+        Performs an attack on a target.
+        Base hero cannot attack. Subclasses should override this.
+        """
+        raise NotImplementedError(
+            f"Hero {self.name} of class {self.__class__.__name__} does not have an 'attack' action."
+        )
+
     def is_alive(self) -> bool:
         return self.health > 0
 
@@ -246,7 +273,15 @@ class Axe(Hero):
             max_health=max_health,
         )
 
-    @action  # todo. We want to somehow register with a get-legal-moves function. Right now all targets will be legal but later will be filters
-    def attack(self, target: Hero):
+    def get_legal_actions(self) -> List[ActionType]:
+        """Axe can attack any living enemy hero."""
+        legal_targets = []
+        for i, hero in enumerate(self.env.heroes):
+            is_enemy = hero.player_owner_id != self.player_owner_id
+            if is_enemy and hero.is_alive():
+                legal_targets.append(i)  # Action is target hero ID
+        return legal_targets
 
-        self.env.damage()
+    def attack(self, target: Hero):
+        """Axe's attack deals 1 damage to the target."""
+        self.env.damage(actor=self, target=target, amount=1)
