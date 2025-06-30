@@ -7,10 +7,10 @@ game = GameEngine()
 
 
 class Player(GameEntity):
-    def __init__(self, game: GameEngine, name: str):
+    def __init__(self, engine: GameEngine, name: str):
         # A descriptive string like `name` is often better for an entity's primary
         # identifier than a generic `id`, unless it's a UUID or integer.
-        super().__init__(game=game, name=name)
+        super().__init__(engine=engine, name=name)
         self.amount = 10
 
     def __repr__(self):

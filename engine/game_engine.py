@@ -156,10 +156,10 @@ TargetFilter = Union[Selector, Type, Any]
 
 
 class GameEntity:
-    def __init__(self, game: GameEngine, name: str):
-        self.game = game
+    def __init__(self, engine: GameEngine, name: str):
+        self.engine = engine
         self.name = name
-        game.players[self.name] = self
+        engine.players[self.name] = self
 
     def _add_hook(
         self,
@@ -175,7 +175,7 @@ class GameEntity:
             response=handler,
             owner=self,
         )
-        self.game.hooks[hook.on_event].append(hook)
+        self.engine.hooks[hook.on_event].append(hook)
 
     def modify(self, target_filter: TargetFilter, action: Callable, handler: Callable):
         self._add_hook(

@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import List, Tuple, Optional, Union
+from typing import List, Tuple, Optional
 
 from environments.base import (
     BaseEnvironment,
@@ -7,18 +7,9 @@ from environments.base import (
     SanityCheckState,
     ActionResult,
     StateWithKey,
+    ActionType,
 )
 from engine.game_engine import GameEngine, GameEntity
-
-
-@dataclass
-class AttackAction:
-    """Action to attack a target hero."""
-
-    target_hero_id: int
-
-
-ActionType = Union[AttackAction]
 
 
 @dataclass
@@ -31,22 +22,6 @@ class DamageEvent:
 
     def resolve(self):
         self.target.health -= self.amount
-
-
-class Hero(GameEntity):
-    """Represents a hero character in the game."""
-
-    def __init__(self, game: GameEngine, name: str, player_owner_id: int, health: int):
-        super().__init__(game=game, name=name)
-        self.player_owner_id = player_owner_id
-        self.health = health
-        self.max_health = health
-
-    def is_alive(self) -> bool:
-        return self.health > 0
-
-    def __repr__(self):
-        return f"<Hero {self.name}|p{self.player_owner_id}|hp:{self.health}>"
 
 
 class TTTF_1(BaseEnvironment):
@@ -76,11 +51,13 @@ class TTTF_1(BaseEnvironment):
         self.turn_order_ids: List[int] = []
         self.current_turn_index: int = 0
         self.winner: Optional[int] = None
+        self.engine = GameEngine()
 
         self.reset()
 
-        damage_action = self.engine.define_action("damage", DamageEvent)
-        # could maybe be global instead if engine is global
+        self.damage = self.engine.define_action(
+            "damage", DamageEvent
+        )  # todo type with protocol
 
     @property
     def num_players(self) -> int:
@@ -130,11 +107,7 @@ class TTTF_1(BaseEnvironment):
         acting_hero = self.heroes[self.turn_order_ids[self.current_turn_index]]
         acting_player_id = acting_hero.player_owner_id
 
-        if isinstance(action, AttackAction):
-            target_hero = self.heroes[action.target_hero_id]
-            self.damage_action(actor=acting_hero, target=target_hero, amount=1)
-        else:
-            raise TypeError(f"Unsupported action type: {type(action)}")
+        # TODO call action's resolve
 
         self.engine.run()
         self._check_for_winner()
@@ -179,18 +152,9 @@ class TTTF_1(BaseEnvironment):
             self.winner = alive_players[0] if alive_players else None
 
     def get_legal_actions(self) -> List[ActionType]:
-        if self.done:
-            return []
+        assert not self.done
 
-        acting_hero = self.heroes[self.turn_order_ids[self.current_turn_index]]
-        acting_player_id = acting_hero.player_owner_id
-
-        legal_actions = []
-        for i, hero in enumerate(self.heroes):
-            if hero.is_alive() and hero.player_owner_id != acting_player_id:
-                legal_actions.append(AttackAction(target_hero_id=i))
-
-        return legal_actions
+        # todo get from active hero
 
     def get_current_player(self) -> int:
         # Before a move, current_turn_index points to the currently acting hero.
@@ -233,55 +197,6 @@ class TTTF_1(BaseEnvironment):
 
         self._dirty = True
 
-    def get_sanity_check_states(self) -> List[SanityCheckState]:
-        states = []
-
-        # State 1: Initial state
-        initial_env = TTTF_1(
-            num_players=self._num_players,
-            num_heroes_per_player=self._num_heroes_per_player,
-            hero_health=self._hero_health,
-        )
-        states.append(
-            SanityCheckState(
-                description="Initial state",
-                state_with_key=initial_env.get_state_with_key(),
-                expected_value=0.0,
-                expected_action=None,
-            )
-        )
-
-        # State 2: Player 0 can win
-        if self._num_players == 2 and self._num_heroes_per_player >= 1:
-            win_env = TTTF_1(
-                num_players=2,
-                num_heroes_per_player=self._num_heroes_per_player,
-                hero_health=10,
-            )
-            # P0 is player 0 (heroes with even IDs), P1 is player 1 (odd IDs)
-            # P0's turn (hero 0), P1 has one hero left with 1 HP.
-            # Kill all of P1's heroes except one.
-            for i, hero in enumerate(win_env.heroes):
-                if hero.player_owner_id == 1:
-                    hero.health = 0
-            # Set one P1 hero to 1 health
-            win_env.heroes[1].health = 1
-
-            win_env.current_turn_index = 0  # P0's turn, hero 0 acts
-            win_env._dirty = True
-
-            winning_action = AttackAction(target_hero_id=1)
-            states.append(
-                SanityCheckState(
-                    description="Player 0 can win by attacking hero 1",
-                    state_with_key=win_env.get_state_with_key(),
-                    expected_value=1.0,
-                    expected_action=winning_action,
-                )
-            )
-
-        return states
-
     def render(self, mode: str = "human") -> None:
         if mode == "human":
             print("-" * 20)
@@ -302,3 +217,36 @@ class TTTF_1(BaseEnvironment):
                     f"HP: {hero.health}/{hero.max_health} [{status}]"
                 )
             print("-" * 20)
+
+
+class Hero(GameEntity):
+    """Represents a hero character in the game."""
+
+    def __init__(self, env: TTTF_1, name: str, player_owner_id: int, max_health: int):
+        super().__init__(engine=env.engine, name=name)
+        self.env = env
+        self.player_owner_id = player_owner_id
+        self.max_health = max_health
+
+        self.health = self.max_health
+
+    def is_alive(self) -> bool:
+        return self.health > 0
+
+    def __repr__(self):
+        return f"<Hero {self.name}|p{self.player_owner_id}|hp:{self.health}>"
+
+
+class Axe(Hero):
+    def __init__(self, env: TTTF_1, name: str, player_owner_id: int, max_health: int):
+        super().__init__(
+            env=env,
+            name=name,
+            player_owner_id=player_owner_id,
+            max_health=max_health,
+        )
+
+    @action  # todo. We want to somehow register with a get-legal-moves function. Right now all targets will be legal but later will be filters
+    def attack(self, target: Hero):
+
+        self.env.damage()
