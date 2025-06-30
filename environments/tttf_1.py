@@ -1,16 +1,20 @@
 import inspect
+import math
 from dataclasses import dataclass
 from typing import List, Tuple, Optional, Protocol, Callable
 
 from environments.base import (
     BaseEnvironment,
     StateType,
-    SanityCheckState,
     ActionResult,
     StateWithKey,
     ActionType,
 )
-from engine.game_engine import GameEngine, GameEntity
+from engine.game_engine import GameEngine, GameEntity, Selector
+
+
+def halve(number: int):
+    return int(math.ceil(number / 2))
 
 
 def action(default=False, target_filter_func: Callable[["Hero", "Hero"], bool] = None):
@@ -41,13 +45,36 @@ class DamageEvent:
     actor: "Hero"
     target: "Hero"
     amount: int
+    is_default_ability: bool = False
 
     def resolve(self):
         self.target.health -= self.amount
 
 
+@dataclass
+class EndOfTurnEvent:
+    """Event that fires at the end of a hero's turn."""
+
+    actor: "Hero"  # The hero whose turn is ending
+
+    def resolve(self):
+        # This event is just a trigger, doesn't need to do anything on its own.
+        pass
+
+
 class DamageProto(Protocol):
-    def __call__(self, actor: "Hero", target: "Hero", amount: int) -> None:
+    def __call__(
+        self,
+        actor: "Hero",
+        target: "Hero",
+        amount: int,
+        is_default_ability: bool = False,
+    ) -> None:
+        ...
+
+
+class EndOfTurnProto(Protocol):
+    def __call__(self, actor: "Hero") -> None:
         ...
 
 
@@ -72,7 +99,7 @@ class TTTF_1(BaseEnvironment):
         self._num_players = num_players
         self._num_heroes_per_player = num_heroes_per_player
         self._hero_health = hero_health
-        self.action_names = ["attack"]  # TODO: Discover dynamically
+        self.action_names = ["attack", "battle_hunger"]  # TODO: Discover dynamically
 
         self.engine: Optional[GameEngine] = None
         self.heroes: List[Hero] = []
@@ -84,6 +111,9 @@ class TTTF_1(BaseEnvironment):
         self.reset()
 
         self.damage: DamageProto = self.engine.define_action("damage", DamageEvent)
+        self.end_of_turn: EndOfTurnProto = self.engine.define_action(
+            "end_of_turn", EndOfTurnEvent
+        )
 
     @property
     def num_players(self) -> int:
@@ -141,6 +171,8 @@ class TTTF_1(BaseEnvironment):
                 f"Invalid action: {action_name} for hero {acting_hero.name}"
             )
 
+        self.engine.run()
+        self.end_of_turn(actor=acting_hero)
         self.engine.run()
         self._check_for_winner()
 
@@ -295,6 +327,13 @@ class Hero(GameEntity):
         return f"<Hero {self.name}|p{self.player_owner_id}|hp:{self.health}>"
 
 
+im_targeted_with = Selector(
+    "when owner is target",
+    lambda owner, event_target: event_target is owner,
+    event_attr="target",
+)
+
+
 class Axe(Hero):
     def __init__(self, env: TTTF_1, name: str, player_owner_id: int, max_health: int):
         super().__init__(
@@ -304,18 +343,58 @@ class Axe(Hero):
             max_health=max_health,
         )
 
-    # passives
-    # Receive damage
-    # All Enemies 1dmg
+        self.after(
+            im_targeted_with,
+            self.env.damage,
+            self._1dmg_aoe,
+        )
 
-    # Receive damage from a Default Ability
-    # The attacker takes 1/2 the damage received, before Armor.
+        self.before(
+            im_targeted_with,
+            self.env.damage,
+            self._on_damaged_by_default_ability,
+        )
+
+    def _1dmg_aoe(self, event: DamageEvent):
+        print(f"-> {self.name}'s passive: deals 1 damage to all enemies.")
+        for hero in self.env.heroes:
+            is_enemy = hero.player_owner_id != self.player_owner_id
+            if is_enemy and hero.is_alive():
+                self.env.damage(actor=self, target=hero, amount=1)
+
+    def _on_damaged_by_default_ability(self, event: DamageEvent):
+        if event.is_default_ability:
+            reflected_damage = halve(event.amount)
+            if reflected_damage > 0:
+                print(
+                    f"-> {self.name}'s passive: reflects {reflected_damage} damage to {event.actor.name}!"
+                )
+                self.env.damage(actor=self, target=event.actor, amount=reflected_damage)
 
     @action(default=True, target_filter_func=any_living_hero)
-    def axe_attack(self, target: Hero):
-        self.env.damage(actor=self, target=target, amount=2)
+    def attack(self, target: Hero):
+        self.env.damage(actor=self, target=target, amount=2, is_default_ability=True)
 
     @action(target_filter_func=any_living_hero)
     def battle_hunger(self, target: Hero):
-        pass
-        # register passive on target "at end of turn, take 1 damage"
+        print(f"-> {self.name} applies Battle Hunger to {target.name}")
+
+        def on_target_turn_end(event: EndOfTurnEvent):
+            # This handler is a closure, it captures `self` (Axe) and `target`.
+            print(f"-> {target.name} takes 1 damage from {self.name}'s Battle Hunger!")
+            self.env.damage(actor=self, target=target, amount=1)
+
+        # Note that later this will make a token entity attached to the target, and the passive will belong to the token.
+        # The hook is owned by `self` (Axe).
+        # It triggers when an EndOfTurnEvent's actor is the original target.
+        turn_end_filter = Selector(
+            f"event actor is {target.name}",
+            lambda owner, event_actor: event_actor is target and target.is_alive(),
+        )
+
+        self._add_hook(
+            timing="after",
+            target_filter=turn_end_filter,
+            action=self.env.end_of_turn,
+            handler=on_target_turn_end,
+        )

@@ -11,13 +11,20 @@ EventT = TypeVar("EventT")
 class Selector:
     """An object that represents a query for a target, not a specific target."""
 
-    def __init__(self, description: str, filter_func: Callable[[Any, Any], bool]):
+    def __init__(
+        self,
+        description: str,
+        filter_func: Callable[[Any, Any], bool],
+        event_attr: str = "actor",
+    ):
         self.description = description  # For debugging and logging
         self.filter_func = filter_func
+        self.event_attr = event_attr
 
-    def matches(self, owner: Any, target: Any) -> bool:
+    def matches(self, owner: Any, event: Any) -> bool:
         """Checks if a given instance matches the selector's criteria."""
-        return self.filter_func(owner, target)
+        target_obj = getattr(event, self.event_attr, None)
+        return self.filter_func(owner, target_obj)
 
 
 @dataclass
@@ -132,7 +139,6 @@ class GameEngine:
     ) -> list[TriggeredAbility]:
         """Finds hooks using the new flexible target filters."""
         matching_hooks = []
-        actor = getattr(event, "actor", None)
 
         for hook in self.hooks[action_name]:
             if hook.timing != trigger_type:
@@ -141,11 +147,14 @@ class GameEngine:
             owner = hook.owner
             match = None
             if isinstance(hook.filter, Selector):
-                match = hook.filter.matches(owner, actor)
-            elif isinstance(hook.filter, type) and actor:
-                match = isinstance(actor, hook.filter)
-            elif actor:  # actor is an instance
-                match = actor is hook.filter  # check .id match?
+                match = hook.filter.matches(owner, event)
+            else:
+                # Fallback to old behavior for non-selector filters
+                actor = getattr(event, "actor", None)
+                if isinstance(hook.filter, type) and actor:
+                    match = isinstance(actor, hook.filter)
+                elif actor:  # actor is an instance
+                    match = actor is hook.filter
 
             if match:
                 matching_hooks.append(hook)
