@@ -6,12 +6,13 @@ from typing import List, Tuple, Optional, Protocol, Callable
 
 from environments.base import (
     BaseEnvironment,
+    GameEntity,
+    Selector,
     StateType,
     ActionResult,
     StateWithKey,
     ActionType,
 )
-from engine.game_engine import GameEngine, GameEntity, Selector
 
 
 def halve(number: int):
@@ -100,18 +101,17 @@ class TTTF_1(BaseEnvironment):
         self._num_players = num_players
         self._num_heroes_per_player = num_heroes_per_player
 
-        self.engine: GameEngine = None
         self.heroes: List[Hero] = []
         self.turn_order_ids: List[int] = []
         self.current_turn_index: int = 0
         self.winner: Optional[int] = None
 
-        self.reset()
-
-        self.damage: DamageProto = self.engine.define_action("damage", DamageEvent)
-        self.end_of_turn: EndOfTurnProto = self.engine.define_action(
+        self.damage: DamageProto = self.define_action("damage", DamageEvent)
+        self.end_of_turn: EndOfTurnProto = self.define_action(
             "end_of_turn", EndOfTurnEvent
         )
+
+        self.reset()
 
     @property
     def num_players(self) -> int:
@@ -128,7 +128,14 @@ class TTTF_1(BaseEnvironment):
     # dont worry about the policy handling. That'd be handled differently
 
     def _reset(self) -> StateWithKey:
-        self.engine = GameEngine()
+        # Clear engine-related state, but preserve action definitions
+        self.triggered_abilities.clear()
+        self.entities.clear()
+        self.game_log.clear()
+        self.turn = 0
+        self.event_stack.clear()
+        self.is_processing = False
+
         self.heroes = []
 
         # Create heroes in alternating turn order
@@ -267,7 +274,7 @@ class Hero(GameEntity):
     """Represents a hero character in the game."""
 
     def __init__(self, env: TTTF_1, name: str, player_owner_id: int, max_health: int):
-        super().__init__(engine=env.engine, name=name)
+        super().__init__(env=env, name=name)
         self.env = env
         self.player_owner_id = player_owner_id
         self.max_health = max_health
@@ -335,7 +342,7 @@ class Axe(Hero):
         self.after(
             im_targeted,
             self.env.damage,
-            self._1dmg_aoe,
+            self._if_2plus_dmg__1dmg_aoe,
         )
 
         self.before(
@@ -344,12 +351,13 @@ class Axe(Hero):
             self._on_damaged_by_default_ability,
         )
 
-    def _1dmg_aoe(self, event: DamageEvent):
-        print(f"-> {self.name}'s passive: deals 1 damage to all enemies.")
-        for hero in self.env.heroes:
-            is_enemy = hero.player_owner_id != self.player_owner_id
-            if is_enemy and hero.is_alive():
-                self.env.damage(actor=self, target=hero, amount=1)
+    def _if_2plus_dmg__1dmg_aoe(self, event: DamageEvent):
+        if event.amount >= 2:
+            print(f"-> {self.name}'s passive: deals 1 damage to all enemies.")
+            for hero in self.env.heroes:
+                is_enemy = hero.player_owner_id != self.player_owner_id
+                if is_enemy and hero.is_alive():
+                    self.env.damage(actor=self, target=hero, amount=1)
 
     def _on_damaged_by_default_ability(self, event: DamageEvent):
         """Reflects half of incoming damage back to the attacker."""
