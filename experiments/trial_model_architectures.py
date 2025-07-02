@@ -46,6 +46,7 @@ from experiments.architectures.transformers import (
     PieceTransformer_EncoderSum_SimpleOut_ParamGameToken,
     PieceTransformer_EncoderSum_SimpleOut,
 )
+from experiments.architectures.detached import DetachedPolicyNet
 
 TINY_RUN = False
 
@@ -321,6 +322,21 @@ def main():
 
     # --- Transformer Experiment ---
     transformer_experiments = [
+        {
+            "name": "DetachedPolicy_v1",
+            "model_class": DetachedPolicyNet,
+            "params": {
+                "state_model_params": {
+                    "embedding_dim": 128,
+                    "num_heads": 8,
+                    "num_encoder_layers": 4,
+                    "dropout": 0.1,
+                },
+                "policy_model_params": {
+                    "embedding_dim": 128,
+                },
+            },
+        },
         # {
         #     "name": "PieceTransformer_v2",
         #     "model_class": PieceTransformerNet,
@@ -447,27 +463,27 @@ def main():
         #     "name": "PieceTransformer_EncoderSum_SimpleOut",
         #     "model_class": PieceTransformer_EncoderSum_SimpleOut,
         # },
-        {
-            "name": "PieceTransformer_EncoderSum_SimpleOut_ParamGameToken",
-            "model_class": PieceTransformer_EncoderSum_SimpleOut_ParamGameToken,
-        },
-        {
-            "name": "PieceTransformer_EncoderSum_SimpleOut_ParamGameToken_Small",
-            "model_class": PieceTransformer_EncoderSum_SimpleOut_ParamGameToken,
-            "params": {
-                "embedding_dim": 32,
-                "num_heads": 2,
-            },
-        },
-        {
-            "name": "PieceTransformer_EncoderSum_SimpleOut_ParamGameToken_Small_Highlr",
-            "model_class": PieceTransformer_EncoderSum_SimpleOut_ParamGameToken,
-            "params": {
-                "embedding_dim": 32,
-                "num_heads": 2,
-            },
-            "lr": 0.005,
-        },
+        # {
+        #     "name": "PieceTransformer_EncoderSum_SimpleOut_ParamGameToken",
+        #     "model_class": PieceTransformer_EncoderSum_SimpleOut_ParamGameToken,
+        # },
+        # {
+        #     "name": "PieceTransformer_EncoderSum_SimpleOut_ParamGameToken_Small",
+        #     "model_class": PieceTransformer_EncoderSum_SimpleOut_ParamGameToken,
+        #     "params": {
+        #         "embedding_dim": 32,
+        #         "num_heads": 2,
+        #     },
+        # },
+        # {
+        #     "name": "PieceTransformer_EncoderSum_SimpleOut_ParamGameToken_Small_Highlr",
+        #     "model_class": PieceTransformer_EncoderSum_SimpleOut_ParamGameToken,
+        #     "params": {
+        #         "embedding_dim": 32,
+        #         "num_heads": 2,
+        #     },
+        #     "lr": 0.005,
+        # },
     ]
 
     if transformer_experiments:
