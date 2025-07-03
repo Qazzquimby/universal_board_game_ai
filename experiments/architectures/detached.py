@@ -75,8 +75,8 @@ class PolicyModel(nn.Module):
         self.action_embedding = nn.Embedding(BOARD_WIDTH, embedding_dim)
 
         # The policy head will take concatenated state and action embeddings
-        # State: game_token, mean_pieces, max_pieces. Action: action_embedding
-        policy_input_dim = 4 * embedding_dim
+        # State: game_token. Action: action_embedding
+        policy_input_dim = 2 * embedding_dim
         self.policy_head = nn.Sequential(
             nn.Linear(policy_input_dim, 64), nn.ReLU(), nn.Linear(64, 1)
         )
@@ -86,20 +86,10 @@ class PolicyModel(nn.Module):
         # action_indices: (batch_size,)
 
         game_token = state_tokens[:, -1, :]
-        piece_tokens = state_tokens[:, :-1, :]
-
-        if piece_tokens.shape[1] > 0:
-            mean_pieces = torch.mean(piece_tokens, dim=1)
-            max_pieces = torch.max(piece_tokens, dim=1).values
-        else:
-            mean_pieces = torch.zeros_like(game_token)
-            max_pieces = torch.zeros_like(game_token)
 
         action_emb = self.action_embedding(action_indices)
 
-        policy_input = torch.cat(
-            [game_token, mean_pieces, max_pieces, action_emb], dim=-1
-        )
+        policy_input = torch.cat([game_token, action_emb], dim=-1)
 
         score = self.policy_head(policy_input)
         return score
@@ -121,6 +111,8 @@ class DetachedPolicyNet(nn.Module):
 
         action_indices = torch.arange(BOARD_WIDTH, device=owner.device)
 
+        # todo: should loop over legal moves, not board width
+        # todo later: this could later be batched rather than looped
         for i in range(BOARD_WIDTH):
             # Prepare action index for batch
             current_action_indices = action_indices[i].expand(batch_size)
