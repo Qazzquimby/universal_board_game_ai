@@ -36,6 +36,7 @@ def get_environment(env_config: EnvConfig) -> BaseEnvironment:
 def get_agents(env: BaseEnvironment, config: AppConfig) -> Dict[str, Agent]:
     """Factory function to create agent instances for the given environment."""
 
+    az_agent_name = "AlphaZero"
     az_agent = AlphaZeroAgent(
         env=env,
         config=config.alpha_zero,
@@ -55,17 +56,17 @@ def get_agents(env: BaseEnvironment, config: AppConfig) -> Dict[str, Agent]:
         num_simulations=config.mcts.num_simulations,
     )
 
-    # mcts_agent_old_name = f"MCTS_old_{config.mcts.num_simulations}"
-    # mcts_agent_old = MCTSAgent_Old(
-    #     env=env,
-    #     num_simulations=config.mcts.num_simulations,
-    #     exploration_constant=config.mcts.exploration_constant,
-    # )
+    mcts_agent_old_name = f"MCTS_old_{config.mcts.num_simulations}"
+    mcts_agent_old = MCTSAgent_Old(
+        env=env,
+        num_simulations=config.mcts.num_simulations,
+        exploration_constant=config.mcts.exploration_constant,
+    )
 
     agents = {
-        # "AlphaZero": az_agent,
+        # az_agent_name: az_agent,
         mcts_agent_name: mcts_agent,
-        # mcts_agent_old_name: mcts_agent_old,
+        mcts_agent_old_name: mcts_agent_old,
     }
 
     return agents

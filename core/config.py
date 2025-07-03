@@ -39,6 +39,7 @@ class AlphaZeroConfig:
     training_batch_size: int = 256
     # Weight for value loss (default 1.0, try increasing)
     value_loss_weight: float = 1.0
+    temperature: float = 0.1
     # Number of game steps before reducing temperature
     temperature_decay_steps: int = 30
     # Parallel Self-Play & Batching

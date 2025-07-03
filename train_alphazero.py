@@ -7,7 +7,6 @@ import random
 import numpy as np
 from tqdm import tqdm
 from loguru import logger
-import ray
 import wandb
 
 from core.config import AppConfig, WANDB_KEY
@@ -21,8 +20,6 @@ from factories import (
 )
 from utils.plotting import plot_losses
 import evaluation
-from actors.inference_actor import InferenceActor
-from actors.self_play_manager_actor import SelfPlayWorkerActor
 
 
 def load_game_logs_into_buffer(agent: AlphaZeroAgent, env_name: str, buffer_limit: int):
@@ -51,7 +48,9 @@ def load_game_logs_into_buffer(agent: AlphaZeroAgent, env_name: str, buffer_limi
             with open(filepath, "r") as f:
                 game_data = json.load(f)
             if not isinstance(game_data, list):
-                logger.warning(f"Skipping invalid log file (not a list): {filepath.name}")
+                logger.warning(
+                    f"Skipping invalid log file (not a list): {filepath.name}"
+                )
                 continue
 
             loaded_games += 1
@@ -60,7 +59,11 @@ def load_game_logs_into_buffer(agent: AlphaZeroAgent, env_name: str, buffer_limi
                 policy_target_list = step_data.get("policy_target")
                 value_target = step_data.get("value_target")
 
-                if state is not None and policy_target_list is not None and value_target is not None:
+                if (
+                    state is not None
+                    and policy_target_list is not None
+                    and value_target is not None
+                ):
                     policy_target = np.array(policy_target_list, dtype=np.float32)
                     if "board" in state and isinstance(state["board"], list):
                         state["board"] = np.array(state["board"], dtype=np.int8)
@@ -94,7 +97,7 @@ def run_training(config: AppConfig, env_name_override: str = None):
 
     if not isinstance(agent, AlphaZeroAgent):
         logger.error("Failed to retrieve AlphaZeroAgent from factory.")
-        return
+        assert False
 
     load_game_logs_into_buffer(
         agent, config.env.name, config.alpha_zero.replay_buffer_size
@@ -117,36 +120,9 @@ def run_training(config: AppConfig, env_name_override: str = None):
         )
         logger.info("WandB initialized successfully.")
 
-    # --- Ray Initialization ---
-    if not ray.is_initialized():
-        context = ray.init(
-            ignore_reinit_error=True,
-            log_to_driver=config.alpha_zero.debug_mode,
-            include_dashboard=True,
-            local_mode=True,  # oh boy need to remember to turn this off
-        )
-        print(f"Dashboard at {context.dashboard_url}")
-
-    if agent.network:
-        network_state_dict = {k: v.cpu() for k, v in agent.network.state_dict().items()}
-        try:
-            inference_actor = InferenceActor.remote(
-                initial_network_state=network_state_dict,
-                env_config=config.env,
-                agent_config=config.alpha_zero,
-            )
-            # Verify actor started and device (optional, blocks until ready)
-            actor_device = ray.get(inference_actor.get_device.remote())
-            logger.info(
-                f"InferenceActor created successfully on device: {actor_device}"
-            )
-        except Exception as e:
-            logger.error(f"Failed to create or communicate with InferenceActor: {e}")
-            if ray.is_initialized():
-                ray.shutdown()
-            return
-    else:
-        logger.warning("No agent network found. Self-play will use DummyNet locally.")
+    # Ray has been removed. Inference is done locally by the main process.
+    if not agent.network:
+        logger.warning("No agent network found. Self-play will use DummyNet.")
 
     # Lists to store losses for plotting
     total_losses = []
@@ -165,75 +141,34 @@ def run_training(config: AppConfig, env_name_override: str = None):
         if agent.network:
             agent.network.eval()
 
-        logger.info("Collecting self-play data using parallel workers...")
+        logger.info("Collecting self-play data serially...")
 
-        # --- Parallel Self-Play Setup ---
         num_games_total = config.training.num_games_per_iteration
-        total_parallel_games_across_workers = config.training.num_games_per_iteration
-
-        # Determine number of workers
-        if config.alpha_zero.num_self_play_workers > 0:
-            num_workers = config.alpha_zero.num_self_play_workers
-        else:
-            num_workers = 2
-            # temp  os.cpu_count() or 1  # Default to CPU count, fallback to 1
-        # Ensure we don't use more workers than total parallel games needed
-        num_workers = min(num_workers, total_parallel_games_across_workers)
-        logger.info(f"Using {num_workers} self-play workers.")
-
-        if num_workers <= 0:
-            logger.error("Number of self-play workers must be > 0.")
-            if ray.is_initialized():
-                ray.shutdown()
-            return
-
-        # Distribute work among workers
-        games_per_worker = math.ceil(num_games_total / num_workers)
-        # Distribute the *concurrent* games each worker manages internally
-        internal_parallel_games_per_worker = math.ceil(
-            total_parallel_games_across_workers / num_workers
-        )
-        logger.info(f"  Total concurrent games: {total_parallel_games_across_workers}")
-        logger.info(
-            f"  Internal concurrent games per worker: ~{internal_parallel_games_per_worker}"
-        )
-        logger.info(f"  Total games to collect per worker: ~{games_per_worker}")
-
-        # Create worker actors
-        workers = [
-            SelfPlayWorkerActor.remote(
-                actor_id=i,
-                env_config=config.env,
-                agent_config=config.alpha_zero,
-                inference_actor_handle=inference_actor,  # Pass handle to central inference
-                num_internal_parallel_games=internal_parallel_games_per_worker,
-                iteration=iteration + 1,
-            )
-            for i in range(num_workers)
-        ]
-
-        # Launch tasks
-        tasks = [w.collect_n_games.remote(games_per_worker) for w in workers]
-
-        # Collect results
         all_experiences_iteration = []
-        results = []
-        while tasks:
-            ready, tasks = ray.wait(tasks, num_returns=1)
-            if not ready:
-                break
-            try:
-                result_experiences = ray.get(ready[0])
-                results.append(result_experiences)
-            except ray.exceptions.RayTaskError as e:
-                logger.error(f"Self-play worker task failed: {e}")
-                # TODO: Consider adding retry logic or handling worker failure more robustly.
 
-        # Aggregate experiences
-        for exp_list in results:
-            all_experiences_iteration.extend(
-                exp_list
-            )  # exp_list is now List[Tuple[raw_history, final_outcome]]
+        for _ in tqdm(range(num_games_total), desc="Self-Play Games"):
+            game_env = env.copy()
+            state_with_key = game_env.reset()
+            game_history = []
+
+            while not game_env.done:
+                state = state_with_key.state
+                action = agent.act(state, train=True)
+                policy_target = agent.get_policy_target()
+                game_history.append((state, action, policy_target))
+                action_result = game_env.step(action)
+                state_with_key = action_result.next_state_with_key
+
+            # Game finished, determine outcome for player 0
+            winner = game_env.get_winning_player()
+            if winner is None:
+                final_outcome = 0.0
+            elif winner == 0:
+                final_outcome = 1.0
+            else:  # winner == 1
+                final_outcome = -1.0
+
+            all_experiences_iteration.append((game_history, final_outcome))
 
         # --- Process collected game results and add to buffer ---
         total_experiences_added = 0
@@ -271,17 +206,6 @@ def run_training(config: AppConfig, env_name_override: str = None):
         logger.info(
             f"Processed {total_games_processed} games, adding {total_experiences_added} experiences to replay buffer."
         )
-
-        # --- Update Inference Actor Weights ---
-        # If the network was updated during the learning phase (which happens next),
-        # you might want to update the inference actor's weights before the *next*
-        # self-play iteration. This can be done here or at the start of the next iteration.
-        # Example: Update inference actor weights *before* next self-play
-        if inference_actor and agent.network:
-            new_weights = {k: v.cpu() for k, v in agent.network.state_dict().items()}
-            # Update asynchronously, don't need to wait for it usually
-            inference_actor.update_weights.remote(new_weights)
-            logger.debug("Sent updated weights to InferenceActor.")
 
         # 2. Learning Phase
         logger.info("Running learning step...")
@@ -418,21 +342,12 @@ def run_training(config: AppConfig, env_name_override: str = None):
 
     logger.info("\n--- AlphaZero Training Finished ---")
 
-    # --- Ray Shutdown (after loop) ---
-    if ray.is_initialized():
-        if inference_actor:
-            ray.kill(inference_actor)
-            logger.info("InferenceActor terminated.")
-        ray.shutdown()
-        print("Ray shut down.")
-
     # --- Finish WandB Run ---
     if config.wandb.enabled and wandb.run is not None:
         wandb.finish()
         logger.info("WandB run finished.")
 
 
-# --- Sanity Check Function ---
 def run_sanity_checks(env: BaseEnvironment, agent: AlphaZeroAgent):
     """Runs network predictions on predefined sanity check states."""
     logger.info("\n--- Running Periodic Sanity Checks ---")

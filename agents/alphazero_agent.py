@@ -108,7 +108,7 @@ class AlphaZeroExpansion(ExpansionStrategy):
             self.network.eval()
             self.network.to(self.device)
             with torch.no_grad():
-                policy_np, value = self.network.predict(node.state_with_key.state)
+                policy_np, value = self.network.predict(node.state_with_key)
             self.network_cache[key] = (policy_np, value)
 
         legal_actions = env.get_legal_actions()
@@ -165,7 +165,7 @@ class AlphaZeroAgent(Agent):
         self.network_cache = LRUCache(1024 * 8)
 
         # MCTS Components
-        self.selection_strategy = UCB1Selection(exploration_constant=config.c_puct)
+        self.selection_strategy = UCB1Selection(exploration_constant=config.cpuct)
         self.evaluation_strategy = AlphaZeroEvaluation(
             self.network, self.device, self.network_cache
         )
@@ -285,7 +285,7 @@ class AlphaZeroAgent(Agent):
         Run the MCTS search for a specified number of simulations.
         """
         state_with_key = env.get_state_with_key()
-        self._ensure_state_is_root(state_with_key=state_with_key)
+        self._ensure_state_is_root(state_with_key=state_with_key)  # remove in prod
 
         for _ in range(self.config.num_simulations):
             sim_env = env.copy()
@@ -552,9 +552,7 @@ class AlphaZeroAgent(Agent):
             val_batches = 0
             with torch.no_grad():
                 for batch_data in val_loader:
-                    states_batch, policy_targets_batch, value_targets_batch = (
-                        batch_data
-                    )
+                    states_batch, policy_targets_batch, value_targets_batch = batch_data
                     states_batch = states_batch.to(self.device)
                     policy_targets_batch = policy_targets_batch.to(self.device)
                     value_targets_batch = value_targets_batch.to(self.device)

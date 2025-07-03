@@ -6,7 +6,7 @@ import torch.nn.functional as F
 import numpy as np
 
 from core.config import MuZeroConfig
-from environments.base import BaseEnvironment, ActionType
+from environments.base import BaseEnvironment, ActionType, StateWithKey
 
 
 class AlphaZeroNet(nn.Module):
@@ -71,9 +71,10 @@ class AlphaZeroNet(nn.Module):
         print(f"  Policy size: {policy_size}")
         print(f"  Hidden layers: {num_hidden_layers} x {hidden_layer_size}")
 
-    def _flatten_state(self, state_dict: dict) -> torch.Tensor:
+    def _flatten_state(self, state_with_key: StateWithKey) -> torch.Tensor:
         """Flattens the state dictionary into a single tensor."""
         flat_tensors = []
+        state_dict = state_with_key.state
         # Process known keys first
         if "board" in state_dict:
             board = state_dict["board"]
@@ -249,19 +250,16 @@ class AlphaZeroNet(nn.Module):
         value = self.value_head(shared_output)
         return policy_logits, value
 
-    def predict(self, state_dict: dict) -> Tuple[np.ndarray, float]:
+    def predict(self, state_with_key: StateWithKey) -> Tuple[np.ndarray, float]:
         """
         Convenience method for inference. Runs forward pass and returns numpy arrays.
         Handles moving tensors to CPU and detaching from graph.
-
-        Args:
-            state_dict: The environment state observation dictionary.
 
         Returns:
             A tuple containing (policy_probabilities_numpy, value_numpy).
         """
         self.eval()  # Set model to evaluation mode
-        flat_state = self._flatten_state(state_dict)  # Flatten the input dict
+        flat_state = self._flatten_state(state_with_key)
         # TODO: Add device handling if needed: flat_state = flat_state.to(self.device)
         with torch.no_grad():
             # Pass the flattened tensor to forward
