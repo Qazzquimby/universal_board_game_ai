@@ -2,10 +2,12 @@ from pathlib import Path
 from collections import deque
 from typing import List, Tuple, Optional, Dict
 from dataclasses import dataclass
+import random
 
 import torch
+import copy
 from torch import optim
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, random_split
 from tqdm import tqdm
 import torch.nn.functional as F
 import numpy as np
@@ -175,7 +177,10 @@ class AlphaZeroAgent(Agent):
         self.root: Optional[MCTSNode] = None
 
         # Learning
-        self.replay_buffer = deque(maxlen=config.replay_buffer_size)
+        val_buffer_size = config.replay_buffer_size // 5
+        train_buffer_size = config.replay_buffer_size - val_buffer_size
+        self.train_replay_buffer = deque(maxlen=train_buffer_size)
+        self.val_replay_buffer = deque(maxlen=val_buffer_size)
 
     def _ensure_state_is_root(self, state_with_key: StateWithKey):
         if self.root and self.root.state_with_key.key == state_with_key.key:
@@ -392,8 +397,14 @@ class AlphaZeroAgent(Agent):
     def add_experiences_to_buffer(
         self, experiences: List[Tuple[StateType, np.ndarray, float]]
     ):
-        """Adds a list of experiences to the replay buffer."""
-        self.replay_buffer.extend(experiences)
+        """Adds a list of experiences to the replay buffer, splitting it between train and val sets."""
+        random.shuffle(experiences)
+        for exp in experiences:
+            # 20% chance to be added to validation set
+            if random.random() < 0.2:
+                self.val_replay_buffer.append(exp)
+            else:
+                self.train_replay_buffer.append(exp)
 
     def _calculate_loss(
         self, policy_logits, value_preds, policy_targets, value_targets
@@ -447,61 +458,78 @@ class AlphaZeroAgent(Agent):
     # Conforms to Agent interface (no arguments)
     def learn(self) -> Optional[Tuple]:
         """
-        Update the neural network by training for multiple epochs over the replay buffer.
-        Returns average losses for the learning step.
+        Update the neural network by training for multiple epochs over the replay buffer,
+        using early stopping based on a validation set.
+        Returns average losses for the learning step from the best epoch.
         """
         if not self.network or not self.optimizer:
             logger.warning("Cannot learn: Network or optimizer not initialized.")
             return None
 
-        if len(self.replay_buffer) < self.config.training_batch_size:
+        min_buffer_for_training = self.config.training_batch_size * 5
+        if len(self.train_replay_buffer) < min_buffer_for_training:
             logger.info(
-                f"Skipping learn step: Buffer size {len(self.replay_buffer)} < Batch size {self.config.training_batch_size}"
+                f"Skipping learn step: Train buffer size {len(self.train_replay_buffer)} < Min size {min_buffer_for_training}"
             )
-            return None  # Indicate no learning happened
+            return None
+        if not self.val_replay_buffer:
+            logger.info("Skipping learn step: Validation buffer is empty.")
+            return None
 
-        # --- Create DataLoader for efficient batching and shuffling ---
-        dataset = ReplayBufferDataset(self.replay_buffer, self.network)
-        data_loader = DataLoader(
-            dataset,
+        # --- Create Datasets and DataLoaders from pre-split buffers ---
+        train_dataset = ReplayBufferDataset(self.train_replay_buffer, self.network)
+        val_dataset = ReplayBufferDataset(self.val_replay_buffer, self.network)
+
+        train_loader = DataLoader(
+            train_dataset,
             batch_size=self.config.training_batch_size,
             shuffle=True,
             num_workers=0,
             drop_last=True,
         )
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=self.config.training_batch_size,
+            shuffle=False,  # No need to shuffle validation data
+            num_workers=0,
+            drop_last=False,  # Use all validation data
+        )
+        logger.info(
+            f"Training with {len(train_dataset)} samples, validating with {len(val_dataset)} samples."
+        )
 
-        # --- Training Loop over Epochs ---
-        self.network.train()
+        # --- Early Stopping and Training Loop Setup ---
+        max_epochs = 100  # As per original TODO
+        patience = 10  # Stop after 10 epochs with no improvement
+        best_val_loss = float("inf")
+        epochs_without_improvement = 0
+        best_model_state = None
+        best_epoch_losses = None
 
-        total_loss_epoch_avg = 0.0
-        value_loss_epoch_avg = 0.0
-        policy_loss_epoch_avg = 0.0
-        epochs_done = 0
+        for epoch in range(max_epochs):
+            # --- Training Phase ---
+            self.network.train()
+            total_train_loss_epoch = 0.0
+            value_train_loss_epoch = 0.0
+            policy_train_loss_epoch = 0.0
+            train_batches = 0
 
-        num_epochs = self.training_config.num_epochs_per_iteration
-
-        for epoch in range(num_epochs):
-            total_loss_batches = 0.0
-            value_loss_batches = 0.0
-            policy_loss_batches = 0.0
-            batches_in_epoch = 0
-
-            batch_iterator = (
-                tqdm(data_loader, desc=f"Epoch {epoch+1}/{num_epochs}", leave=False)
+            train_iterator = (
+                tqdm(
+                    train_loader,
+                    desc=f"Epoch {epoch+1}/{max_epochs} (Train)",
+                    leave=False,
+                )
                 if not self.config.debug_mode
-                else data_loader
+                else train_loader
             )
-
-            for batch_data in batch_iterator:
+            for batch_data in train_iterator:
                 states_batch, policy_targets_batch, value_targets_batch = batch_data
-
-                # Move batch data to the correct device
                 states_batch = states_batch.to(self.device)
                 policy_targets_batch = policy_targets_batch.to(self.device)
                 value_targets_batch = value_targets_batch.to(self.device)
 
                 self.optimizer.zero_grad()
-                # Network input (states_batch) is already on the device from DataLoader/Dataset
                 policy_logits, value_preds = self.network(states_batch)
                 total_loss, value_loss, policy_loss = self._calculate_loss(
                     policy_logits,
@@ -510,57 +538,86 @@ class AlphaZeroAgent(Agent):
                     value_targets_batch,
                 )
                 total_loss.backward()
-                grad_norm = torch.nn.utils.clip_grad_norm_(
-                    self.network.parameters(), max_norm=1.0
-                )
+                torch.nn.utils.clip_grad_norm_(self.network.parameters(), max_norm=1.0)
                 self.optimizer.step()
 
-                total_loss_batches += total_loss.item()
-                value_loss_batches += value_loss.item()
-                policy_loss_batches += policy_loss.item()
-                batches_in_epoch += 1
+                total_train_loss_epoch += total_loss.item()
+                value_train_loss_epoch += value_loss.item()
+                policy_train_loss_epoch += policy_loss.item()
+                train_batches += 1
 
-                if not self.config.debug_mode and isinstance(batch_iterator, tqdm):
-                    batch_iterator.set_postfix(
-                        {
-                            "Loss": f"{total_loss.item():.3f}",
-                            "V_Loss": f"{value_loss.item():.3f}",
-                            "P_Loss": f"{policy_loss.item():.3f}",
-                        }
+            # --- Validation Phase ---
+            self.network.eval()
+            total_val_loss = 0.0
+            val_batches = 0
+            with torch.no_grad():
+                for batch_data in val_loader:
+                    states_batch, policy_targets_batch, value_targets_batch = (
+                        batch_data
                     )
+                    states_batch = states_batch.to(self.device)
+                    policy_targets_batch = policy_targets_batch.to(self.device)
+                    value_targets_batch = value_targets_batch.to(self.device)
+                    policy_logits, value_preds = self.network(states_batch)
+                    total_loss, _, _ = self._calculate_loss(
+                        policy_logits,
+                        value_preds,
+                        policy_targets_batch,
+                        value_targets_batch,
+                    )
+                    total_val_loss += total_loss.item()
+                    val_batches += 1
 
-            if batches_in_epoch > 0:
-                total_loss_epoch_avg += total_loss_batches / batches_in_epoch
-                value_loss_epoch_avg += value_loss_batches / batches_in_epoch
-                policy_loss_epoch_avg += policy_loss_batches / batches_in_epoch
-                epochs_done += 1
-
-            if self.config.debug_mode:
-                current_lr = self.optimizer.param_groups[0]["lr"]
-                logger.debug(
-                    f"[DEBUG Learn] Epoch {epoch+1}/{num_epochs} Avg Losses: "
-                    f"Total={total_loss_batches / batches_in_epoch:.4f}, "
-                    f"Value={value_loss_batches / batches_in_epoch:.4f}, "
-                    f"Policy={policy_loss_batches / batches_in_epoch:.4f} | LR={current_lr:.6f}"
-                )
-
-        self.network.eval()
-        # self.scheduler.step()
-
-        if epochs_done > 0:
-            final_total_loss = total_loss_epoch_avg / epochs_done
-            final_value_loss = value_loss_epoch_avg / epochs_done
-            final_policy_loss = policy_loss_epoch_avg / epochs_done
-
+            avg_train_loss = total_train_loss_epoch / train_batches
+            avg_val_loss = (
+                total_val_loss / val_batches if val_batches > 0 else float("inf")
+            )
             logger.info(
-                f"Learn Step Summary ({epochs_done} epochs): Avg Losses: "
-                f"Total={final_total_loss:.4f}, Value={final_value_loss:.4f}, Policy={final_policy_loss:.4f}"
+                f"Epoch {epoch+1}/{max_epochs}: Avg Train Loss = {avg_train_loss:.4f}, Avg Val Loss = {avg_val_loss:.4f}"
             )
 
+            # --- Early Stopping Check ---
+            if avg_val_loss < best_val_loss:
+                best_val_loss = avg_val_loss
+                epochs_without_improvement = 0
+                best_model_state = copy.deepcopy(self.network.state_dict())
+                best_epoch_losses = (
+                    avg_train_loss,
+                    value_train_loss_epoch / train_batches,
+                    policy_train_loss_epoch / train_batches,
+                )
+                logger.info(
+                    f"  New best validation loss: {best_val_loss:.4f}. Saving model state."
+                )
+            else:
+                epochs_without_improvement += 1
+                if epochs_without_improvement >= patience:
+                    logger.info(f"Early stopping triggered after {epoch + 1} epochs.")
+                    break
+
+        # --- Restore Best Model and Finalize ---
+        if best_model_state:
+            logger.info(
+                f"Restoring best model from epoch with validation loss: {best_val_loss:.4f}"
+            )
+            self.network.load_state_dict(best_model_state)
+        else:
+            logger.warning(
+                "No best model state was saved. Training might not have improved."
+            )
+
+        self.network.eval()
+
+        if best_epoch_losses:
+            final_total_loss, final_value_loss, final_policy_loss = best_epoch_losses
+            logger.info(
+                f"Learn Step Summary (best epoch): Avg Losses: "
+                f"Total={final_total_loss:.4f}, Value={final_value_loss:.4f}, Policy={final_policy_loss:.4f}"
+            )
             return final_total_loss, final_value_loss, final_policy_loss
         else:
-            logger.warning("No epochs completed in learn step.")
-            return None  # Indicate no learning happened
+            logger.warning("No learning occurred or no improvement found.")
+            return None
 
     def _get_save_path(self) -> Path:
         """Constructs the save file path for the network weights."""

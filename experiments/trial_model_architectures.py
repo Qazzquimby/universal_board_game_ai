@@ -38,13 +38,6 @@ from experiments.architectures.transformers import (
     _process_batch_transformer,
     _process_batch_cell_transformer,
     transformer_collate_fn,
-    PieceTransformer_OnehotLoc_SimpleOut,
-    PieceTransformer_OnehotLoc_BottleneckOut,
-    PieceTransformerNet,
-    PieceTransformerNet_ConcatPos,
-    PieceTransformerNet_Sinusoidal_Learnable,
-    PieceTransformer_EncoderSum_SimpleOut_ParamGameToken,
-    PieceTransformer_EncoderSum_SimpleOut,
 )
 from experiments.architectures.detached import DetachedPolicyNet
 

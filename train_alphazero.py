@@ -2,6 +2,7 @@ import math
 import sys
 import json
 import time
+import random
 
 import numpy as np
 from tqdm import tqdm
@@ -13,24 +14,26 @@ from core.config import AppConfig, WANDB_KEY
 from core.serialization import LOG_DIR, save_game_log
 from environments.base import BaseEnvironment
 from agents.alphazero_agent import AlphaZeroAgent
-from agents.mcts_agent import MCTSAgent  # Import MCTSAgent for type hint
 from factories import (
     get_environment,
     get_agents,
     get_benchmark_mcts_agent,
-)  # Import benchmark factory
+)
 from utils.plotting import plot_losses
-import evaluation  # Import evaluation module
+import evaluation
 from actors.inference_actor import InferenceActor
 from actors.self_play_manager_actor import SelfPlayWorkerActor
 
 
 def load_game_logs_into_buffer(agent: AlphaZeroAgent, env_name: str, buffer_limit: int):
-    """Loads existing game logs from LOG_DIR into the agent's replay buffer."""
+    """
+    Loads existing game logs from LOG_DIR into the agent's train and validation
+    replay buffers, splitting them to maintain persistence across runs.
+    """
     loaded_games = 0
     loaded_steps = 0
     if not LOG_DIR.exists():
-        logger.info("Log directory not found. Starting with an empty buffer.")
+        logger.info("Log directory not found. Starting with empty buffers.")
         return
 
     logger.info(f"Scanning {LOG_DIR} for existing '{env_name}' game logs...")
@@ -40,69 +43,42 @@ def load_game_logs_into_buffer(agent: AlphaZeroAgent, env_name: str, buffer_limi
         logger.info("No existing game logs found for this environment.")
         return
 
-    for filepath in tqdm(log_files, desc="Loading Logs"):
-        if len(agent.replay_buffer) >= buffer_limit:
-            logger.info(
-                f"Replay buffer reached limit ({buffer_limit}). Stopping log loading."
-            )
+    all_experiences = []
+    for filepath in tqdm(log_files, desc="Scanning Logs"):
+        if len(all_experiences) >= buffer_limit:
             break
         try:
             with open(filepath, "r") as f:
                 game_data = json.load(f)
-
             if not isinstance(game_data, list):
-                logger.warning(
-                    f"Skipping invalid log file (not a list): {filepath.name}"
-                )
+                logger.warning(f"Skipping invalid log file (not a list): {filepath.name}")
                 continue
 
-            steps_in_game = 0
+            loaded_games += 1
             for step_data in game_data:
-                if len(agent.replay_buffer) >= buffer_limit:
-                    break  # Stop adding steps if buffer full mid-game
-
-                # Extract required components for replay buffer
                 state = step_data.get("state")
                 policy_target_list = step_data.get("policy_target")
                 value_target = step_data.get("value_target")
 
-                if (
-                    state is not None
-                    and policy_target_list is not None
-                    and value_target is not None
-                ):
-                    # Convert policy back to numpy array
+                if state is not None and policy_target_list is not None and value_target is not None:
                     policy_target = np.array(policy_target_list, dtype=np.float32)
-
-                    # --- Standardize state loaded from JSON ---
-                    # Convert board/piles list back to numpy array
                     if "board" in state and isinstance(state["board"], list):
-                        state["board"] = np.array(
-                            state["board"], dtype=np.int8
-                        )  # Match Connect4 dtype
+                        state["board"] = np.array(state["board"], dtype=np.int8)
                     elif "piles" in state and isinstance(state["piles"], list):
-                        state["piles"] = np.array(
-                            state["piles"], dtype=np.int32
-                        )  # Match NimEnv dtype
-
-                    agent.replay_buffer.append((state, policy_target, value_target))
-                    loaded_steps += 1
-                    steps_in_game += 1
-                else:
-                    logger.warning(
-                        f"Skipping step with missing data in {filepath.name}"
-                    )
-
-            if steps_in_game > 0:
-                loaded_games += 1
-
+                        state["piles"] = np.array(state["piles"], dtype=np.int32)
+                    all_experiences.append((state, policy_target, value_target))
         except json.JSONDecodeError:
             logger.warning(f"Skipping corrupted JSON file: {filepath.name}")
         except Exception as e:
             logger.warning(f"Error processing log file {filepath.name}: {e}")
 
+    # Add to agent's buffers, which will handle shuffling, splitting, and capacity
+    agent.add_experiences_to_buffer(all_experiences)
+    loaded_steps = len(agent.train_replay_buffer) + len(agent.val_replay_buffer)
+
     logger.info(
-        f"Loaded {loaded_steps} steps from {loaded_games} game logs into replay buffer."
+        f"Loaded {loaded_steps} steps from {loaded_games} games into replay buffers. "
+        f"Train: {len(agent.train_replay_buffer)}, Val: {len(agent.val_replay_buffer)}"
     )
 
 
@@ -326,9 +302,14 @@ def run_training(config: AppConfig, env_name_override: str = None):
             logger.info(f"Saving agent checkpoint (Iteration {iteration + 1})...")
             agent.save()
 
-        buffer_size = len(agent.replay_buffer)
+        train_buffer_size = len(agent.train_replay_buffer)
+        val_buffer_size = len(agent.val_replay_buffer)
+        total_buffer_size = train_buffer_size + val_buffer_size
         logger.info(
-            f"Iteration {iteration + 1} complete. Buffer size: {buffer_size}/{config.alpha_zero.replay_buffer_size}"
+            f"Iteration {iteration + 1} complete. "
+            f"Buffers: Train={train_buffer_size}/{agent.train_replay_buffer.maxlen}, "
+            f"Val={val_buffer_size}/{agent.val_replay_buffer.maxlen} "
+            f"({total_buffer_size}/{config.alpha_zero.replay_buffer_size})"
         )
         if total_losses:
             logger.info(
@@ -341,7 +322,9 @@ def run_training(config: AppConfig, env_name_override: str = None):
         if config.wandb.enabled:  # and (iteration + 1) % config.wandb.log_freq == 0:
             log_data = {
                 "iteration": iteration + 1,
-                "buffer_size": buffer_size,
+                "buffer_size_total": total_buffer_size,
+                "buffer_size_train": train_buffer_size,
+                "buffer_size_val": val_buffer_size,
                 "wall_clock_time_s": time.time() - start_time,
             }
             if loss_results:
