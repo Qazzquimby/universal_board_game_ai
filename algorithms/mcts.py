@@ -20,6 +20,8 @@ from environments.base import ActionType, BaseEnvironment, StateWithKey
 
 DEBUG = True
 
+EARLY_STOP_IF_CHANGE_IMPOSSIBLE_CHECK_FREQUENCY = 50
+
 
 @dataclass
 class PathStep:

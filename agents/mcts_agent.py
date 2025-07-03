@@ -2,7 +2,6 @@ from typing import Optional, Dict
 
 import numpy as np
 from cachetools import LRUCache
-from loguru import logger
 
 from algorithms.mcts import (
     UCB1Selection,
@@ -15,28 +14,11 @@ from algorithms.mcts import (
     BackpropagationStrategy,
     MCTSNode,
     PolicyResult,
+    MCTSNodeCache,
+    EARLY_STOP_IF_CHANGE_IMPOSSIBLE_CHECK_FREQUENCY,
 )
 from core.agent_interface import Agent
 from environments.base import BaseEnvironment, ActionType, StateWithKey
-
-
-class MCTSNodeCache:
-    def __init__(self):
-        self.enabled = True
-        self._key_to_node = LRUCache(1024 * 8)
-
-    def get_matching_node(self, key: int) -> Optional[MCTSNode]:
-        if self.enabled:
-            return self._key_to_node.get(key, None)
-        else:
-            return None
-
-    def cache_node(self, key: int, node: MCTSNode):
-        if self.enabled:
-            self._key_to_node[key] = node
-
-
-EARLY_STOP_IF_CHANGE_IMPOSSIBLE_CHECK_FREQUENCY = 50
 
 
 class MCTSAgent(Agent):
@@ -61,18 +43,18 @@ class MCTSAgent(Agent):
         self.temperature = temperature
 
         self.root: MCTSNode = None
-        self.cache = MCTSNodeCache()
+        self.node_cache = MCTSNodeCache()
 
     def _ensure_state_is_root(self, state_with_key: StateWithKey):
         if self.root and self.root.state_with_key.key == state_with_key.key:
             return  # already root
 
-        matching_node = self.cache.get_matching_node(key=state_with_key.key)
+        matching_node = self.node_cache.get_matching_node(key=state_with_key.key)
         if matching_node:
             self.root = matching_node
         else:
             self.root = MCTSNode(state_with_key=state_with_key)
-            self.cache.cache_node(key=state_with_key.key, node=self.root)
+            self.node_cache.cache_node(key=state_with_key.key, node=self.root)
 
     def act(self, env: BaseEnvironment) -> Optional[ActionType]:
         self._ensure_state_is_root(state_with_key=env.get_state_with_key())
@@ -90,7 +72,9 @@ class MCTSAgent(Agent):
         Returns:
             The root node of the search tree after simulations.
         """
-        self._ensure_state_is_root(state_with_key=env.get_state_with_key())
+        self._ensure_state_is_root(
+            state_with_key=env.get_state_with_key()
+        )  # remove in prod
 
         for sim_idx in range(self.num_simulations):
             if (
@@ -115,7 +99,7 @@ class MCTSAgent(Agent):
             # 1. Selection: Find a leaf node using the selection strategy.
             #    The strategy modifies sim_env to match the leaf node's state.
             selection_result = self.selection_strategy.select(
-                node=self.root, sim_env=sim_env, cache=self.cache
+                node=self.root, sim_env=sim_env, cache=self.node_cache
             )
             path = selection_result.path
             leaf_node = selection_result.leaf_node

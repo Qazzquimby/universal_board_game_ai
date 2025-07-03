@@ -7,7 +7,7 @@ import random
 import torch
 import copy
 from torch import optim
-from torch.utils.data import DataLoader, Dataset, random_split
+from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 import torch.nn.functional as F
 import numpy as np
@@ -25,6 +25,9 @@ from algorithms.mcts import (
     StandardBackpropagation,
     Edge,
     MCTSNodeCache,
+    EARLY_STOP_IF_CHANGE_IMPOSSIBLE_CHECK_FREQUENCY,
+    BackpropagationStrategy,
+    SelectionStrategy,
 )
 from models.networks import AlphaZeroNet
 from core.config import AlphaZeroConfig, DATA_DIR, TrainingConfig
@@ -57,10 +60,8 @@ class EpisodeResult:
 
 
 class AlphaZeroEvaluation(EvaluationStrategy):
-    def __init__(self, network: AlphaZeroNet, device, network_cache: LRUCache):
+    def __init__(self, network: AlphaZeroNet):
         self.network = network
-        self.device = device
-        self.network_cache = network_cache
 
     def evaluate(self, node: "MCTSNode", env: BaseEnvironment) -> float:
         if env.done:
@@ -76,40 +77,36 @@ class AlphaZeroEvaluation(EvaluationStrategy):
                 return -1.0
 
         key = node.state_with_key.key
-        cached_result = self.network_cache.get(key)
+        cached_result = self.network.cache.get(key)
 
         if cached_result:
             _, value = cached_result
         else:
             self.network.eval()
-            self.network.to(self.device)
             with torch.no_grad():
                 policy_np, value = self.network.predict(node.state_with_key.state)
-            self.network_cache[key] = (policy_np, value)
+            self.network.cache[key] = (policy_np, value)
 
         return float(value)
 
 
 class AlphaZeroExpansion(ExpansionStrategy):
-    def __init__(self, network: AlphaZeroNet, device, network_cache: LRUCache):
+    def __init__(self, network: AlphaZeroNet):
         self.network = network
-        self.device = device
-        self.network_cache = network_cache
 
     def expand(self, node: "MCTSNode", env: BaseEnvironment) -> None:
         if node.is_expanded or env.done:
             return
 
         key = node.state_with_key.key
-        cached_result = self.network_cache.get(key)
+        cached_result = self.network.cache.get(key)
         if cached_result:
             policy_np, _ = cached_result
         else:
             self.network.eval()
-            self.network.to(self.device)
             with torch.no_grad():
                 policy_np, value = self.network.predict(node.state_with_key)
-            self.network_cache[key] = (policy_np, value)
+            self.network.cache[key] = (policy_np, value)
 
         legal_actions = env.get_legal_actions()
         for action in legal_actions:
@@ -126,59 +123,39 @@ class AlphaZeroAgent(Agent):
 
     def __init__(
         self,
+        num_simulations: int,
+        selection_strategy: SelectionStrategy,
+        expansion_strategy: ExpansionStrategy,
+        evaluation_strategy: EvaluationStrategy,
+        backpropagation_strategy: BackpropagationStrategy,
+        network: AlphaZeroNet,
+        optimizer,
         env: BaseEnvironment,
         config: AlphaZeroConfig,
         training_config: TrainingConfig,
-        # profiler: Optional[MCTSProfiler] = None, # Profiler removed
+        temperature=0,
     ):
-        """
-        Initialize the AlphaZero agent.
+        if num_simulations <= 0:
+            raise ValueError("Number of simulations must be positive.")
 
-        Args:
-            env: The environment instance.
-            config: Configuration object with AlphaZero parameters.
-            training_config: Configuration object with general training parameters.
-        """
-        self.env = env
+        self.selection_strategy = selection_strategy
+        self.expansion_strategy = expansion_strategy
+        self.evaluation_strategy = evaluation_strategy
+        self.backpropagation_strategy = backpropagation_strategy
+
+        self.num_simulations = num_simulations
+        self.temperature = temperature
+
+        self.root: MCTSNode = None
+        self.node_cache = MCTSNodeCache()
+
         self.config = config
         self.training_config = training_config
-
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        if self.config.should_use_network:
-            self.network = AlphaZeroNet(
-                env,
-                hidden_layer_size=config.hidden_layer_size,
-                num_hidden_layers=config.num_hidden_layers,
-            )
-            self.optimizer = optim.AdamW(
-                self.network.parameters(),
-                lr=config.learning_rate,
-                weight_decay=config.weight_decay,
-            )
-        else:
-            self.network = DummyAlphaZeroNet(env)
-            self.optimizer = None
-        self.network.to(self.device)
-
-        # Caches
-        self.node_cache = MCTSNodeCache()
-        self.network_cache = LRUCache(1024 * 8)
-
-        # MCTS Components
-        self.selection_strategy = UCB1Selection(exploration_constant=config.cpuct)
-        self.evaluation_strategy = AlphaZeroEvaluation(
-            self.network, self.device, self.network_cache
-        )
-        self.expansion_strategy = AlphaZeroExpansion(
-            self.network, self.device, self.network_cache
-        )
-        self.backpropagation_strategy = StandardBackpropagation()
-
-        self.root: Optional[MCTSNode] = None
 
         # Learning
         val_buffer_size = config.replay_buffer_size // 5
         train_buffer_size = config.replay_buffer_size - val_buffer_size
+        # TODO now, this won't handle the run being continued later I think
         self.train_replay_buffer = deque(maxlen=train_buffer_size)
         self.val_replay_buffer = deque(maxlen=val_buffer_size)
 
@@ -284,10 +261,29 @@ class AlphaZeroAgent(Agent):
         """
         Run the MCTS search for a specified number of simulations.
         """
-        state_with_key = env.get_state_with_key()
-        self._ensure_state_is_root(state_with_key=state_with_key)  # remove in prod
+        self._ensure_state_is_root(
+            state_with_key=env.get_state_with_key()
+        )  # remove in prod
 
-        for _ in range(self.config.num_simulations):
+        for sim_idx in range(self.config.num_simulations):
+            # TODO remove duplication with MCTSAgent
+            if (
+                sim_idx
+                and EARLY_STOP_IF_CHANGE_IMPOSSIBLE_CHECK_FREQUENCY
+                and sim_idx % EARLY_STOP_IF_CHANGE_IMPOSSIBLE_CHECK_FREQUENCY == 0
+            ):
+                visit_counts = sorted(
+                    [edge.num_visits for edge in self.root.edges.values()]
+                )
+                if len(visit_counts) < 2:
+                    break
+                max_visits = visit_counts[-1]
+                second_most_visits = visit_counts[-2]
+                sims_needed_to_change_mind = max_visits - second_most_visits
+                remaining_sims = self.num_simulations - sim_idx
+                if remaining_sims < sims_needed_to_change_mind:
+                    break
+
             sim_env = env.copy()
 
             # 1. Selection
@@ -699,3 +695,30 @@ class AlphaZeroAgent(Agent):
     def reset(self) -> None:
         """Reset agent state (e.g., MCTS tree)."""
         self.root = None
+
+
+def make_pure_az(
+    num_simulations,
+    should_use_network: bool,
+    embedding_dim: int,
+    lr: float,
+):
+    if should_use_network:
+        network = AlphaZeroNet()
+        optimizer = optim.AdamW(
+            network.parameters(),
+            lr=lr,
+        )
+    else:
+        network = DummyAlphaZeroNet()
+        optimizer = None
+
+    return AlphaZeroAgent(
+        num_simulations=num_simulations,
+        selection_strategy=UCB1Selection(exploration_constant=1.41),
+        expansion_strategy=AlphaZeroExpansion(network=network),
+        evaluation_strategy=AlphaZeroEvaluation(network=network),
+        backpropagation_strategy=StandardBackpropagation(),
+        network=network,
+        optimizer=optimizer,
+    )

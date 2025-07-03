@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+from cachetools import LRUCache
 
 from core.config import MuZeroConfig
 from environments.base import BaseEnvironment, ActionType, StateWithKey
@@ -27,6 +28,8 @@ class AlphaZeroNet(nn.Module):
         self.to(self.device)
 
         self.env = env
+
+        self.cache = LRUCache(1024 * 8)
 
         # Determine input size from environment observation space
         # This assumes the observation contains numerical data that can be flattened.
