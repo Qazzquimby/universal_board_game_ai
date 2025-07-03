@@ -1,6 +1,6 @@
 from pathlib import Path
 from collections import deque
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
 from dataclasses import dataclass
 
 import torch
@@ -10,20 +10,28 @@ from tqdm import tqdm
 import torch.nn.functional as F
 import numpy as np
 from loguru import logger
+from cachetools import LRUCache
 
 from core.agent_interface import Agent
-from environments.base import BaseEnvironment, StateType, ActionType
-from algorithms.mcts import DummyAlphaZeroNet
+from environments.base import BaseEnvironment, StateType, ActionType, StateWithKey
+from algorithms.mcts import (
+    DummyAlphaZeroNet,
+    MCTSNode,
+    UCB1Selection,
+    ExpansionStrategy,
+    EvaluationStrategy,
+    StandardBackpropagation,
+    Edge,
+    MCTSNodeCache,
+)
 from models.networks import AlphaZeroNet
 from core.config import AlphaZeroConfig, DATA_DIR, TrainingConfig
 
 
-# --- Define a simple Dataset wrapper for the replay buffer ---
 class ReplayBufferDataset(Dataset):
     def __init__(self, buffer: deque, network: AlphaZeroNet):
-        # Convert deque to list for easier indexing by DataLoader
         self.buffer_list = list(buffer)
-        self.network = network  # Need network for flattening
+        self.network = network
 
     def __len__(self):
         return len(self.buffer_list)
@@ -44,6 +52,71 @@ class EpisodeResult:
 
     buffer_experiences: List[Tuple[StateType, np.ndarray, float]]
     logged_history: List[Tuple[StateType, ActionType, np.ndarray, float]]
+
+
+class AlphaZeroEvaluation(EvaluationStrategy):
+    def __init__(self, network: AlphaZeroNet, device, network_cache: LRUCache):
+        self.network = network
+        self.device = device
+        self.network_cache = network_cache
+
+    def evaluate(self, node: "MCTSNode", env: BaseEnvironment) -> float:
+        if env.done:
+            winner = env.get_winning_player()
+            if winner is None:
+                return 0.0  # Draw
+
+            # Value is from the perspective of the player whose turn it is in the state.
+            player_at_leaf = env.get_current_player()
+            if winner == player_at_leaf:
+                return 1.0
+            else:
+                return -1.0
+
+        key = node.state_with_key.key
+        cached_result = self.network_cache.get(key)
+
+        if cached_result:
+            _, value = cached_result
+        else:
+            self.network.eval()
+            self.network.to(self.device)
+            with torch.no_grad():
+                policy_np, value = self.network.predict(node.state_with_key.state)
+            self.network_cache[key] = (policy_np, value)
+
+        return float(value)
+
+
+class AlphaZeroExpansion(ExpansionStrategy):
+    def __init__(self, network: AlphaZeroNet, device, network_cache: LRUCache):
+        self.network = network
+        self.device = device
+        self.network_cache = network_cache
+
+    def expand(self, node: "MCTSNode", env: BaseEnvironment) -> None:
+        if node.is_expanded or env.done:
+            return
+
+        key = node.state_with_key.key
+        cached_result = self.network_cache.get(key)
+        if cached_result:
+            policy_np, _ = cached_result
+        else:
+            self.network.eval()
+            self.network.to(self.device)
+            with torch.no_grad():
+                policy_np, value = self.network.predict(node.state_with_key.state)
+            self.network_cache[key] = (policy_np, value)
+
+        legal_actions = env.get_legal_actions()
+        for action in legal_actions:
+            action_idx = self.network.get_action_index(action)
+            if action_idx is not None:
+                prior = policy_np[action_idx]
+                action_key = tuple(action) if isinstance(action, list) else action
+                node.edges[action_key] = Edge(prior=prior)
+        node.is_expanded = True
 
 
 class AlphaZeroAgent(Agent):
@@ -68,115 +141,183 @@ class AlphaZeroAgent(Agent):
         self.config = config
         self.training_config = training_config
 
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         if self.config.should_use_network:
             self.network = AlphaZeroNet(
                 env,
                 hidden_layer_size=config.hidden_layer_size,
                 num_hidden_layers=config.num_hidden_layers,
             )
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        else:
-            self.network = None
-            self.device = torch.device("cpu")
-
-        self.network_cache = {}
-        self.mcts = AlphaZeroMCTS(
-            env=self.env,
-            config=config,
-            network_cache=self.network_cache,
-        )
-
-        # Learning:
-        self.replay_buffer = deque(maxlen=config.replay_buffer_size)
-        self._current_episode_history = []
-
-        if self.config.should_use_network:
             self.optimizer = optim.AdamW(
                 self.network.parameters(),
                 lr=config.learning_rate,
                 weight_decay=config.weight_decay,
             )
         else:
+            self.network = DummyAlphaZeroNet(env)
             self.optimizer = None
+        self.network.to(self.device)
+
+        # Caches
+        self.node_cache = MCTSNodeCache()
+        self.network_cache = LRUCache(1024 * 8)
+
+        # MCTS Components
+        self.selection_strategy = UCB1Selection(exploration_constant=config.c_puct)
+        self.evaluation_strategy = AlphaZeroEvaluation(
+            self.network, self.device, self.network_cache
+        )
+        self.expansion_strategy = AlphaZeroExpansion(
+            self.network, self.device, self.network_cache
+        )
+        self.backpropagation_strategy = StandardBackpropagation()
+
+        self.root: Optional[MCTSNode] = None
+
+        # Learning
+        self.replay_buffer = deque(maxlen=config.replay_buffer_size)
+
+    def _ensure_state_is_root(self, state_with_key: StateWithKey):
+        if self.root and self.root.state_with_key.key == state_with_key.key:
+            return  # already root
+
+        matching_node = self.node_cache.get_matching_node(key=state_with_key.key)
+        if matching_node:
+            self.root = matching_node
+        else:
+            self.root = MCTSNode(state_with_key=state_with_key)
+            self.node_cache.cache_node(key=state_with_key.key, node=self.root)
 
     def act(self, state: StateType, train: bool = False) -> ActionType:
         """
         Choose an action using MCTS guided by the neural network.
-        If train=True, also stores the state and MCTS policy target for learning.
+        The policy for training should be retrieved via `get_policy_target()` after this call.
 
         Args:
             state: The current environment state observation.
-            train: If True, use temperature sampling for exploration during training.
-                   If False, choose the most visited node (greedy).
-
-        Choose an action using MCTS guided by the neural network.
-        Performs a full synchronous MCTS search with direct network predictions.
-
-        Args:
-            state: The current environment state observation dictionary.
             train: If True, use temperature sampling and Dirichlet noise for exploration.
                    If False, choose the most visited node (greedy).
 
         Returns:
             The chosen action.
         """
-        if not self.network:
-            self.network = DummyAlphaZeroNet(env=self.env)
-
-        # Ensure network is in evaluation mode for inference
-        self.network.eval()
-        self.network.to(self.device)
-
         search_env = self.env.copy()
         search_env.set_state(state)
+        self.search(env=search_env, train=train)
 
-        self.mcts.set_root()
-        self.mcts.prepare_for_next_search(train=train)
+        temperature = self.config.temperature if train else 0.0
 
-        for sim_num in range(self.config.num_simulations):
-            # 1. Selection: Find a leaf node using PUCT score
-            leaf_node, leaf_env, _ = self.mcts._select_leaf(self.mcts.root, search_env)
+        assert self.root is not None
+        if not self.root.edges:
+            legal_actions = search_env.get_legal_actions()
+            if not legal_actions:
+                logger.warning("No legal actions from a non-expanded root. Cannot act.")
+                return None
+            raise RuntimeError(
+                f"Search finished but root has no edges. Legal actions: {legal_actions}"
+            )
 
-            # 2. Evaluation: Get value of the leaf node
-            if leaf_env.done:
-                value = self.mcts.get_terminal_value(leaf_env)
-            else:
-                leaf_state_with_key = leaf_env.get_state_with_key()
-                cached_result = self.mcts.network_cache.get(leaf_state_with_key.key)
-                if cached_result:
-                    policy_np, value = cached_result
-                else:
-                    # Cache miss: Predict with network
-                    policy_np, value = self.network.predict(
-                        leaf_state_with_key.state_with_key
-                    )
-                    self.mcts.network_cache[leaf_state_with_key.key] = (
-                        policy_np,
-                        value,
-                    )
+        action_visits: Dict[ActionType, int] = {
+            action: edge.num_visits for action, edge in self.root.edges.items()
+        }
+        actions = list(action_visits.keys())
+        visits = np.array(
+            [action_visits[action] for action in actions], dtype=np.float64
+        )
 
-                # 3. Expansion: Expand the leaf node using network policy priors
-                assert policy_np is not None
-                self.mcts._expand(leaf_node, leaf_env, policy_np)
+        if temperature == 0:
+            if len(visits) == 0:
+                raise RuntimeError("Cannot select action, no visits recorded.")
+            best_action_index = np.argmax(visits)
+            chosen_action = actions[best_action_index]
+        else:
+            visit_probs = visits / np.sum(visits)
+            chosen_action_index = np.random.choice(len(actions), p=visit_probs)
+            chosen_action = actions[chosen_action_index]
+
+        return chosen_action
+
+    def get_policy_target(self) -> np.ndarray:
+        """
+        Returns the policy target vector based on the visit counts from the last search.
+        This should be called after `act()` to get the data for training.
+        """
+        if not self.root:
+            raise RuntimeError(
+                "Must run `act()` to perform a search before getting a policy target."
+            )
+
+        policy_vector = np.zeros(self.env.policy_vector_size, dtype=np.float32)
+        if not self.root.edges:
+            return policy_vector  # Return zeros if no actions were possible/explored
+
+        action_visits: Dict[ActionType, int] = {
+            action: edge.num_visits for action, edge in self.root.edges.items()
+        }
+        visits = np.array(list(action_visits.values()), dtype=np.float64)
+        visit_sum = np.sum(visits)
+
+        if visit_sum > 0:
+            for action, visit_count in action_visits.items():
+                action_idx = self.network.get_action_index(action)
+                if action_idx is not None:
+                    policy_vector[action_idx] = visit_count / visit_sum
+        return policy_vector
+
+    def _apply_dirichlet_noise(self, node: MCTSNode):
+        if not node.edges:
+            return
+        actions = list(node.edges.keys())
+        noise = np.random.dirichlet([self.config.dirichlet_alpha] * len(actions))
+        eps = self.config.dirichlet_epsilon
+        for i, action in enumerate(actions):
+            node.edges[action].prior = (
+                node.edges[action].prior * (1 - eps) + noise[i] * eps
+            )
+
+    def search(self, env: BaseEnvironment, train: bool = False) -> MCTSNode:
+        """
+        Run the MCTS search for a specified number of simulations.
+        """
+        state_with_key = env.get_state_with_key()
+        self._ensure_state_is_root(state_with_key=state_with_key)
+
+        for _ in range(self.config.num_simulations):
+            sim_env = env.copy()
+
+            # 1. Selection
+            selection_result = self.selection_strategy.select(
+                node=self.root, sim_env=sim_env, cache=self.node_cache
+            )
+            path = selection_result.path
+            leaf_node = selection_result.leaf_node
+            leaf_env = selection_result.leaf_env
+
+            # 2. Expansion & Evaluation
+            player_at_leaf = leaf_env.get_current_player()
+            if not leaf_node.is_expanded and not leaf_env.done:
+                self.expansion_strategy.expand(leaf_node, leaf_env)
 
                 if (
-                    leaf_node == self.mcts.root
+                    leaf_node == self.root
                     and train
                     and self.config.dirichlet_epsilon > 0
-                    and sim_num == 0
                 ):
-                    self.mcts._apply_dirichlet_noise()
+                    self._apply_dirichlet_noise(self.root)
 
-            # 4. Backpropagation: Update nodes along the path
-            self.mcts._backpropagate(leaf_node, value)
+            value = self.evaluation_strategy.evaluate(leaf_node, leaf_env)
+            player_to_value = {}
+            for player in range(env.num_players):
+                if player == player_at_leaf:
+                    player_to_value[player] = value
+                else:
+                    player_to_value[player] = -value
 
-        (
-            chosen_action,
-            action_visits,
-        ) = self.mcts.get_result()
-
-        assert chosen_action is not None
-        return chosen_action
+            # 3. Backpropagation
+            self.backpropagation_strategy.backpropagate(
+                path=path, player_to_value=player_to_value
+            )
+        return self.root
 
     def process_finished_episode(
         self,
@@ -502,5 +643,4 @@ class AlphaZeroAgent(Agent):
 
     def reset(self) -> None:
         """Reset agent state (e.g., MCTS tree)."""
-        # Only reset MCTS root, internal episode history is no longer used by agent.
-        self.mcts.set_root()
+        self.root = None
