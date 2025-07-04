@@ -62,11 +62,7 @@ def create_cell_transformer_input(board_tensor):
 
 def create_directed_cell_graph(board_tensor):
     h, w = board_tensor.shape[1], board_tensor.shape[2]
-    p1_board = board_tensor[0]
-    p2_board = board_tensor[1]
     cell_states = torch.zeros(h, w, dtype=torch.long)
-    cell_states[p1_board == 1] = 1
-    cell_states[p2_board == 1] = 2
     x = cell_states.flatten()
 
     data = Data(x=x)
@@ -111,8 +107,6 @@ def create_cell_piece_graph(board_tensor):
     p2_board = board_tensor[1]
 
     cell_states = torch.zeros(h, w, dtype=torch.long)
-    cell_states[p1_board == 1] = 1
-    cell_states[p2_board == 1] = 2
 
     data = HeteroData()
     data["cell"].x = cell_states.flatten()
@@ -156,13 +150,7 @@ def create_combined_graph(board_tensor):
     h, w = board_tensor.shape[1], board_tensor.shape[2]
     directions = {
         "N": (-1, 0),
-        "NE": (-1, 1),
         "E": (0, 1),
-        "SE": (1, 1),
-        "S": (1, 0),
-        "SW": (1, -1),
-        "W": (0, -1),
-        "NW": (-1, -1),
     }
 
     for name, (dr, dc) in directions.items():
@@ -1089,24 +1077,20 @@ class CellPieceGraphTransformer(nn.Module):
     def __init__(self, embedding_dim=128, num_heads=4, num_layers=4, dropout=0.1):
         super().__init__()
         self.embedding_dim = embedding_dim
-        self.cell_embedding = nn.Embedding(3, embedding_dim)
+        self.cell_embedding = nn.Embedding(1, embedding_dim)
         self.piece_embedding = nn.Embedding(2, embedding_dim)
+
+        # TODO pretty sure I don't want a conv, I want to add edge attention manually.
+        # todo redo this and all later cell graph transformers.
+        # https://aistudio.google.com/prompts/12TRLcHI6P9AI7Wuyv1owLas8Klr-8kyz
 
         self.convs = nn.ModuleList()
         for _ in range(num_layers):
             conv = pyg_nn.HeteroConv(
                 {
                     ("piece", "occupies", "cell"): pyg_nn.GATv2Conv(
-                        embedding_dim,
-                        embedding_dim,
-                        heads=num_heads,
-                        dropout=dropout,
-                        add_self_loops=False,
-                        concat=False,
-                    ),
-                    ("cell", "rev_occupies", "piece"): pyg_nn.GATv2Conv(
-                        embedding_dim,
-                        embedding_dim,
+                        in_channels=embedding_dim,
+                        out_channels=embedding_dim,
                         heads=num_heads,
                         dropout=dropout,
                         add_self_loops=False,
@@ -1130,11 +1114,6 @@ class CellPieceGraphTransformer(nn.Module):
             "piece": self.piece_embedding(data["piece"].x.squeeze(-1)),
         }
 
-        # Add reverse edges
-        data["cell", "rev_occupies", "piece"].edge_index = data[
-            "piece", "occupies", "cell"
-        ].edge_index.flip([0])
-
         for conv in self.convs:
             x_dict = conv(x_dict, data.edge_index_dict)
             x_dict = {key: F.relu(x) for key, x in x_dict.items()}
@@ -1153,23 +1132,15 @@ class CombinedGraphTransformer(nn.Module):
     def __init__(self, embedding_dim=128, num_heads=4, num_layers=4, dropout=0.1):
         super().__init__()
         self.embedding_dim = embedding_dim
-        self.cell_embedding = nn.Embedding(3, embedding_dim)
+        self.cell_embedding = nn.Embedding(1, embedding_dim)
         self.piece_embedding = nn.Embedding(2, embedding_dim)
 
         self.convs = nn.ModuleList()
-        directions = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
+        directions = ["N", "E"]
 
         for _ in range(num_layers):
             conv_dict = {
                 ("piece", "occupies", "cell"): pyg_nn.GATv2Conv(
-                    embedding_dim,
-                    embedding_dim,
-                    heads=num_heads,
-                    dropout=dropout,
-                    add_self_loops=False,
-                    concat=False,
-                ),
-                ("cell", "rev_occupies", "piece"): pyg_nn.GATv2Conv(
                     embedding_dim,
                     embedding_dim,
                     heads=num_heads,
@@ -1203,11 +1174,6 @@ class CombinedGraphTransformer(nn.Module):
             "cell": self.cell_embedding(data["cell"].x),
             "piece": self.piece_embedding(data["piece"].x.squeeze(-1)),
         }
-
-        # Add reverse edges
-        data["cell", "rev_occupies", "piece"].edge_index = data[
-            "piece", "occupies", "cell"
-        ].edge_index.flip([0])
 
         for conv in self.convs:
             x_dict = conv(x_dict, data.edge_index_dict)

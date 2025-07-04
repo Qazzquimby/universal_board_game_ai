@@ -614,18 +614,18 @@ def main():
 
     # --- Graph Transformer Experiments ---
     graph_transformer_experiments = [
-        {
-            "name": "DirectedCellGraphTransformer",
-            "model_class": DirectedCellGraphTransformer,
-            "graph_fn": create_directed_cell_graph,
-            "params": {
-                "embedding_dim": 64,
-                "num_heads": 4,
-                "num_layers": 4,
-                "dropout": 0.1,
-            },
-            "lr": 0.001,
-        },
+        # {
+        #     "name": "DirectedCellGraphTransformer",
+        #     "model_class": DirectedCellGraphTransformer,
+        #     "graph_fn": create_directed_cell_graph,
+        #     "params": {
+        #         "embedding_dim": 64,
+        #         "num_heads": 4,
+        #         "num_layers": 4,
+        #         "dropout": 0.1,
+        #     },
+        #     "lr": 0.001,
+        # },
         {
             "name": "CellPieceGraphTransformer",
             "model_class": CellPieceGraphTransformer,
