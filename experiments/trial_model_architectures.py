@@ -11,7 +11,7 @@ import pandas as pd
 
 import wandb
 from experiments.data_utils import load_and_process_data
-from experiments.architectures.basic import Connect4Dataset
+from experiments.architectures.basic import Connect4Dataset, MLPNet, CNNNet, ResNet
 from experiments.architectures.graph import (
     get_connect4_graph_with_edge_attrs,
     construct_graph_data,
@@ -43,8 +43,6 @@ from experiments.architectures.transformers import (
 )
 
 TINY_RUN = False
-
-
 
 
 def _process_batch(model, data_batch, device, policy_criterion, value_criterion):
@@ -175,6 +173,46 @@ def train_and_evaluate(
     return pd.DataFrame(results), training_time
 
 
+def _run_and_log_experiment(
+    exp,
+    model,
+    run_group_id,
+    all_results,
+    train_loader,
+    test_loader,
+    process_batch_fn=_process_batch,
+):
+    name = exp["name"]
+    params = exp.get("params", {})
+    lr = exp.get("lr", LEARNING_RATE)
+
+    if not TINY_RUN:
+        wandb.init(
+            project="connect4_arch_comparison",
+            name=name,
+            group=run_group_id,
+            reinit=True,
+            config={
+                "learning_rate": lr,
+                "batch_size": BATCH_SIZE,
+                "architecture": model.__class__.__name__,
+                **params,
+            },
+        )
+
+    results_df, training_time = train_and_evaluate(
+        model=model,
+        model_name=name,
+        train_loader=train_loader,
+        test_loader=test_loader,
+        learning_rate=lr,
+        process_batch_fn=process_batch_fn,
+    )
+    all_results[name] = {"df": results_df, "time": training_time}
+    if not TINY_RUN:
+        wandb.finish()
+
+
 def main():
     run_group_id = f"run_{int(time.time())}"
     inputs, policy_labels, value_labels = load_and_process_data(TINY_RUN)
@@ -189,32 +227,23 @@ def main():
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
     test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
-    models_to_train = {
-        # "MLP": MLPNet(),
-        # "CNN": CNNNet(),
-        # "ResNet": ResNet(),
-    }
+    models_to_train = [
+        # {"name": "MLP", "model_class": MLPNet, "params": {}},
+        # {"name": "CNN", "model_class": CNNNet, "params": {}},
+        # {"name": "ResNet", "model_class": ResNet, "params": {}},
+    ]
 
     all_results = {}
-    for name, model in models_to_train.items():
-        if not TINY_RUN:
-            wandb.init(
-                project="connect4_arch_comparison",
-                name=name,
-                group=run_group_id,
-                config={
-                    "learning_rate": LEARNING_RATE,
-                    "batch_size": BATCH_SIZE,
-                    "architecture": name,
-                },
-            )
-        model.to(DEVICE)
-        results_df, training_time = train_and_evaluate(
-            model, name, train_loader, test_loader
+    for exp in models_to_train:
+        model = exp["model_class"](**exp.get("params", {})).to(DEVICE)
+        _run_and_log_experiment(
+            exp=exp,
+            model=model,
+            run_group_id=run_group_id,
+            all_results=all_results,
+            train_loader=train_loader,
+            test_loader=test_loader,
         )
-        all_results[name] = {"df": results_df, "time": training_time}
-        if not TINY_RUN:
-            wandb.finish()
 
     # --- Transformer Experiment ---
     transformer_experiments = [
@@ -413,31 +442,17 @@ def main():
             collate_fn=transformer_collate_fn,
         )
     for exp in transformer_experiments:
-        lr = exp.get("lr", 0.001)
         params = exp.get("params", {})
-        wandb.init(
-            project="connect4_arch_comparison",
-            name=exp["name"],
-            group=run_group_id,
-            reinit=True,
-            config={
-                "learning_rate": lr,
-                "batch_size": BATCH_SIZE,
-                "architecture": exp["model_class"].__name__,
-                **params,
-            },
-        )
         model = exp["model_class"](**params).to(DEVICE)
-        results_df, training_time = train_and_evaluate(
+        _run_and_log_experiment(
+            exp=exp,
             model=model,
-            model_name=exp["name"],
+            run_group_id=run_group_id,
+            all_results=all_results,
             train_loader=transformer_train_loader,
             test_loader=transformer_test_loader,
-            learning_rate=lr,
             process_batch_fn=_process_batch_transformer,
         )
-        all_results[exp["name"]] = {"df": results_df, "time": training_time}
-        wandb.finish()
 
     # --- Cell Transformer Experiment ---
     cell_transformer_experiments = [
@@ -481,30 +496,18 @@ def main():
             batch_size=BATCH_SIZE,
             shuffle=False,
         )
-    for exp in cell_transformer_experiments:
-        wandb.init(
-            project="connect4_arch_comparison",
-            name=exp["name"],
-            group=run_group_id,
-            reinit=True,
-            config={
-                "learning_rate": exp["lr"],
-                "batch_size": BATCH_SIZE,
-                "architecture": exp["model_class"].__name__,
-                **exp["params"],
-            },
-        )
-        model = exp["model_class"](**exp["params"]).to(DEVICE)
-        results_df, training_time = train_and_evaluate(
-            model=model,
-            model_name=exp["name"],
-            train_loader=cell_train_loader,
-            test_loader=cell_test_loader,
-            learning_rate=exp["lr"],
-            process_batch_fn=_process_batch_cell_transformer,
-        )
-        all_results[exp["name"]] = {"df": results_df, "time": training_time}
-        wandb.finish()
+        for exp in cell_transformer_experiments:
+            params = exp.get("params", {})
+            model = exp["model_class"](**params).to(DEVICE)
+            _run_and_log_experiment(
+                exp=exp,
+                model=model,
+                run_group_id=run_group_id,
+                all_results=all_results,
+                train_loader=cell_train_loader,
+                test_loader=cell_test_loader,
+                process_batch_fn=_process_batch_cell_transformer,
+            )
 
     # --- Graph Transformer Experiments ---
     graph_transformer_experiments = [
@@ -512,37 +515,16 @@ def main():
         #     "name": "DirectedCellGraphTransformer",
         #     "model_class": DirectedCellGraphTransformer,
         #     "graph_fn": create_directed_cell_graph,
-        #     "params": {
-        #         "embedding_dim": 64,
-        #         "num_heads": 4,
-        #         "num_layers": 4,
-        #         "dropout": 0.1,
-        #     },
-        #     "lr": 0.001,
         # },
         {
             "name": "CellPieceGraphTransformer",
             "model_class": CellPieceGraphTransformer,
             "graph_fn": create_cell_piece_graph,
-            "params": {
-                "embedding_dim": 64,
-                "num_heads": 4,
-                "num_layers": 4,
-                "dropout": 0.1,
-            },
-            "lr": 0.001,
         },
         {
             "name": "CombinedGraphTransformer",
             "model_class": CombinedGraphTransformer,
             "graph_fn": create_combined_graph,
-            "params": {
-                "embedding_dim": 64,
-                "num_heads": 4,
-                "num_layers": 4,
-                "dropout": 0.1,
-            },
-            "lr": 0.001,
         },
     ]
     if graph_transformer_experiments:
@@ -575,31 +557,17 @@ def main():
                 collate_fn=graph_collate_fn,
             )
 
-            lr = exp.get("lr", 0.001)
             params = exp.get("params", {})
-            wandb.init(
-                project="connect4_arch_comparison",
-                name=exp["name"],
-                group=run_group_id,
-                reinit=True,
-                config={
-                    "learning_rate": lr,
-                    "batch_size": BATCH_SIZE,
-                    "architecture": exp["model_class"].__name__,
-                    **params,
-                },
-            )
             model = exp["model_class"](**params).to(DEVICE)
             # Use default _process_batch
-            results_df, training_time = train_and_evaluate(
+            _run_and_log_experiment(
+                exp=exp,
                 model=model,
-                model_name=exp["name"],
+                run_group_id=run_group_id,
+                all_results=all_results,
                 train_loader=train_loader,
                 test_loader=test_loader,
-                learning_rate=lr,
             )
-            all_results[exp["name"]] = {"df": results_df, "time": training_time}
-            wandb.finish()
 
     # --- GNN Experiments ---
     gnn_experiments = [
@@ -666,28 +634,15 @@ def main():
             collate_fn=pyg_collate_fn,
         )
 
-        wandb.init(
-            project="connect4_arch_comparison",
-            name=exp["name"],
-            group=run_group_id,
-            reinit=True,
-            config={
-                "learning_rate": exp["lr"],
-                "batch_size": BATCH_SIZE,
-                "architecture": exp["model_class"].__name__,
-                **exp["params"],
-            },
-        )
         model = exp["model_class"](**exp["params"]).to(DEVICE)
-        results_df, training_time = train_and_evaluate(
+        _run_and_log_experiment(
+            exp=exp,
             model=model,
-            model_name=exp["name"],
+            run_group_id=run_group_id,
+            all_results=all_results,
             train_loader=train_loader,
             test_loader=test_loader,
-            learning_rate=exp["lr"],
         )
-        all_results[exp["name"]] = {"df": results_df, "time": training_time}
-        wandb.finish()
 
     print("\n--- Final Results Summary ---")
     for name, results in all_results.items():
