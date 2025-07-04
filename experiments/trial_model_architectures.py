@@ -38,6 +38,15 @@ from experiments.architectures.transformers import (
     _process_batch_transformer,
     _process_batch_cell_transformer,
     transformer_collate_fn,
+    CellTransformerNet,
+    DirectedCellGraphTransformer,
+    CellPieceGraphTransformer,
+    CombinedGraphTransformer,
+    create_directed_cell_graph,
+    create_cell_piece_graph,
+    create_combined_graph,
+    Connect4GraphDataset,
+    graph_collate_fn,
 )
 from experiments.architectures.detached import DetachedPolicyNet
 
@@ -315,21 +324,21 @@ def main():
 
     # --- Transformer Experiment ---
     transformer_experiments = [
-        {
-            "name": "DetachedPolicy_v1",
-            "model_class": DetachedPolicyNet,
-            "params": {
-                "state_model_params": {
-                    "embedding_dim": 128,
-                    "num_heads": 8,
-                    "num_encoder_layers": 4,
-                    "dropout": 0.1,
-                },
-                "policy_model_params": {
-                    "embedding_dim": 128,
-                },
-            },
-        },
+        # {
+        #     "name": "DetachedPolicy_v1",
+        #     "model_class": DetachedPolicyNet,
+        #     "params": {
+        #         "state_model_params": {
+        #             "embedding_dim": 128,
+        #             "num_heads": 8,
+        #             "num_encoder_layers": 4,
+        #             "dropout": 0.1,
+        #         },
+        #         "policy_model_params": {
+        #             "embedding_dim": 128,
+        #         },
+        #     },
+        # },
         # {
         #     "name": "PieceTransformer_v2",
         #     "model_class": PieceTransformerNet,
@@ -538,17 +547,17 @@ def main():
 
     # --- Cell Transformer Experiment ---
     cell_transformer_experiments = [
-        # {
-        #     "name": "CellTransformer",
-        #     "model_class": CellTransformerNet,
-        #     "params": {
-        #         "num_encoder_layers": 4,
-        #         "embedding_dim": 128,
-        #         "num_heads": 8,
-        #         "dropout": 0.1,
-        #     },
-        #     "lr": 0.001,
-        # },
+        {
+            "name": "CellTransformer",
+            "model_class": CellTransformerNet,
+            "params": {
+                "num_encoder_layers": 4,
+                "embedding_dim": 128,
+                "num_heads": 8,
+                "dropout": 0.1,
+            },
+            "lr": 0.001,
+        },
     ]
     if cell_transformer_experiments:
         print("\n--- Pre-processing data for Cell Transformer ---")
@@ -602,6 +611,101 @@ def main():
         )
         all_results[exp["name"]] = {"df": results_df, "time": training_time}
         wandb.finish()
+
+    # --- Graph Transformer Experiments ---
+    graph_transformer_experiments = [
+        {
+            "name": "DirectedCellGraphTransformer",
+            "model_class": DirectedCellGraphTransformer,
+            "graph_fn": create_directed_cell_graph,
+            "params": {
+                "embedding_dim": 64,
+                "num_heads": 4,
+                "num_layers": 4,
+                "dropout": 0.1,
+            },
+            "lr": 0.001,
+        },
+        {
+            "name": "CellPieceGraphTransformer",
+            "model_class": CellPieceGraphTransformer,
+            "graph_fn": create_cell_piece_graph,
+            "params": {
+                "embedding_dim": 64,
+                "num_heads": 4,
+                "num_layers": 4,
+                "dropout": 0.1,
+            },
+            "lr": 0.001,
+        },
+        {
+            "name": "CombinedGraphTransformer",
+            "model_class": CombinedGraphTransformer,
+            "graph_fn": create_combined_graph,
+            "params": {
+                "embedding_dim": 64,
+                "num_heads": 4,
+                "num_layers": 4,
+                "dropout": 0.1,
+            },
+            "lr": 0.001,
+        },
+    ]
+    if graph_transformer_experiments:
+        print("\n--- Pre-processing data for Graph Transformers ---")
+
+        for exp in graph_transformer_experiments:
+            print(f"\n--- Processing for {exp['name']} ---")
+            train_graphs = [
+                exp["graph_fn"](torch.from_numpy(board))
+                for board in tqdm(X_train, desc="Processing Train graphs")
+            ]
+            test_graphs = [
+                exp["graph_fn"](torch.from_numpy(board))
+                for board in tqdm(X_test, desc="Processing Test graphs")
+            ]
+
+            train_dataset = Connect4GraphDataset(train_graphs, p_train, v_train)
+            test_dataset = Connect4GraphDataset(test_graphs, p_test, v_test)
+
+            train_loader = DataLoader(
+                train_dataset,
+                batch_size=BATCH_SIZE,
+                shuffle=True,
+                collate_fn=graph_collate_fn,
+            )
+            test_loader = DataLoader(
+                test_dataset,
+                batch_size=BATCH_SIZE,
+                shuffle=False,
+                collate_fn=graph_collate_fn,
+            )
+
+            lr = exp.get("lr", 0.001)
+            params = exp.get("params", {})
+            wandb.init(
+                project="connect4_arch_comparison",
+                name=exp["name"],
+                group=run_group_id,
+                reinit=True,
+                config={
+                    "learning_rate": lr,
+                    "batch_size": BATCH_SIZE,
+                    "architecture": exp["model_class"].__name__,
+                    **params,
+                },
+            )
+            model = exp["model_class"](**params).to(DEVICE)
+            # Use default _process_batch
+            results_df, training_time = train_and_evaluate(
+                model=model,
+                model_name=exp["name"],
+                train_loader=train_loader,
+                test_loader=test_loader,
+                learning_rate=lr,
+            )
+            all_results[exp["name"]] = {"df": results_df, "time": training_time}
+            wandb.finish()
 
     # --- GNN Experiments ---
     gnn_experiments = [

@@ -1,10 +1,12 @@
 import math
 
 import torch
+import torch_geometric.nn as pyg_nn
 from einops import rearrange, repeat
 from torch import nn as nn
 from torch.nn import functional as F
 from torch.utils.data import Dataset
+from torch_geometric.data import Batch, Data, HeteroData
 
 from experiments.architectures.shared import BOARD_HEIGHT, BOARD_WIDTH
 
@@ -56,6 +58,130 @@ def create_cell_transformer_input(board_tensor):
     cell_states[p1_board == 1] = 1
     cell_states[p2_board == 1] = 2
     return cell_states.flatten()
+
+
+def create_directed_cell_graph(board_tensor):
+    h, w = board_tensor.shape[1], board_tensor.shape[2]
+    p1_board = board_tensor[0]
+    p2_board = board_tensor[1]
+    cell_states = torch.zeros(h, w, dtype=torch.long)
+    cell_states[p1_board == 1] = 1
+    cell_states[p2_board == 1] = 2
+    x = cell_states.flatten()
+
+    data = Data(x=x)
+
+    edge_indices = []
+    edge_types = []
+
+    directions = [
+        (-1, 0),
+        (-1, 1),
+        (0, 1),
+        (1, 1),
+        (1, 0),
+        (1, -1),
+        (0, -1),
+        (-1, -1),
+    ]
+
+    for i, (dr, dc) in enumerate(directions):
+        for r in range(h):
+            for c in range(w):
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < h and 0 <= nc < w:
+                    u = r * w + c
+                    v = nr * w + nc
+                    edge_indices.append([u, v])
+                    edge_types.append(i)
+
+    if edge_indices:
+        data.edge_index = torch.tensor(edge_indices, dtype=torch.long).t().contiguous()
+        data.edge_type = torch.tensor(edge_types, dtype=torch.long)
+    else:
+        data.edge_index = torch.empty(2, 0, dtype=torch.long)
+        data.edge_type = torch.empty(0, dtype=torch.long)
+
+    return data
+
+
+def create_cell_piece_graph(board_tensor):
+    h, w = board_tensor.shape[1], board_tensor.shape[2]
+    p1_board = board_tensor[0]
+    p2_board = board_tensor[1]
+
+    cell_states = torch.zeros(h, w, dtype=torch.long)
+    cell_states[p1_board == 1] = 1
+    cell_states[p2_board == 1] = 2
+
+    data = HeteroData()
+    data["cell"].x = cell_states.flatten()
+
+    # Piece info
+    p1_locs = torch.nonzero(p1_board)
+    p2_locs = torch.nonzero(p2_board)
+
+    num_p1_pieces = p1_locs.shape[0]
+    num_p2_pieces = p2_locs.shape[0]
+
+    if num_p1_pieces + num_p2_pieces == 0:
+        data["piece"].x = torch.empty(0, 1, dtype=torch.long)
+        data["piece", "occupies", "cell"].edge_index = torch.empty(
+            2, 0, dtype=torch.long
+        )
+        return data
+
+    piece_types = torch.cat(
+        [
+            torch.zeros(num_p1_pieces, dtype=torch.long),  # my pieces
+            torch.ones(num_p2_pieces, dtype=torch.long),  # opponent pieces
+        ]
+    ).unsqueeze(1)
+    data["piece"].x = piece_types
+
+    piece_locs = torch.cat([p1_locs, p2_locs], dim=0)
+
+    piece_indices = torch.arange(num_p1_pieces + num_p2_pieces)
+    cell_indices = piece_locs[:, 0] * w + piece_locs[:, 1]
+
+    edge_index = torch.stack([piece_indices, cell_indices], dim=0)
+    data["piece", "occupies", "cell"].edge_index = edge_index
+
+    return data
+
+
+def create_combined_graph(board_tensor):
+    data = create_cell_piece_graph(board_tensor)  # it's a HeteroData
+
+    h, w = board_tensor.shape[1], board_tensor.shape[2]
+    directions = {
+        "N": (-1, 0),
+        "NE": (-1, 1),
+        "E": (0, 1),
+        "SE": (1, 1),
+        "S": (1, 0),
+        "SW": (1, -1),
+        "W": (0, -1),
+        "NW": (-1, -1),
+    }
+
+    for name, (dr, dc) in directions.items():
+        edges = []
+        for r in range(h):
+            for c in range(w):
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < h and 0 <= nc < w:
+                    u = r * w + c
+                    v = nr * w + nc
+                    edges.append([u, v])
+        if edges:
+            data["cell", name, "cell"].edge_index = (
+                torch.tensor(edges, dtype=torch.long).t().contiguous()
+            )
+        else:
+            data["cell", name, "cell"].edge_index = torch.empty(2, 0, dtype=torch.long)
+
+    return data
 
 
 class PieceTransformerNet(nn.Module):
@@ -916,6 +1042,187 @@ class CellTransformerNet(nn.Module):
         return policy_logits, value
 
 
+class DirectedCellGraphTransformer(nn.Module):
+    def __init__(self, embedding_dim=128, num_heads=4, num_layers=4, dropout=0.1):
+        super().__init__()
+        self.patch_embedding = nn.Embedding(
+            3, embedding_dim
+        )  # 0: empty, 1: mine, 2: opp
+
+        self.convs = nn.ModuleList()
+        for _ in range(num_layers):
+            conv = pyg_nn.RGATConv(
+                embedding_dim,
+                embedding_dim,
+                num_relations=8,
+                heads=num_heads,
+                concat=False,
+                dropout=dropout,
+            )
+            self.convs.append(conv)
+
+        self.dropout = nn.Dropout(dropout)
+
+        fc1_out_size = 64
+        self.fc1 = nn.Linear(embedding_dim, fc1_out_size)
+        self.policy_head = nn.Linear(fc1_out_size, BOARD_WIDTH)
+        self.value_head = nn.Linear(fc1_out_size, 1)
+
+    def forward(self, data):
+        x = self.patch_embedding(data.x)
+
+        for conv in self.convs:
+            x = F.relu(conv(x, data.edge_index, data.edge_type))
+            x = self.dropout(x)
+
+        # Global pooling
+        graph_embedding = pyg_nn.global_mean_pool(x, data.batch)
+
+        out = F.relu(self.fc1(graph_embedding))
+        policy_logits = self.policy_head(out)
+        value = torch.tanh(self.value_head(out))
+
+        return policy_logits, value
+
+
+class CellPieceGraphTransformer(nn.Module):
+    def __init__(self, embedding_dim=128, num_heads=4, num_layers=4, dropout=0.1):
+        super().__init__()
+        self.embedding_dim = embedding_dim
+        self.cell_embedding = nn.Embedding(3, embedding_dim)
+        self.piece_embedding = nn.Embedding(2, embedding_dim)
+
+        self.convs = nn.ModuleList()
+        for _ in range(num_layers):
+            conv = pyg_nn.HeteroConv(
+                {
+                    ("piece", "occupies", "cell"): pyg_nn.GATv2Conv(
+                        embedding_dim,
+                        embedding_dim,
+                        heads=num_heads,
+                        dropout=dropout,
+                        add_self_loops=False,
+                        concat=False,
+                    ),
+                    ("cell", "rev_occupies", "piece"): pyg_nn.GATv2Conv(
+                        embedding_dim,
+                        embedding_dim,
+                        heads=num_heads,
+                        dropout=dropout,
+                        add_self_loops=False,
+                        concat=False,
+                    ),
+                },
+                aggr="sum",
+            )
+            self.convs.append(conv)
+
+        self.dropout = nn.Dropout(dropout)
+
+        fc1_out_size = 64
+        self.fc1 = nn.Linear(embedding_dim, fc1_out_size)
+        self.policy_head = nn.Linear(fc1_out_size, BOARD_WIDTH)
+        self.value_head = nn.Linear(fc1_out_size, 1)
+
+    def forward(self, data):
+        x_dict = {
+            "cell": self.cell_embedding(data["cell"].x),
+            "piece": self.piece_embedding(data["piece"].x.squeeze(-1)),
+        }
+
+        # Add reverse edges
+        data["cell", "rev_occupies", "piece"].edge_index = data[
+            "piece", "occupies", "cell"
+        ].edge_index.flip([0])
+
+        for conv in self.convs:
+            x_dict = conv(x_dict, data.edge_index_dict)
+            x_dict = {key: F.relu(x) for key, x in x_dict.items()}
+            x_dict = {key: self.dropout(x) for key, x in x_dict.items()}
+
+        graph_embedding = pyg_nn.global_mean_pool(x_dict["cell"], data["cell"].batch)
+
+        out = F.relu(self.fc1(graph_embedding))
+        policy_logits = self.policy_head(out)
+        value = torch.tanh(self.value_head(out))
+
+        return policy_logits, value
+
+
+class CombinedGraphTransformer(nn.Module):
+    def __init__(self, embedding_dim=128, num_heads=4, num_layers=4, dropout=0.1):
+        super().__init__()
+        self.embedding_dim = embedding_dim
+        self.cell_embedding = nn.Embedding(3, embedding_dim)
+        self.piece_embedding = nn.Embedding(2, embedding_dim)
+
+        self.convs = nn.ModuleList()
+        directions = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
+
+        for _ in range(num_layers):
+            conv_dict = {
+                ("piece", "occupies", "cell"): pyg_nn.GATv2Conv(
+                    embedding_dim,
+                    embedding_dim,
+                    heads=num_heads,
+                    dropout=dropout,
+                    add_self_loops=False,
+                    concat=False,
+                ),
+                ("cell", "rev_occupies", "piece"): pyg_nn.GATv2Conv(
+                    embedding_dim,
+                    embedding_dim,
+                    heads=num_heads,
+                    dropout=dropout,
+                    add_self_loops=False,
+                    concat=False,
+                ),
+            }
+            for d in directions:
+                conv_dict[("cell", d, "cell")] = pyg_nn.GATv2Conv(
+                    embedding_dim,
+                    embedding_dim,
+                    heads=num_heads,
+                    dropout=dropout,
+                    add_self_loops=False,
+                    concat=False,
+                )
+
+            conv = pyg_nn.HeteroConv(conv_dict, aggr="sum")
+            self.convs.append(conv)
+
+        self.dropout = nn.Dropout(dropout)
+
+        fc1_out_size = 64
+        self.fc1 = nn.Linear(embedding_dim, fc1_out_size)
+        self.policy_head = nn.Linear(fc1_out_size, BOARD_WIDTH)
+        self.value_head = nn.Linear(fc1_out_size, 1)
+
+    def forward(self, data):
+        x_dict = {
+            "cell": self.cell_embedding(data["cell"].x),
+            "piece": self.piece_embedding(data["piece"].x.squeeze(-1)),
+        }
+
+        # Add reverse edges
+        data["cell", "rev_occupies", "piece"].edge_index = data[
+            "piece", "occupies", "cell"
+        ].edge_index.flip([0])
+
+        for conv in self.convs:
+            x_dict = conv(x_dict, data.edge_index_dict)
+            x_dict = {key: F.relu(x) for key, x in x_dict.items()}
+            x_dict = {key: self.dropout(x) for key, x in x_dict.items()}
+
+        graph_embedding = pyg_nn.global_mean_pool(x_dict["cell"], data["cell"].batch)
+
+        out = F.relu(self.fc1(graph_embedding))
+        policy_logits = self.policy_head(out)
+        value = torch.tanh(self.value_head(out))
+
+        return policy_logits, value
+
+
 class Connect4TransformerDataset(Dataset):
     def __init__(self, transformer_inputs, policy_labels, value_labels):
         self.transformer_inputs = transformer_inputs
@@ -948,6 +1255,33 @@ class Connect4CellTransformerDataset(Dataset):
             self.policy_labels[idx],
             self.value_labels[idx],
         )
+
+
+class Connect4GraphDataset(Dataset):
+    def __init__(self, graphs, policy_labels, value_labels):
+        self.graphs = graphs
+        self.policy_labels = torch.from_numpy(policy_labels).long()
+        self.value_labels = torch.from_numpy(value_labels)
+
+    def __len__(self):
+        return len(self.graphs)
+
+    def __getitem__(self, idx):
+        return (
+            self.graphs[idx],
+            self.policy_labels[idx],
+            self.value_labels[idx],
+        )
+
+
+def graph_collate_fn(batch):
+    graphs, policies, values = zip(*batch)
+
+    batched_graphs = Batch.from_data_list(graphs)
+    batched_policies = torch.stack(list(policies))
+    batched_values = torch.stack(list(values))
+
+    return batched_graphs, batched_policies, batched_values
 
 
 def _process_batch_transformer(
