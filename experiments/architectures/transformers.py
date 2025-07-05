@@ -8,6 +8,7 @@ from torch.nn import functional as F
 from torch.utils.data import Dataset
 from torch_geometric.data import Batch, Data, HeteroData
 
+from experiments.architectures.basic import AZDataset
 from experiments.architectures.shared import BOARD_HEIGHT, BOARD_WIDTH
 
 
@@ -1187,57 +1188,6 @@ class CombinedGraphTransformer(nn.Module):
         value = torch.tanh(self.value_head(out))
 
         return policy_logits, value
-
-
-class Connect4TransformerDataset(Dataset):
-    def __init__(self, transformer_inputs, policy_labels, value_labels):
-        self.transformer_inputs = transformer_inputs
-        self.policy_labels = torch.from_numpy(policy_labels).long()
-        self.value_labels = torch.from_numpy(value_labels)
-
-    def __len__(self):
-        return len(self.transformer_inputs)
-
-    def __getitem__(self, idx):
-        return (
-            self.transformer_inputs[idx],
-            self.policy_labels[idx],
-            self.value_labels[idx],
-        )
-
-
-class Connect4CellTransformerDataset(Dataset):
-    def __init__(self, cell_inputs, policy_labels, value_labels):
-        self.cell_inputs = cell_inputs  # This will be a list of tensors
-        self.policy_labels = torch.from_numpy(policy_labels).long()
-        self.value_labels = torch.from_numpy(value_labels)
-
-    def __len__(self):
-        return len(self.cell_inputs)
-
-    def __getitem__(self, idx):
-        return (
-            self.cell_inputs[idx],
-            self.policy_labels[idx],
-            self.value_labels[idx],
-        )
-
-
-class Connect4GraphDataset(Dataset):
-    def __init__(self, graphs, policy_labels, value_labels):
-        self.graphs = graphs
-        self.policy_labels = torch.from_numpy(policy_labels).long()
-        self.value_labels = torch.from_numpy(value_labels)
-
-    def __len__(self):
-        return len(self.graphs)
-
-    def __getitem__(self, idx):
-        return (
-            self.graphs[idx],
-            self.policy_labels[idx],
-            self.value_labels[idx],
-        )
 
 
 def graph_collate_fn(batch):

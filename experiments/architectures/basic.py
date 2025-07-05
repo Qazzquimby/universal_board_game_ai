@@ -6,7 +6,7 @@ from torch.utils.data import Dataset
 from experiments.architectures.shared import BOARD_HEIGHT, BOARD_WIDTH
 
 
-class Connect4Dataset(Dataset):
+class AZDataset(Dataset):
     def __init__(self, inputs, policy_labels, value_labels):
         self.inputs = torch.from_numpy(inputs)
         self.policy_labels = torch.from_numpy(policy_labels).long()
