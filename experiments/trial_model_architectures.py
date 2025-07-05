@@ -40,6 +40,8 @@ from experiments.architectures.transformers import (
     create_cell_piece_graph,
     create_combined_graph,
     graph_collate_fn,
+    DirectedCellGraphTransformer,
+    create_directed_cell_graph,
 )
 
 TINY_RUN = False
@@ -226,23 +228,12 @@ class TestData:
 RUN_GROUP_ID = f"run_{int(time.time())}"
 
 
-def run_experiments(
-    all_results: dict,
+def get_dataloaders(
     data: TestData,
     name: str,
-    experiments: list[dict],
-    process_batch_fn: callable,
     input_creator: callable = None,
     collate_function: callable = None,
-):
-    """
-    Run experiments for a specific architecture defined by `name` and `input_creator`.
-    """
-    if not experiments:
-        print("No transformer experiments defined.")
-        return
-
-    print(f"\n--- Pre-processing data for {name} ---")
+) -> tuple[DataLoader, DataLoader]:
     if input_creator:
         train_inputs = [
             input_creator(torch.from_numpy(board))
@@ -265,9 +256,48 @@ def run_experiments(
     test_loader = DataLoader(
         test_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=collate_function
     )
+    return train_loader, test_loader
+
+
+def run_experiments(
+    all_results: dict,
+    data: TestData,
+    name: str,
+    experiments: list[dict],
+    process_batch_fn: callable,
+    input_creator: callable = None,
+    collate_function: callable = None,
+):
+    """
+    Run experiments for a specific architecture defined by `name` and `input_creator`.
+    """
+    if not experiments:
+        print("No transformer experiments defined.")
+        return
+
+    print(f"\n--- Pre-processing data for {name} ---")
+    get_loader_per_experiment = isinstance(input_creator, str)
+
+    if not get_loader_per_experiment:
+        train_loader, test_loader = get_dataloaders(
+            data=data,
+            name=name,
+            input_creator=input_creator,
+            collate_function=collate_function,
+        )
 
     for experiment in experiments:
         params = experiment.get("params", {})
+
+        if get_loader_per_experiment:
+            input_creator_func = params[input_creator]
+            train_loader, test_loader = get_dataloaders(
+                data=data,
+                name=name,
+                input_creator=input_creator_func,
+                collate_function=collate_function,
+            )
+
         model = experiment["model_class"](**params).to(DEVICE)
         _run_and_log_experiment(
             exp=experiment,
@@ -473,42 +503,40 @@ def run_piece_transformer_experiments(all_results: dict, data: TestData):
     )
 
 
-def run_cell_transformer_experiments(all_results: dict, data: TestData):
+def run_graph_transformer_experiments(all_results: dict, data: TestData):
+
     experiments = [
         {
             "name": "CellTransformer",
             "model_class": CellTransformerNet,
-            "params": {
-                "num_encoder_layers": 4,
-                "embedding_dim": 128,
-                "num_heads": 8,
-                "dropout": 0.1,
-            },
-            "lr": 0.001,
+            # graph fn? Duplicate of directed cell graph t ransformer?
+        },
+        {
+            "name": "DirectedCellGraphTransformer",
+            "model_class": DirectedCellGraphTransformer,
+            "graph_fn": create_directed_cell_graph,
+        },
+        {
+            "name": "CellPieceGraphTransformer",
+            "model_class": CellPieceGraphTransformer,
+            "graph_fn": create_cell_piece_graph,
+        },
+        {
+            "name": "CombinedGraphTransformer",
+            "model_class": CombinedGraphTransformer,
+            "graph_fn": create_combined_graph,
         },
     ]
+
     run_experiments(
         all_results=all_results,
         data=data,
-        name="Cell Transformer",
+        name="Graph Transformer",
         experiments=experiments,
-        input_creator=create_cell_transformer_input,
-        process_batch_fn=_process_batch_cell_transformer,
+        process_batch_fn=None,  # ?
+        input_creator="input_creator",
+        collate_function=graph_collate_fn,
     )
-    # todo look into collate function
-
-    for exp in experiments:
-        params = exp.get("params", {})
-        model = exp["model_class"](**params).to(DEVICE)
-        _run_and_log_experiment(
-            exp=exp,
-            model=model,
-            run_group_id=RUN_GROUP_ID,
-            all_results=all_results,
-            train_loader=cell_train_loader,
-            test_loader=cell_test_loader,
-            process_batch_fn=_process_batch_cell_transformer,
-        )
 
 
 def main():
@@ -529,146 +557,7 @@ def main():
 
     run_piece_transformer_experiments(all_results, data=data)
 
-    # --- Graph Transformer Experiments ---
-    graph_transformer_experiments = [
-        # {
-        #     "name": "DirectedCellGraphTransformer",
-        #     "model_class": DirectedCellGraphTransformer,
-        #     "graph_fn": create_directed_cell_graph,
-        # },
-        {
-            "name": "CellPieceGraphTransformer",
-            "model_class": CellPieceGraphTransformer,
-            "graph_fn": create_cell_piece_graph,
-        },
-        {
-            "name": "CombinedGraphTransformer",
-            "model_class": CombinedGraphTransformer,
-            "graph_fn": create_combined_graph,
-        },
-    ]
-    if graph_transformer_experiments:
-        print("\n--- Pre-processing data for Graph Transformers ---")
-
-        for exp in graph_transformer_experiments:
-            print(f"\n--- Processing for {exp['name']} ---")
-            train_graphs = [
-                exp["graph_fn"](torch.from_numpy(board))
-                for board in tqdm(data.X_train, desc="Processing Train graphs")
-            ]
-            test_graphs = [
-                exp["graph_fn"](torch.from_numpy(board))
-                for board in tqdm(data.X_test, desc="Processing Test graphs")
-            ]
-
-            train_dataset = Connect4GraphDataset(
-                train_graphs, data.policy_train, data.value_train
-            )
-            test_dataset = Connect4GraphDataset(
-                test_graphs, data.policy_test, data.value_test
-            )
-
-            train_loader = DataLoader(
-                train_dataset,
-                batch_size=BATCH_SIZE,
-                shuffle=True,
-                collate_fn=graph_collate_fn,
-            )
-            test_loader = DataLoader(
-                test_dataset,
-                batch_size=BATCH_SIZE,
-                shuffle=False,
-                collate_fn=graph_collate_fn,
-            )
-
-            params = exp.get("params", {})
-            model = exp["model_class"](**params).to(DEVICE)
-            # Use default _process_batch
-            _run_and_log_experiment(
-                exp=exp,
-                model=model,
-                run_group_id=RUN_GROUP_ID,
-                all_results=all_results,
-                train_loader=train_loader,
-                test_loader=test_loader,
-            )
-
-    # --- GNN Experiments ---
-    gnn_experiments = [
-        # {
-        #     "name": "CellGNN_HGT",
-        #     "model_class": GraphNet,
-        #     "train_graphs": cell_train_graphs,
-        #     "test_graphs": cell_test_graphs,
-        #     "params": {
-        #         "hidden_channels": 128,
-        #         "num_heads": 8,
-        #         "num_layers": 4,
-        #         "pooling_fn": global_add_pool,
-        #     },
-        #     "lr": 0.001,
-        # },
-        # {  # very weak, no attention
-        #     "name": "DirectionalGNN_EdgeAttr",
-        #     "model_class": DirectionalGNN,
-        #     "train_graphs": dir_train_graphs,
-        #     "test_graphs": dir_test_graphs,
-        #     "params": {
-        #         "hidden_channels": 128,
-        #         "num_layers": 4,
-        #         "pooling_fn": global_add_pool,
-        #     },
-        #     "lr": 0.001,
-        # },
-    ]
-    if gnn_experiments:
-        print("\n--- Pre-processing data for GNNs ---")
-        cell_train_graphs = [
-            construct_graph_data(torch.from_numpy(board))
-            for board in tqdm(data.X_train, desc="Processing Hetero graphs")
-        ]
-        cell_test_graphs = [
-            construct_graph_data(torch.from_numpy(board))
-            for board in tqdm(data.X_test, desc="Processing Hetero graphs")
-        ]
-
-        dir_train_graphs = [
-            get_connect4_graph_with_edge_attrs(torch.from_numpy(board))
-            for board in tqdm(data.X_train, desc="Processing Directional graphs")
-        ]
-        dir_test_graphs = [
-            get_connect4_graph_with_edge_attrs(torch.from_numpy(board))
-            for board in tqdm(data.X_test, desc="Processing Directional graphs")
-        ]
-    for exp in gnn_experiments:
-        train_dataset = Connect4GraphDataset(
-            exp["train_graphs"], data.X_train, data.policy_train, data.value_train
-        )
-        test_dataset = Connect4GraphDataset(
-            exp["test_graphs"], data.X_test, data.policy_test, data.value_test
-        )
-        train_loader = DataLoader(
-            train_dataset,
-            batch_size=BATCH_SIZE,
-            shuffle=True,
-            collate_fn=pyg_collate_fn,
-        )
-        test_loader = DataLoader(
-            test_dataset,
-            batch_size=BATCH_SIZE,
-            shuffle=False,
-            collate_fn=pyg_collate_fn,
-        )
-
-        model = exp["model_class"](**exp["params"]).to(DEVICE)
-        _run_and_log_experiment(
-            exp=exp,
-            model=model,
-            run_group_id=RUN_GROUP_ID,
-            all_results=all_results,
-            train_loader=train_loader,
-            test_loader=test_loader,
-        )
+    run_graph_transformer_experiments(all_results, data=data)
 
     print("\n--- Final Results Summary ---")
     for name, results in all_results.items():
