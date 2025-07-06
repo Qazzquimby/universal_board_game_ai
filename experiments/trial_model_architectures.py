@@ -1,5 +1,4 @@
 import time
-import typing
 from dataclasses import dataclass
 
 import torch
@@ -7,20 +6,23 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 from torch import Tensor
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader
 from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 import pandas as pd
 
 import wandb
-from experiments.data_utils import load_and_process_data
-from experiments.architectures.basic import AZDataset, MLPNet, CNNNet, ResNet
-from experiments.architectures.graph import (
-    get_connect4_graph_with_edge_attrs,
-    construct_graph_data,
-    Connect4GraphDataset,
-    pyg_collate_fn,
+from experiments.architectures.graph_transformers import (
+    CellGraphTransformer,
+    CellPieceGraphTransformer,
+    CombinedGraphTransformer,
+    graph_collate_fn,
+    create_cell_graph,
+    create_cell_piece_graph,
+    create_combined_graph,
 )
+from experiments.data_utils import load_and_process_data
+from experiments.architectures.basic import AZDataset, AZGraphDataset
 from experiments.architectures.shared import (
     MAX_EPOCHS,
     LEARNING_RATE,
@@ -30,21 +32,11 @@ from experiments.architectures.shared import (
 )
 from experiments.architectures.transformers import (
     create_transformer_input,
-    create_cell_transformer_input,
     _process_batch_transformer,
-    _process_batch_cell_transformer,
     transformer_collate_fn,
-    CellTransformerNet,
-    CellPieceGraphTransformer,
-    CombinedGraphTransformer,
-    create_cell_piece_graph,
-    create_combined_graph,
-    graph_collate_fn,
-    DirectedCellGraphTransformer,
-    create_directed_cell_graph,
 )
 
-TINY_RUN = False
+TINY_RUN = True
 
 
 def _process_batch(model, data_batch, device, policy_criterion, value_criterion):
@@ -74,6 +66,8 @@ def train_and_evaluate(
     learning_rate=LEARNING_RATE,
     process_batch_fn=_process_batch,
 ):
+    if process_batch_fn is None:
+        process_batch_fn = _process_batch
     print(f"\n--- Training {model_name} on {DEVICE} ---")
     start_time = time.time()
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
@@ -233,6 +227,7 @@ def get_dataloaders(
     name: str,
     input_creator: callable = None,
     collate_function: callable = None,
+    dataset_class: type = AZDataset,
 ) -> tuple[DataLoader, DataLoader]:
     if input_creator:
         train_inputs = [
@@ -247,8 +242,8 @@ def get_dataloaders(
         train_inputs = data.X_train
         test_inputs = data.X_test
 
-    train_dataset = AZDataset(train_inputs, data.policy_train, data.value_train)
-    test_dataset = AZDataset(test_inputs, data.policy_test, data.value_test)
+    train_dataset = AZGraphDataset(train_inputs, data.policy_train, data.value_train)
+    test_dataset = AZGraphDataset(test_inputs, data.policy_test, data.value_test)
 
     train_loader = DataLoader(
         train_dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=collate_function
@@ -290,13 +285,15 @@ def run_experiments(
         params = experiment.get("params", {})
 
         if get_loader_per_experiment:
-            input_creator_func = params[input_creator]
+            input_creator_func = experiment[input_creator]
             train_loader, test_loader = get_dataloaders(
                 data=data,
                 name=name,
                 input_creator=input_creator_func,
                 collate_function=collate_function,
+                dataset_class=AZGraphDataset,
             )
+        assert train_loader and test_loader
 
         model = experiment["model_class"](**params).to(DEVICE)
         _run_and_log_experiment(
@@ -504,27 +501,21 @@ def run_piece_transformer_experiments(all_results: dict, data: TestData):
 
 
 def run_graph_transformer_experiments(all_results: dict, data: TestData):
-
     experiments = [
         {
-            "name": "CellTransformer",
-            "model_class": CellTransformerNet,
-            # graph fn? Duplicate of directed cell graph t ransformer?
-        },
-        {
-            "name": "DirectedCellGraphTransformer",
-            "model_class": DirectedCellGraphTransformer,
-            "graph_fn": create_directed_cell_graph,
+            "name": "CellGraphTransformer",
+            "model_class": CellGraphTransformer,
+            "input_creator": create_cell_graph,
         },
         {
             "name": "CellPieceGraphTransformer",
             "model_class": CellPieceGraphTransformer,
-            "graph_fn": create_cell_piece_graph,
+            "input_creator": create_cell_piece_graph,
         },
         {
             "name": "CombinedGraphTransformer",
             "model_class": CombinedGraphTransformer,
-            "graph_fn": create_combined_graph,
+            "input_creator": create_combined_graph,
         },
     ]
 
@@ -555,9 +546,9 @@ def main():
     all_results = {}
     run_basic_experiments(all_results=all_results, data=data)
 
-    run_piece_transformer_experiments(all_results, data=data)
+    run_piece_transformer_experiments(all_results=all_results, data=data)
 
-    run_graph_transformer_experiments(all_results, data=data)
+    run_graph_transformer_experiments(all_results=all_results, data=data)
 
     print("\n--- Final Results Summary ---")
     for name, results in all_results.items():

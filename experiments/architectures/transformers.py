@@ -1,14 +1,10 @@
 import math
 
 import torch
-import torch_geometric.nn as pyg_nn
 from einops import rearrange, repeat
 from torch import nn as nn
 from torch.nn import functional as F
-from torch.utils.data import Dataset
-from torch_geometric.data import Batch, Data, HeteroData
 
-from experiments.architectures.basic import AZDataset
 from experiments.architectures.shared import BOARD_HEIGHT, BOARD_WIDTH
 
 
@@ -61,118 +57,6 @@ def create_cell_transformer_input(board_tensor):
     return cell_states.flatten()
 
 
-def create_directed_cell_graph(board_tensor):
-    h, w = board_tensor.shape[1], board_tensor.shape[2]
-    cell_states = torch.zeros(h, w, dtype=torch.long)
-    x = cell_states.flatten()
-
-    data = Data(x=x)
-
-    edge_indices = []
-    edge_types = []
-
-    directions = [
-        (-1, 0),
-        (-1, 1),
-        (0, 1),
-        (1, 1),
-        (1, 0),
-        (1, -1),
-        (0, -1),
-        (-1, -1),
-    ]
-
-    for i, (dr, dc) in enumerate(directions):
-        for r in range(h):
-            for c in range(w):
-                nr, nc = r + dr, c + dc
-                if 0 <= nr < h and 0 <= nc < w:
-                    u = r * w + c
-                    v = nr * w + nc
-                    edge_indices.append([u, v])
-                    edge_types.append(i)
-
-    if edge_indices:
-        data.edge_index = torch.tensor(edge_indices, dtype=torch.long).t().contiguous()
-        data.edge_type = torch.tensor(edge_types, dtype=torch.long)
-    else:
-        data.edge_index = torch.empty(2, 0, dtype=torch.long)
-        data.edge_type = torch.empty(0, dtype=torch.long)
-
-    return data
-
-
-def create_cell_piece_graph(board_tensor):
-    h, w = board_tensor.shape[1], board_tensor.shape[2]
-    p1_board = board_tensor[0]
-    p2_board = board_tensor[1]
-
-    cell_states = torch.zeros(h, w, dtype=torch.long)
-
-    data = HeteroData()
-    data["cell"].x = cell_states.flatten()
-
-    # Piece info
-    p1_locs = torch.nonzero(p1_board)
-    p2_locs = torch.nonzero(p2_board)
-
-    num_p1_pieces = p1_locs.shape[0]
-    num_p2_pieces = p2_locs.shape[0]
-
-    if num_p1_pieces + num_p2_pieces == 0:
-        data["piece"].x = torch.empty(0, 1, dtype=torch.long)
-        data["piece", "occupies", "cell"].edge_index = torch.empty(
-            2, 0, dtype=torch.long
-        )
-        return data
-
-    piece_types = torch.cat(
-        [
-            torch.zeros(num_p1_pieces, dtype=torch.long),  # my pieces
-            torch.ones(num_p2_pieces, dtype=torch.long),  # opponent pieces
-        ]
-    ).unsqueeze(1)
-    data["piece"].x = piece_types
-
-    piece_locs = torch.cat([p1_locs, p2_locs], dim=0)
-
-    piece_indices = torch.arange(num_p1_pieces + num_p2_pieces)
-    cell_indices = piece_locs[:, 0] * w + piece_locs[:, 1]
-
-    edge_index = torch.stack([piece_indices, cell_indices], dim=0)
-    data["piece", "occupies", "cell"].edge_index = edge_index
-
-    return data
-
-
-def create_combined_graph(board_tensor):
-    data = create_cell_piece_graph(board_tensor)  # it's a HeteroData
-
-    h, w = board_tensor.shape[1], board_tensor.shape[2]
-    directions = {
-        "N": (-1, 0),
-        "E": (0, 1),
-    }
-
-    for name, (dr, dc) in directions.items():
-        edges = []
-        for r in range(h):
-            for c in range(w):
-                nr, nc = r + dr, c + dc
-                if 0 <= nr < h and 0 <= nc < w:
-                    u = r * w + c
-                    v = nr * w + nc
-                    edges.append([u, v])
-        if edges:
-            data["cell", name, "cell"].edge_index = (
-                torch.tensor(edges, dtype=torch.long).t().contiguous()
-            )
-        else:
-            data["cell", name, "cell"].edge_index = torch.empty(2, 0, dtype=torch.long)
-
-    return data
-
-
 class PieceTransformerNet(nn.Module):
     def __init__(
         self,
@@ -191,7 +75,7 @@ class PieceTransformerNet(nn.Module):
         self.col_embedding = nn.Embedding(BOARD_WIDTH, embedding_dim)
 
         # Special token for global board representation
-        self.cls_token = nn.Parameter(torch.zeros(1, 1, embedding_dim))
+        self.game_token = nn.Parameter(torch.zeros(1, 1, embedding_dim))
 
         self.dropout = nn.Dropout(dropout)
 
@@ -213,7 +97,7 @@ class PieceTransformerNet(nn.Module):
         self.value_head = nn.Linear(fc1_out_size, 1)
 
     def forward(self, src, coords, src_key_padding_mask):
-        # src shape: (batch_size, seq_len, feature_dim=2)
+        # src shape: (batch_size, seq_len, feature_dim=2) (is mine, is opponents)
         # coords shape: (batch_size, seq_len, 2) -> (row, col)
         # src_key_padding_mask shape: (batch_size, seq_len)
 
@@ -228,25 +112,26 @@ class PieceTransformerNet(nn.Module):
 
         # Prepend CLS token
         batch_size, seq_len, _ = src_with_pos.shape
-        cls_tokens = self.cls_token.expand(batch_size, -1, -1)
-        x = torch.cat((cls_tokens, src_with_pos), dim=1)
+        game_tokens = self.game_token.expand(batch_size, -1, -1)
+        x = torch.cat((game_tokens, src_with_pos), dim=1)
 
         # Apply dropout to the combined token sequence
         x = self.dropout(x)
 
         # Adjust padding mask for CLS token
-        cls_mask = torch.zeros(batch_size, 1, device=src.device, dtype=torch.bool)
-        final_padding_mask = torch.cat((cls_mask, src_key_padding_mask), dim=1)
+        game_token_mask = torch.zeros(
+            batch_size, 1, device=src.device, dtype=torch.bool
+        )
+        final_padding_mask = torch.cat((game_token_mask, src_key_padding_mask), dim=1)
 
         # Pass through transformer encoder
         transformer_output = self.transformer_encoder(
             x, src_key_padding_mask=final_padding_mask
         )
 
-        # Use the output of the CLS token for prediction
-        cls_output = transformer_output[:, 0, :]  # (batch_size, embedding_dim)
+        game_token_out = transformer_output[:, 0, :]  # (batch_size, embedding_dim)
 
-        out = F.relu(self.fc1(cls_output))
+        out = F.relu(self.fc1(game_token_out))
         policy_logits = self.policy_head(out)
         value = torch.tanh(self.value_head(out))
 
@@ -960,246 +845,6 @@ class PieceTransformer_EncoderSum_SimpleOut_ParamGameToken(nn.Module):
         return policy_logits, value
 
 
-class CellTransformerNet(nn.Module):
-    def __init__(
-        self,
-        num_encoder_layers=4,
-        embedding_dim=128,
-        num_heads=8,
-        dropout=0.1,
-    ):
-        super().__init__()
-        num_patches = BOARD_HEIGHT * BOARD_WIDTH
-
-        # Embedding for the state of each cell (patch)
-        self.patch_embedding = nn.Embedding(
-            3, embedding_dim
-        )  # 0: empty, 1: mine, 2: opp
-
-        # Learnable positional embeddings for each patch + CLS token
-        self.positional_embedding = nn.Parameter(
-            torch.zeros(1, num_patches + 1, embedding_dim)
-        )
-
-        # Special token for global board representation
-        self.cls_token = nn.Parameter(torch.zeros(1, 1, embedding_dim))
-
-        self.dropout = nn.Dropout(dropout)
-
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=embedding_dim,
-            dim_feedforward=embedding_dim * 4,
-            nhead=num_heads,
-            dropout=dropout,
-            batch_first=True,
-            norm_first=True,
-        )
-        self.transformer_encoder = nn.TransformerEncoder(
-            encoder_layer, num_layers=num_encoder_layers
-        )
-
-        fc1_out_size = 64
-        self.fc1 = nn.Linear(embedding_dim, fc1_out_size)
-        self.policy_head = nn.Linear(fc1_out_size, BOARD_WIDTH)
-        self.value_head = nn.Linear(fc1_out_size, 1)
-
-    def forward(self, src):
-        # src shape: (batch_size, seq_len=42)
-
-        # Get patch embeddings from integer states
-        x = self.patch_embedding(src)  # (batch_size, seq_len, embedding_dim)
-
-        # Prepend CLS token
-        batch_size = src.shape[0]
-        cls_tokens = self.cls_token.expand(batch_size, -1, -1)
-        x = torch.cat((cls_tokens, x), dim=1)
-
-        # Add positional embeddings
-        x = x + self.positional_embedding
-        x = self.dropout(x)
-
-        # Pass through transformer encoder (no mask needed for fixed-size input)
-        transformer_output = self.transformer_encoder(x)
-
-        # Use the output of the CLS token for prediction
-        cls_output = transformer_output[:, 0, :]  # (batch_size, embedding_dim)
-
-        out = F.relu(self.fc1(cls_output))
-        policy_logits = self.policy_head(out)
-        value = torch.tanh(self.value_head(out))
-
-        return policy_logits, value
-
-
-class DirectedCellGraphTransformer(nn.Module):
-    def __init__(self, embedding_dim=128, num_heads=4, num_layers=4, dropout=0.1):
-        super().__init__()
-        self.patch_embedding = nn.Embedding(
-            3, embedding_dim
-        )  # 0: empty, 1: mine, 2: opp
-
-        self.convs = nn.ModuleList()
-        for _ in range(num_layers):
-            conv = pyg_nn.RGATConv(
-                embedding_dim,
-                embedding_dim,
-                num_relations=8,
-                heads=num_heads,
-                concat=False,
-                dropout=dropout,
-            )
-            self.convs.append(conv)
-
-        self.dropout = nn.Dropout(dropout)
-
-        fc1_out_size = 64
-        self.fc1 = nn.Linear(embedding_dim, fc1_out_size)
-        self.policy_head = nn.Linear(fc1_out_size, BOARD_WIDTH)
-        self.value_head = nn.Linear(fc1_out_size, 1)
-
-    def forward(self, data):
-        x = self.patch_embedding(data.x)
-
-        for conv in self.convs:
-            x = F.relu(conv(x, data.edge_index, data.edge_type))
-            x = self.dropout(x)
-
-        # Global pooling
-        graph_embedding = pyg_nn.global_mean_pool(x, data.batch)
-
-        out = F.relu(self.fc1(graph_embedding))
-        policy_logits = self.policy_head(out)
-        value = torch.tanh(self.value_head(out))
-
-        return policy_logits, value
-
-
-class CellPieceGraphTransformer(nn.Module):
-    def __init__(self, embedding_dim=128, num_heads=4, num_layers=4, dropout=0.1):
-        super().__init__()
-        self.embedding_dim = embedding_dim
-        self.cell_embedding = nn.Embedding(1, embedding_dim)
-        self.piece_embedding = nn.Embedding(2, embedding_dim)
-
-        # TODO pretty sure I don't want a conv, I want to add edge attention manually.
-        # todo redo this and all later cell graph transformers.
-        # https://aistudio.google.com/prompts/12TRLcHI6P9AI7Wuyv1owLas8Klr-8kyz
-
-        self.convs = nn.ModuleList()
-        for _ in range(num_layers):
-            conv = pyg_nn.HeteroConv(
-                {
-                    ("piece", "occupies", "cell"): pyg_nn.GATv2Conv(
-                        in_channels=embedding_dim,
-                        out_channels=embedding_dim,
-                        heads=num_heads,
-                        dropout=dropout,
-                        add_self_loops=False,
-                        concat=False,
-                    ),
-                },
-                aggr="sum",
-            )
-            self.convs.append(conv)
-
-        self.dropout = nn.Dropout(dropout)
-
-        fc1_out_size = 64
-        self.fc1 = nn.Linear(embedding_dim, fc1_out_size)
-        self.policy_head = nn.Linear(fc1_out_size, BOARD_WIDTH)
-        self.value_head = nn.Linear(fc1_out_size, 1)
-
-    def forward(self, data):
-        x_dict = {
-            "cell": self.cell_embedding(data["cell"].x),
-            "piece": self.piece_embedding(data["piece"].x.squeeze(-1)),
-        }
-
-        for conv in self.convs:
-            x_dict = conv(x_dict, data.edge_index_dict)
-            x_dict = {key: F.relu(x) for key, x in x_dict.items()}
-            x_dict = {key: self.dropout(x) for key, x in x_dict.items()}
-
-        graph_embedding = pyg_nn.global_mean_pool(x_dict["cell"], data["cell"].batch)
-
-        out = F.relu(self.fc1(graph_embedding))
-        policy_logits = self.policy_head(out)
-        value = torch.tanh(self.value_head(out))
-
-        return policy_logits, value
-
-
-class CombinedGraphTransformer(nn.Module):
-    def __init__(self, embedding_dim=128, num_heads=4, num_layers=4, dropout=0.1):
-        super().__init__()
-        self.embedding_dim = embedding_dim
-        self.cell_embedding = nn.Embedding(1, embedding_dim)
-        self.piece_embedding = nn.Embedding(2, embedding_dim)
-
-        self.convs = nn.ModuleList()
-        directions = ["N", "E"]
-
-        for _ in range(num_layers):
-            conv_dict = {
-                ("piece", "occupies", "cell"): pyg_nn.GATv2Conv(
-                    embedding_dim,
-                    embedding_dim,
-                    heads=num_heads,
-                    dropout=dropout,
-                    add_self_loops=False,
-                    concat=False,
-                ),
-            }
-            for d in directions:
-                conv_dict[("cell", d, "cell")] = pyg_nn.GATv2Conv(
-                    embedding_dim,
-                    embedding_dim,
-                    heads=num_heads,
-                    dropout=dropout,
-                    add_self_loops=False,
-                    concat=False,
-                )
-
-            conv = pyg_nn.HeteroConv(conv_dict, aggr="sum")
-            self.convs.append(conv)
-
-        self.dropout = nn.Dropout(dropout)
-
-        fc1_out_size = 64
-        self.fc1 = nn.Linear(embedding_dim, fc1_out_size)
-        self.policy_head = nn.Linear(fc1_out_size, BOARD_WIDTH)
-        self.value_head = nn.Linear(fc1_out_size, 1)
-
-    def forward(self, data):
-        x_dict = {
-            "cell": self.cell_embedding(data["cell"].x),
-            "piece": self.piece_embedding(data["piece"].x.squeeze(-1)),
-        }
-
-        for conv in self.convs:
-            x_dict = conv(x_dict, data.edge_index_dict)
-            x_dict = {key: F.relu(x) for key, x in x_dict.items()}
-            x_dict = {key: self.dropout(x) for key, x in x_dict.items()}
-
-        graph_embedding = pyg_nn.global_mean_pool(x_dict["cell"], data["cell"].batch)
-
-        out = F.relu(self.fc1(graph_embedding))
-        policy_logits = self.policy_head(out)
-        value = torch.tanh(self.value_head(out))
-
-        return policy_logits, value
-
-
-def graph_collate_fn(batch):
-    graphs, policies, values = zip(*batch)
-
-    batched_graphs = Batch.from_data_list(graphs)
-    batched_policies = torch.stack(list(policies))
-    batched_values = torch.stack(list(values))
-
-    return batched_graphs, batched_policies, batched_values
-
-
 def _process_batch_transformer(
     model, data_batch, device, policy_criterion, value_criterion
 ):
@@ -1223,6 +868,7 @@ def _process_batch_transformer(
     return loss, loss_p.item(), loss_v.item(), policy_acc, value_mse
 
 
+# orphan?
 def _process_batch_cell_transformer(
     model, data_batch, device, policy_criterion, value_criterion
 ):

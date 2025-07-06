@@ -19,6 +19,19 @@ class AZDataset(Dataset):
         return self.inputs[idx], self.policy_labels[idx], self.value_labels[idx]
 
 
+class AZGraphDataset(Dataset):
+    def __init__(self, inputs, policy_labels, value_labels):
+        self.inputs = inputs  # pyg graphs
+        self.policy_labels = torch.from_numpy(policy_labels).long()
+        self.value_labels = torch.from_numpy(value_labels)
+
+    def __len__(self):
+        return len(self.inputs)
+
+    def __getitem__(self, idx):
+        return self.inputs[idx], self.policy_labels[idx], self.value_labels[idx]
+
+
 class MLPNet(nn.Module):
     def __init__(self):
         super(MLPNet, self).__init__()
