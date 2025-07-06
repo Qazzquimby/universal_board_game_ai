@@ -130,7 +130,7 @@ class GraphTransformerLayer(nn.Module):
 
 class CellGraphTransformer(nn.Module):
     def __init__(
-        self, num_encoder_layers=4, embedding_dim=128, num_heads=4, dropout=0.1
+        self, num_encoder_layers=4, embedding_dim=128, num_heads=8, dropout=0.1
     ):
         super().__init__()
 
@@ -351,7 +351,7 @@ def create_cell_graph(board_tensor):
     directions = [(-1, 0), (0, 1)]  # N, E
 
     for i, (dr, dc) in enumerate(directions):
-        edge_type = i + 1
+        edge_type = 2 * i + 1
         for r in range(h):
             for c in range(w):
                 nr, nc = r + dr, c + dc
@@ -361,7 +361,7 @@ def create_cell_graph(board_tensor):
                     edge_indices.append([u, v])
                     edge_types.append(edge_type)
                     edge_indices.append([v, u])
-                    edge_types.append(-edge_type)  # reverse
+                    edge_types.append(edge_type + 1)  # reverse
 
     if not edge_indices:
         edge_index = torch.empty(2, 0, dtype=torch.long)
