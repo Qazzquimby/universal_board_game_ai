@@ -88,6 +88,13 @@ class GraphTransformerLayer(nn.Module):
         return x
 
 
+# Please focus on this class
+# It should have one token for each cell (connect4) containing empty, mine, opponent.
+# There should be an edge affecting attention for east and north.
+# Reverse connections should also be learned but dont need their own reverse-edge. That is, if A has edge of type 3 to B, A and B should both have a learned an attention bias for the other.
+# This is not a message passing gnn. It's a fully connected transformer.
+
+
 class CellGraphTransformer(nn.Module):
     def __init__(
         self, num_encoder_layers=4, embedding_dim=128, num_heads=4, dropout=0.1
