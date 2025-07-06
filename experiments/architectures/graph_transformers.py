@@ -3,7 +3,7 @@ import math
 import torch
 import torch_geometric.nn as pyg_nn
 from einops import rearrange
-from torch import nn as nn
+from torch import nn as nn, Tensor
 from torch.nn import functional as F
 from torch_geometric.data import Batch, Data, HeteroData
 from experiments.architectures.shared import BOARD_WIDTH
@@ -16,16 +16,47 @@ from experiments.architectures.shared import BOARD_WIDTH
 class HeteroEdgeBias(nn.Module):
     def __init__(self, num_heads, num_edge_types):
         super().__init__()
-        self.edge_embedding = nn.Embedding(num_edge_types + 1, num_heads)
+        self.num_heads = num_heads
+        self.num_edge_types = num_edge_types
+        self.edge_embedding = nn.Embedding(
+            num_embeddings=self.num_edge_types + 1, embedding_dim=self.num_heads
+        )
+        # embedding_dim is num_heads to have a bias per head.
         nn.init.zeros_(self.edge_embedding.weight)
 
-    def forward(self, edge_type_matrix):
-        # edge_type_matrix: [B, N, N]
-        # embedding output: [B, N, N, H]
-        # desired output: [B, H, N, N]
-        bias = self.edge_embedding(edge_type_matrix)
-        bias = rearrange(bias, "B N1 N2 H -> B H N1 N2")
-        return bias
+    def forward(
+        self,
+        edge_index: Tensor,
+        edge_type: Tensor,
+        batch_vec: Tensor,
+        batch_size: int,
+        num_nodes_per_graph: int,
+    ):
+        # edge_index: [2, num_edges]
+        # edge_type: [num_edges]
+        # batch_vec: [num_nodes] (node index to graph index)
+        # This will need to be redone as soon as graphs aren't all the same size.
+        bias_matrix = torch.zeros(
+            batch_size,
+            self.num_heads,
+            num_nodes_per_graph,
+            num_nodes_per_graph,
+            device=edge_index.device,
+        )
+
+        edge_bias_values = self.edge_embedding(edge_type)  # [num_edges, num_heads]
+
+        src_nodes, dst_nodes = edge_index[0], edge_index[1]
+        batch_indices = batch_vec[src_nodes]
+
+        # For fixed size graphs, which CellGraphTransformer uses.
+        src_nodes_in_graph = src_nodes % num_nodes_per_graph
+        dst_nodes_in_graph = dst_nodes % num_nodes_per_graph
+
+        bias_matrix[
+            batch_indices, :, src_nodes_in_graph, dst_nodes_in_graph
+        ] = edge_bias_values
+        return bias_matrix
 
 
 class EdgeBiasedMultiHeadAttention(nn.Module):
@@ -109,7 +140,7 @@ class CellGraphTransformer(nn.Module):
         )  # 0: empty, 1: mine, 2: opp
         self.game_tokens = nn.Parameter(torch.randn(1, 1, embedding_dim))
 
-        num_edge_types = 2  # N, E
+        num_edge_types = 4  # N, E
         self.edge_bias_module = HeteroEdgeBias(num_heads, num_edge_types)
 
         self.layers = nn.ModuleList(
@@ -132,24 +163,34 @@ class CellGraphTransformer(nn.Module):
 
     def forward(self, data: Data):
         cell_states = data.x
-        edge_type_matrix = data.edge_type_matrix
 
         batch_size = data.num_graphs
         if batch_size == 0:
             device = self.policy_head.weight.device
-            return torch.zeros(
-                0, BOARD_WIDTH, device=device
-            ), torch.zeros(0, 1, device=device)
+            return torch.zeros(0, BOARD_WIDTH, device=device), torch.zeros(
+                0, 1, device=device
+            )
+
+        num_nodes_total = cell_states.size(0)
+        num_nodes_per_graph = num_nodes_total // batch_size
 
         x_embedded = self.patch_embedding(cell_states)
-        x = rearrange(x_embedded, "(B N) D -> B N D", B=batch_size)
+        x = rearrange(
+            x_embedded, "(batch seq) emb_dim -> batch seq emb_dim", batch=batch_size
+        )
 
         # Prepend game token
         game_tokens = self.game_tokens.expand(batch_size, -1, -1)
         x = torch.cat((game_tokens, x), dim=1)
         x = self.dropout(x)
 
-        edge_bias = self.edge_bias_module(edge_type_matrix)
+        edge_bias = self.edge_bias_module(
+            data.edge_index,
+            data.edge_type,
+            data.batch,
+            batch_size,
+            num_nodes_per_graph,
+        )
         # Pad bias for game token (no bias for game token)
         edge_bias = F.pad(edge_bias, (1, 0, 1, 0))
 
@@ -303,7 +344,8 @@ def create_cell_graph(board_tensor):
     cell_states[p2_board == 1] = 2  # opp piece
     x = cell_states.flatten()
 
-    edge_type_matrix = torch.zeros(h * w, h * w, dtype=torch.long)
+    edge_indices = []
+    edge_types = []
 
     # edge type 1: North, 2: East
     directions = [(-1, 0), (0, 1)]  # N, E
@@ -316,10 +358,19 @@ def create_cell_graph(board_tensor):
                 if 0 <= nr < h and 0 <= nc < w:
                     u = r * w + c
                     v = nr * w + nc
-                    edge_type_matrix[u, v] = edge_type
-                    edge_type_matrix[v, u] = edge_type
+                    edge_indices.append([u, v])
+                    edge_types.append(edge_type)
+                    edge_indices.append([v, u])
+                    edge_types.append(-edge_type)  # reverse
 
-    data = Data(x=x, edge_type_matrix=edge_type_matrix)
+    if not edge_indices:
+        edge_index = torch.empty(2, 0, dtype=torch.long)
+        edge_type = torch.empty(0, dtype=torch.long)
+    else:
+        edge_index = torch.tensor(edge_indices, dtype=torch.long).t().contiguous()
+        edge_type = torch.tensor(edge_types, dtype=torch.long)
+
+    data = Data(x=x, edge_index=edge_index, edge_type=edge_type)
 
     return data
 

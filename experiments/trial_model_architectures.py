@@ -36,7 +36,7 @@ from experiments.architectures.transformers import (
     transformer_collate_fn,
 )
 
-TINY_RUN = True
+TINY_RUN = False
 
 
 def _process_batch(model, data_batch, device, policy_criterion, value_criterion):
@@ -177,6 +177,7 @@ def _run_and_log_experiment(
     train_loader,
     test_loader,
     process_batch_fn=_process_batch,
+    data_processing_time=0.0,
 ):
     name = exp["name"]
     params = exp.get("params", {})
@@ -204,8 +205,21 @@ def _run_and_log_experiment(
         learning_rate=lr,
         process_batch_fn=process_batch_fn,
     )
-    all_results[name] = {"df": results_df, "time": training_time}
+    all_results[name] = {
+        "df": results_df,
+        "training_time": training_time,
+        "data_processing_time": data_processing_time,
+    }
     if not TINY_RUN:
+        wandb.log(
+            {
+                "training_time": training_time,
+                "data_processing_time": data_processing_time,
+                "train_data_ratio": training_time / data_processing_time
+                if data_processing_time > 0
+                else 0,
+            }
+        )
         wandb.finish()
 
 
@@ -273,18 +287,23 @@ def run_experiments(
     print(f"\n--- Pre-processing data for {name} ---")
     get_loader_per_experiment = isinstance(input_creator, str)
 
+    data_processing_time = 0.0
     if not get_loader_per_experiment:
+        start_time = time.time()
         train_loader, test_loader = get_dataloaders(
             data=data,
             name=name,
             input_creator=input_creator,
             collate_function=collate_function,
         )
+        data_processing_time = time.time() - start_time
 
     for experiment in experiments:
         params = experiment.get("params", {})
 
+        current_data_proc_time = data_processing_time
         if get_loader_per_experiment:
+            start_time = time.time()
             input_creator_func = experiment[input_creator]
             train_loader, test_loader = get_dataloaders(
                 data=data,
@@ -293,6 +312,8 @@ def run_experiments(
                 collate_function=collate_function,
                 dataset_class=AZGraphDataset,
             )
+            current_data_proc_time = time.time() - start_time
+
         assert train_loader and test_loader
 
         model = experiment["model_class"](**params).to(DEVICE)
@@ -304,6 +325,7 @@ def run_experiments(
             train_loader=train_loader,
             test_loader=test_loader,
             process_batch_fn=process_batch_fn,
+            data_processing_time=current_data_proc_time,
         )
 
 
@@ -507,16 +529,16 @@ def run_graph_transformer_experiments(all_results: dict, data: TestData):
             "model_class": CellGraphTransformer,
             "input_creator": create_cell_graph,
         },
-        {
-            "name": "CellPieceGraphTransformer",
-            "model_class": CellPieceGraphTransformer,
-            "input_creator": create_cell_piece_graph,
-        },
-        {
-            "name": "CombinedGraphTransformer",
-            "model_class": CombinedGraphTransformer,
-            "input_creator": create_combined_graph,
-        },
+        # {
+        #     "name": "CellPieceGraphTransformer",
+        #     "model_class": CellPieceGraphTransformer,
+        #     "input_creator": create_cell_piece_graph,
+        # },
+        # {
+        #     "name": "CombinedGraphTransformer",
+        #     "model_class": CombinedGraphTransformer,
+        #     "input_creator": create_combined_graph,
+        # },
     ]
 
     run_experiments(
@@ -553,7 +575,16 @@ def main():
     print("\n--- Final Results Summary ---")
     for name, results in all_results.items():
         print(f"\nModel: {name}")
-        print(f"Training Time: {results['time']:.2f} seconds")
+        training_time = results["training_time"]
+        data_processing_time = results["data_processing_time"]
+        ratio = (
+            training_time / data_processing_time
+            if data_processing_time > 0
+            else float("inf")
+        )
+        print(f"Data Processing Time: {data_processing_time:.2f} seconds")
+        print(f"Training Time: {training_time:.2f} seconds")
+        print(f"Train/Data Ratio: {ratio:.2f}")
         print(results["df"].iloc[-1].to_string())
 
 
