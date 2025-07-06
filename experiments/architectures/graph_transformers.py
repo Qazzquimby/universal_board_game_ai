@@ -121,8 +121,7 @@ class GraphTransformerLayer(nn.Module):
         return x
 
 
-# Please focus on this class
-# It should have one token for each cell (connect4) containing empty, mine, opponent.
+# Should have one token for each cell (connect4) containing empty, mine, opponent.
 # There should be an edge affecting attention for east and north.
 # Reverse connections should also be learned but dont need their own reverse-edge. That is, if A has edge of type 3 to B, A and B should both have a learned an attention bias for the other.
 # This is not a message passing gnn. It's a fully connected transformer.
@@ -204,6 +203,92 @@ class CellGraphTransformer(nn.Module):
         out = F.relu(self.fc1(game_token_out))
         policy_logits = self.policy_head(out)
         value = torch.tanh(self.value_head(out))
+
+        return policy_logits, value
+
+
+class CellColumnGraphTransformer(nn.Module):
+    def __init__(
+        self,
+        num_encoder_layers=4,
+        embedding_dim=128,
+        num_heads=8,
+        dropout=0.1,
+        board_height=6,
+        board_width=BOARD_WIDTH,
+    ):
+        super().__init__()
+        self.board_height = board_height
+        self.board_width = board_width
+
+        # 0: empty, 1: mine, 2: opp, 3: column token
+        self.token_embedding = nn.Embedding(4, embedding_dim)
+        self.game_token = nn.Parameter(torch.randn(1, 1, embedding_dim))
+
+        num_edge_types = 6  # N, S, E, W, cell->col, col->cell
+        self.edge_bias_module = HeteroEdgeBias(num_heads, num_edge_types)
+
+        self.layers = nn.ModuleList(
+            [
+                GraphTransformerLayer(
+                    embedding_dim=embedding_dim,
+                    num_heads=num_heads,
+                    dropout=dropout,
+                )
+                for _ in range(num_encoder_layers)
+            ]
+        )
+        self.dropout = nn.Dropout(dropout)
+
+        self.policy_head = nn.Linear(embedding_dim, 1)
+        self.value_head = nn.Linear(embedding_dim, 1)
+
+    def forward(self, data: Data):
+        node_features = data.x
+
+        batch_size = data.num_graphs
+        if batch_size == 0:
+            device = self.policy_head.weight.device
+            return torch.zeros(0, self.board_width, device=device), torch.zeros(
+                0, 1, device=device
+            )
+
+        num_nodes_total = node_features.size(0)
+        num_nodes_per_graph = num_nodes_total // batch_size
+
+        x_embedded = self.token_embedding(node_features)
+        x = rearrange(
+            x_embedded, "(batch seq) emb_dim -> batch seq emb_dim", batch=batch_size
+        )
+
+        # Prepend game token
+        game_tokens = self.game_token.expand(batch_size, -1, -1)
+        x = torch.cat((game_tokens, x), dim=1)
+        x = self.dropout(x)
+
+        edge_bias = self.edge_bias_module(
+            data.edge_index,
+            data.edge_type,
+            data.batch,
+            batch_size,
+            num_nodes_per_graph,
+        )
+        # Pad bias for game token (no bias for game token)
+        edge_bias = F.pad(edge_bias, (1, 0, 1, 0))
+
+        key_padding_mask = None  # since static
+        for layer in self.layers:
+            x = layer(x, edge_bias, key_padding_mask)
+        transformer_output = x
+
+        game_token_out = transformer_output[:, 0, :]  # (batch_size, embedding_dim)
+        value = torch.tanh(self.value_head(game_token_out))
+
+        num_cell_nodes = self.board_height * self.board_width
+        # After game token, the node embeddings from the graph data start.
+        # These are ordered as cells then columns.
+        column_tokens_out = transformer_output[:, 1 + num_cell_nodes :, :]
+        policy_logits = self.policy_head(column_tokens_out).squeeze(-1)
 
         return policy_logits, value
 
@@ -362,6 +447,62 @@ def create_cell_graph(board_tensor):
                     edge_types.append(edge_type)
                     edge_indices.append([v, u])
                     edge_types.append(edge_type + 1)  # reverse
+
+    if not edge_indices:
+        edge_index = torch.empty(2, 0, dtype=torch.long)
+        edge_type = torch.empty(0, dtype=torch.long)
+    else:
+        edge_index = torch.tensor(edge_indices, dtype=torch.long).t().contiguous()
+        edge_type = torch.tensor(edge_types, dtype=torch.long)
+
+    data = Data(x=x, edge_index=edge_index, edge_type=edge_type)
+
+    return data
+
+
+def create_cell_column_graph(board_tensor):
+    h, w = board_tensor.shape[1], board_tensor.shape[2]
+
+    p1_board = board_tensor[0]
+    p2_board = board_tensor[1]
+    cell_states = torch.zeros(h, w, dtype=torch.long)
+    cell_states[p1_board == 1] = 1  # my piece
+    cell_states[p2_board == 1] = 2  # opp piece
+
+    # Node features: cell states followed by column markers
+    column_markers = torch.full((w,), 3, dtype=torch.long)
+    x = torch.cat([cell_states.flatten(), column_markers])
+
+    edge_indices = []
+    edge_types = []
+
+    # Cell-to-cell edges
+    # edge type 1: N, 2: S, 3: E, 4: W
+    directions = [(-1, 0), (0, 1)]  # N, E
+    for i, (dr, dc) in enumerate(directions):
+        edge_type = 2 * i + 1
+        for r in range(h):
+            for c in range(w):
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < h and 0 <= nc < w:
+                    u = r * w + c
+                    v = nr * w + nc
+                    edge_indices.append([u, v])
+                    edge_types.append(edge_type)
+                    edge_indices.append([v, u])
+                    edge_types.append(edge_type + 1)  # reverse
+
+    # Cell-to-column edges
+    # edge type 5: cell->col, 6: col->cell
+    num_cell_nodes = h * w
+    for c in range(w):
+        col_node_idx = num_cell_nodes + c
+        for r in range(h):
+            cell_node_idx = r * w + c
+            edge_indices.append([cell_node_idx, col_node_idx])
+            edge_types.append(5)
+            edge_indices.append([col_node_idx, cell_node_idx])
+            edge_types.append(6)
 
     if not edge_indices:
         edge_index = torch.empty(2, 0, dtype=torch.long)
