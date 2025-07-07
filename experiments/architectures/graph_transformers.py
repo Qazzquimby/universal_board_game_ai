@@ -18,7 +18,6 @@ class HeteroEdgeBias(nn.Module):
             num_embeddings=self.num_edge_types + 1, embedding_dim=self.num_heads
         )
         # embedding_dim is num_heads to have a bias per head.
-        nn.init.zeros_(self.edge_embedding.weight)
 
     def forward(
         self,
@@ -121,7 +120,11 @@ class EdgeUpdateGate(nn.Module):
         # For each node, this calculates a weighted sum of the update vectors
         # from all other nodes.
         # update_vectors shape: [batch, nodes, embed_dim]
-        update_vectors = (avg_attention_weights * edge_vector_matrix).sum(dim=2)
+        # Transpose edge_vector_matrix to use incoming edge embeddings for updates.
+        # For node i, we use attention(i,j) to weight edge_vector(j,i).
+        update_vectors = (
+            avg_attention_weights * edge_vector_matrix.transpose(1, 2)
+        ).sum(dim=2)
 
         return update_vectors
 
@@ -346,122 +349,6 @@ class CellColumnGraphTransformer(nn.Module):
         return policy_logits, value
 
 
-class CellPieceGraphTransformer(nn.Module):
-    def __init__(self, embed_dim=128, num_heads=4, num_layers=4, dropout=0.1):
-        super().__init__()
-        self.embed_dim = embed_dim
-        self.cell_embedding = nn.Embedding(1, embed_dim)
-        self.piece_embedding = nn.Embedding(2, embed_dim)
-
-        # TODO pretty sure I don't want a conv, I want to add edge attention manually.
-        # todo redo this and all later cell graph transformers.
-        # https://aistudio.google.com/prompts/12TRLcHI6P9AI7Wuyv1owLas8Klr-8kyz
-
-        self.convs = nn.ModuleList()
-        for _ in range(num_layers):
-            conv = pyg_nn.HeteroConv(
-                {
-                    ("piece", "occupies", "cell"): pyg_nn.GATv2Conv(
-                        in_channels=embed_dim,
-                        out_channels=embed_dim,
-                        heads=num_heads,
-                        dropout=dropout,
-                        add_self_loops=False,
-                        concat=False,
-                    ),
-                },
-                aggr="sum",
-            )
-            self.convs.append(conv)
-
-        self.dropout = nn.Dropout(dropout)
-
-        fc1_out_size = 64
-        self.fc1 = nn.Linear(embed_dim, fc1_out_size)
-        self.policy_head = nn.Linear(fc1_out_size, BOARD_WIDTH)
-        self.value_head = nn.Linear(fc1_out_size, 1)
-
-    def forward(self, data):
-        x_dict = {
-            "cell": self.cell_embedding(data["cell"].x),
-            "piece": self.piece_embedding(data["piece"].x.squeeze(-1)),
-        }
-
-        for conv in self.convs:
-            x_dict = conv(x_dict, data.edge_index_dict)
-            x_dict = {key: F.relu(x) for key, x in x_dict.items()}
-            x_dict = {key: self.dropout(x) for key, x in x_dict.items()}
-
-        graph_embedding = pyg_nn.global_mean_pool(x_dict["cell"], data["cell"].batch)
-
-        out = F.relu(self.fc1(graph_embedding))
-        policy_logits = self.policy_head(out)
-        value = torch.tanh(self.value_head(out))
-
-        return policy_logits, value
-
-
-class CombinedGraphTransformer(nn.Module):
-    def __init__(self, embed_dim=128, num_heads=4, num_layers=4, dropout=0.1):
-        super().__init__()
-        self.embed_dim = embed_dim
-        self.cell_embedding = nn.Embedding(1, embed_dim)
-        self.piece_embedding = nn.Embedding(2, embed_dim)
-
-        self.convs = nn.ModuleList()
-        directions = ["N", "E"]
-
-        for _ in range(num_layers):
-            conv_dict = {
-                ("piece", "occupies", "cell"): pyg_nn.GATv2Conv(
-                    embed_dim,
-                    embed_dim,
-                    heads=num_heads,
-                    dropout=dropout,
-                    add_self_loops=False,
-                    concat=False,
-                ),
-            }
-            for d in directions:
-                conv_dict[("cell", d, "cell")] = pyg_nn.GATv2Conv(
-                    embed_dim,
-                    embed_dim,
-                    heads=num_heads,
-                    dropout=dropout,
-                    add_self_loops=False,
-                    concat=False,
-                )
-
-            conv = pyg_nn.HeteroConv(conv_dict, aggr="sum")
-            self.convs.append(conv)
-
-        self.dropout = nn.Dropout(dropout)
-
-        fc1_out_size = 64
-        self.fc1 = nn.Linear(embed_dim, fc1_out_size)
-        self.policy_head = nn.Linear(fc1_out_size, BOARD_WIDTH)
-        self.value_head = nn.Linear(fc1_out_size, 1)
-
-    def forward(self, data):
-        x_dict = {
-            "cell": self.cell_embedding(data["cell"].x),
-            "piece": self.piece_embedding(data["piece"].x.squeeze(-1)),
-        }
-
-        for conv in self.convs:
-            x_dict = conv(x_dict, data.edge_index_dict)
-            x_dict = {key: F.relu(x) for key, x in x_dict.items()}
-            x_dict = {key: self.dropout(x) for key, x in x_dict.items()}
-
-        graph_embedding = pyg_nn.global_mean_pool(x_dict["cell"], data["cell"].batch)
-
-        out = F.relu(self.fc1(graph_embedding))
-        policy_logits = self.policy_head(out)
-        value = torch.tanh(self.value_head(out))
-
-        return policy_logits, value
-
-
 def graph_collate_fn(batch):
     graphs, policies, values = zip(*batch)
 
@@ -485,7 +372,7 @@ def create_cell_graph(board_tensor):
     edge_indices = []
     edge_types = []
 
-    # edge type 1: North, 2: East
+    # edge type 1: North, 3: East. Reverse edges get type+1 (2:S, 4:W)
     directions = [(-1, 0), (0, 1)]  # N, E
 
     for i, (dr, dc) in enumerate(directions):
@@ -638,3 +525,9 @@ def create_combined_graph(board_tensor):
             data["cell", name, "cell"].edge_index = torch.empty(2, 0, dtype=torch.long)
 
     return data
+
+
+# TODO
+# Could you explain why the padding is 1 0 1 0?
+# Could you adjust the code to work with varying sized graphs? I'd like to try a model where spaces and pieces are both tokens and the number of pieces varies.
+# I do not like the manual indexing. I'd like to be able to map "game token" or "column tokens" to their indexes automatically.
