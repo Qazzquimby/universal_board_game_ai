@@ -352,6 +352,222 @@ class CellColumnGraphTransformer(nn.Module):
         return policy_logits, value
 
 
+class CellColumnPieceGraphTransformer(nn.Module):
+    def __init__(
+        self,
+        num_encoder_layers=4,
+        embed_dim=128,
+        num_heads=8,
+        dropout=0.1,
+        board_height=6,
+        board_width=BOARD_WIDTH,
+        max_pieces=42,
+    ):
+        super().__init__()
+        self.board_height = board_height
+        self.board_width = board_width
+        self.max_pieces = max_pieces
+
+        # 0:cell, 1:col, 2:my_piece, 3:opp_piece, 4:pad_piece
+        self.token_embedding = nn.Embedding(5, embed_dim)
+        self.game_token = nn.Parameter(torch.randn(1, 1, embed_dim))
+
+        num_edge_types = 8  # N/S/E/W, cell-col, piece-cell
+        self.edge_bias_module = HeteroEdgeBias(num_heads, num_edge_types)
+
+        self.layers = nn.ModuleList(
+            [
+                GraphTransformerLayer(
+                    embed_dim=embed_dim,
+                    num_heads=num_heads,
+                    num_edge_types=num_edge_types,
+                    dropout=dropout,
+                )
+                for _ in range(num_encoder_layers)
+            ]
+        )
+        self.dropout = nn.Dropout(dropout)
+
+        fc_out_size = 64
+        self.policy_head = nn.Linear(embed_dim, 1)
+        self.value_fc = nn.Linear(embed_dim, fc_out_size)
+        self.value_head = nn.Linear(fc_out_size, 1)
+
+    def forward(self, data: Data):
+        node_types = data.x
+
+        batch_size = data.num_graphs
+        if batch_size == 0:
+            device = self.policy_head.weight.device
+            return torch.zeros(0, self.board_width, device=device), torch.zeros(
+                0, 1, device=device
+            )
+
+        num_nodes_total = node_types.size(0)
+        num_nodes_per_graph = num_nodes_total // batch_size
+
+        x_embedded = self.token_embedding(node_types)
+        x = rearrange(
+            x_embedded, "(batch seq) emb_dim -> batch seq emb_dim", batch=batch_size
+        )
+
+        game_tokens = self.game_token.expand(batch_size, -1, -1)
+        x = torch.cat((game_tokens, x), dim=1)
+        x = self.dropout(x)
+        num_nodes_with_token = num_nodes_per_graph + 1  # +1 for game token
+
+        ## scalar edge bias matrix
+        edge_bias = self.edge_bias_module(
+            data.edge_index, data.edge_type, data.batch, batch_size, num_nodes_per_graph
+        )
+        edge_bias = F.pad(edge_bias, (1, 0, 1, 0), "constant", 0)  # Pad for game token
+
+        edge_type_matrix = torch.zeros(
+            batch_size,
+            num_nodes_with_token,
+            num_nodes_with_token,
+            dtype=torch.long,
+            device=x.device,
+        )
+        src, dst = data.edge_index
+        batch_indices = data.batch[src]
+        src_in_graph = src % num_nodes_per_graph + 1  # +1 to account for game_token
+        dst_in_graph = dst % num_nodes_per_graph + 1  # +1 to account for game_token
+        edge_type_matrix[batch_indices, src_in_graph, dst_in_graph] = data.edge_type
+
+        key_padding_mask = None  # since static
+        for layer in self.layers:
+            x = layer(x, edge_bias, edge_type_matrix, key_padding_mask)
+        transformer_output = x
+
+        game_token_out = transformer_output[:, 0, :]  # (batch_size, embed_dim)
+        game_token_encoded = F.relu(self.value_fc(game_token_out))
+        value = torch.tanh(self.value_head(game_token_encoded))
+
+        num_cell_nodes = self.board_height * self.board_width
+        num_col_nodes = self.board_width
+        col_start_idx = 1 + num_cell_nodes
+        col_end_idx = col_start_idx + num_col_nodes
+        column_tokens_out = transformer_output[:, col_start_idx:col_end_idx, :]
+        policy_logits = self.policy_head(column_tokens_out).squeeze(-1)
+
+        return policy_logits, value
+
+
+class PieceColumnGraphTransformer(nn.Module):
+    def __init__(
+        self,
+        num_encoder_layers=4,
+        embed_dim=128,
+        num_heads=8,
+        dropout=0.1,
+        board_height=6,
+        board_width=BOARD_WIDTH,
+        max_pieces=42,
+    ):
+        super().__init__()
+        self.board_height = board_height
+        self.board_width = board_width
+        self.max_pieces = max_pieces
+
+        self.owner_embedding = nn.Embedding(3, embed_dim)  # 0:my, 1:opp, 2:pad
+        self.row_embedding = nn.Embedding(board_height, embed_dim)
+        self.col_embedding = nn.Embedding(board_width, embed_dim)
+        self.column_token = nn.Parameter(torch.randn(1, embed_dim))
+
+        self.game_token = nn.Parameter(torch.randn(1, 1, embed_dim))
+
+        num_edge_types = 2  # piece->col, col->piece
+        self.edge_bias_module = HeteroEdgeBias(num_heads, num_edge_types)
+
+        self.layers = nn.ModuleList(
+            [
+                GraphTransformerLayer(
+                    embed_dim=embed_dim,
+                    num_heads=num_heads,
+                    num_edge_types=num_edge_types,
+                    dropout=dropout,
+                )
+                for _ in range(num_encoder_layers)
+            ]
+        )
+        self.dropout = nn.Dropout(dropout)
+
+        fc_out_size = 64
+        self.policy_head = nn.Linear(embed_dim, 1)
+        self.value_fc = nn.Linear(embed_dim, fc_out_size)
+        self.value_head = nn.Linear(fc_out_size, 1)
+
+    def forward(self, data: Data):
+        batch_size = data.num_graphs
+        if batch_size == 0:
+            device = self.policy_head.weight.device
+            return torch.zeros(0, self.board_width, device=device), torch.zeros(
+                0, 1, device=device
+            )
+
+        num_nodes_per_graph = self.max_pieces + self.board_width
+        num_piece_nodes = self.max_pieces
+
+        owner_indices = data.x.view(batch_size, num_nodes_per_graph)[
+            :, :num_piece_nodes
+        ]
+
+        # Create piece embeddings
+        coords = data.coords.view(batch_size, num_piece_nodes, 2)
+        owner_emb = self.owner_embedding(owner_indices)
+        row_emb = self.row_embedding(coords[:, :, 0])
+        col_emb = self.col_embedding(coords[:, :, 1])
+        piece_embedded = owner_emb + row_emb + col_emb
+
+        # Create column embeddings
+        column_embedded = self.column_token.expand(
+            batch_size, self.board_width, -1
+        )
+
+        x = torch.cat((piece_embedded, column_embedded), dim=1)
+
+        game_tokens = self.game_token.expand(batch_size, -1, -1)
+        x = torch.cat((game_tokens, x), dim=1)
+        x = self.dropout(x)
+        num_nodes_with_token = num_nodes_per_graph + 1
+
+        ## scalar edge bias matrix
+        edge_bias = self.edge_bias_module(
+            data.edge_index, data.edge_type, data.batch, batch_size, num_nodes_per_graph
+        )
+        edge_bias = F.pad(edge_bias, (1, 0, 1, 0), "constant", 0)
+
+        edge_type_matrix = torch.zeros(
+            batch_size,
+            num_nodes_with_token,
+            num_nodes_with_token,
+            dtype=torch.long,
+            device=x.device,
+        )
+        src, dst = data.edge_index
+        batch_indices = data.batch[src]
+        src_in_graph = src % num_nodes_per_graph + 1
+        dst_in_graph = dst % num_nodes_per_graph + 1
+        edge_type_matrix[batch_indices, src_in_graph, dst_in_graph] = data.edge_type
+
+        key_padding_mask = None
+        for layer in self.layers:
+            x = layer(x, edge_bias, edge_type_matrix, key_padding_mask)
+        transformer_output = x
+
+        game_token_out = transformer_output[:, 0, :]
+        game_token_encoded = F.relu(self.value_fc(game_token_out))
+        value = torch.tanh(self.value_head(game_token_encoded))
+
+        col_start_idx = 1 + num_piece_nodes
+        col_end_idx = col_start_idx + self.board_width
+        column_tokens_out = transformer_output[:, col_start_idx:col_end_idx, :]
+        policy_logits = self.policy_head(column_tokens_out).squeeze(-1)
+
+        return policy_logits, value
+
+
 def graph_collate_fn(batch):
     graphs, policies, values = zip(*batch)
 
@@ -456,6 +672,127 @@ def create_cell_column_graph(board_tensor):
 
     data = Data(x=x, edge_index=edge_index, edge_type=edge_type)
 
+    return data
+
+
+def create_cell_column_piece_graph(board_tensor, max_pieces=42):
+    h, w = board_tensor.shape[1], board_tensor.shape[2]
+    p1_board = board_tensor[0]
+    p2_board = board_tensor[1]
+
+    # Node features
+    cell_tokens = torch.full((h * w,), 0, dtype=torch.long)
+    column_tokens = torch.full((w,), 1, dtype=torch.long)
+
+    p1_locs = torch.nonzero(p1_board)
+    p2_locs = torch.nonzero(p2_board)
+    num_p1 = p1_locs.shape[0]
+    num_p2 = p2_locs.shape[0]
+
+    piece_tokens = torch.full((max_pieces,), 4, dtype=torch.long)  # 4 is pad
+    piece_tokens[:num_p1] = 2  # my piece
+    piece_tokens[num_p1 : num_p1 + num_p2] = 3  # opp piece
+
+    x = torch.cat([cell_tokens, column_tokens, piece_tokens])
+
+    edge_indices = []
+    edge_types = []
+
+    # Cell-to-cell edges (types 1-4)
+    directions = [(-1, 0), (0, 1)]  # N, E
+    for i, (dr, dc) in enumerate(directions):
+        edge_type = 2 * i + 1
+        for r in range(h):
+            for c in range(w):
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < h and 0 <= nc < w:
+                    u = r * w + c
+                    v = nr * w + nc
+                    edge_indices.append([u, v])
+                    edge_types.append(edge_type)
+                    edge_indices.append([v, u])
+                    edge_types.append(edge_type + 1)
+
+    # Cell-to-column edges (types 5-6)
+    num_cell_nodes = h * w
+    for c in range(w):
+        col_node_idx = num_cell_nodes + c
+        for r in range(h):
+            cell_node_idx = r * w + c
+            edge_indices.append([cell_node_idx, col_node_idx])
+            edge_types.append(5)
+            edge_indices.append([col_node_idx, cell_node_idx])
+            edge_types.append(6)
+
+    # Piece-to-cell edges (types 7-8)
+    num_col_nodes = w
+    piece_start_idx = num_cell_nodes + num_col_nodes
+    all_locs = torch.cat([p1_locs, p2_locs], dim=0)
+    for i, loc in enumerate(all_locs):
+        r, c = loc[0].item(), loc[1].item()
+        piece_node_idx = piece_start_idx + i
+        cell_node_idx = r * w + c
+        edge_indices.append([piece_node_idx, cell_node_idx])
+        edge_types.append(7)
+        edge_indices.append([cell_node_idx, piece_node_idx])
+        edge_types.append(8)
+
+    if not edge_indices:
+        edge_index = torch.empty(2, 0, dtype=torch.long)
+        edge_type = torch.empty(0, dtype=torch.long)
+    else:
+        edge_index = torch.tensor(edge_indices, dtype=torch.long).t().contiguous()
+        edge_type = torch.tensor(edge_types, dtype=torch.long)
+
+    data = Data(x=x, edge_index=edge_index, edge_type=edge_type)
+    return data
+
+
+def create_piece_column_graph(board_tensor, max_pieces=42):
+    h, w = board_tensor.shape[1], board_tensor.shape[2]
+    p1_board = board_tensor[0]
+    p2_board = board_tensor[1]
+
+    p1_locs = torch.nonzero(p1_board)
+    p2_locs = torch.nonzero(p2_board)
+    num_p1 = p1_locs.shape[0]
+    num_p2 = p2_locs.shape[0]
+
+    owner_indices = torch.full((max_pieces,), 2, dtype=torch.long)  # 2 is pad
+    owner_indices[:num_p1] = 0  # my piece
+    owner_indices[num_p1 : num_p1 + num_p2] = 1  # opp piece
+
+    # For columns, we use a different type index.
+    column_indices = torch.full((w,), 3, dtype=torch.long)
+    x = torch.cat([owner_indices, column_indices])
+
+    coords = torch.zeros(max_pieces, 2, dtype=torch.long)
+    all_locs = torch.cat([p1_locs, p2_locs], dim=0)
+    if all_locs.shape[0] > 0:
+        coords[: all_locs.shape[0]] = all_locs
+
+    edge_indices = []
+    edge_types = []
+
+    # Piece-to-column edges
+    num_piece_nodes = max_pieces
+    for i in range(num_p1 + num_p2):
+        c = coords[i, 1].item()
+        piece_node_idx = i
+        col_node_idx = num_piece_nodes + c
+        edge_indices.append([piece_node_idx, col_node_idx])
+        edge_types.append(1)
+        edge_indices.append([col_node_idx, piece_node_idx])
+        edge_types.append(2)
+
+    if not edge_indices:
+        edge_index = torch.empty(2, 0, dtype=torch.long)
+        edge_type = torch.empty(0, dtype=torch.long)
+    else:
+        edge_index = torch.tensor(edge_indices, dtype=torch.long).t().contiguous()
+        edge_type = torch.tensor(edge_types, dtype=torch.long)
+
+    data = Data(x=x, edge_index=edge_index, edge_type=edge_type, coords=coords)
     return data
 
 

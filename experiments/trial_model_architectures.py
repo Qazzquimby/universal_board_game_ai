@@ -20,6 +20,10 @@ from experiments.architectures.graph_transformers import (
     create_cell_column_graph,
     create_cell_piece_graph,
     create_combined_graph,
+    CellColumnPieceGraphTransformer,
+    create_cell_column_piece_graph,
+    create_piece_column_graph,
+    PieceColumnGraphTransformer,
 )
 from experiments.data_utils import load_and_process_data
 from experiments.architectures.basic import AZDataset, AZGraphDataset
@@ -530,11 +534,21 @@ def run_graph_transformer_experiments(all_results: dict, data: TestData):
         #     "model_class": CellGraphTransformer,
         #     "input_creator": create_cell_graph,
         # },
+        # { # very strong
+        #     "name": "CellColumnGraphTransformer",
+        #     "model_class": CellColumnGraphTransformer,
+        #     "input_creator": create_cell_column_graph,
+        # },
         {
-            "name": "CellColumnGraphTransformer",
-            "model_class": CellColumnGraphTransformer,
-            "input_creator": create_cell_column_graph,
+            "name": "CellColumnPieceGraphTransformer",
+            "model_class": CellColumnPieceGraphTransformer,
+            "input_creator": create_cell_column_piece_graph,
         },
+        {
+            "name": "PieceColumnGraphTransformer",
+            "model_class": PieceColumnGraphTransformer,
+            "input_creator": create_piece_column_graph,
+        }
         # {
         #     "name": "CellPieceGraphTransformer",
         #     "model_class": CellPieceGraphTransformer,
