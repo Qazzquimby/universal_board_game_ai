@@ -15,8 +15,6 @@ import wandb
 from experiments.architectures.graph_transformers import (
     CellGraphTransformer,
     CellColumnGraphTransformer,
-    CellPieceGraphTransformer,
-    CombinedGraphTransformer,
     graph_collate_fn,
     create_cell_graph,
     create_cell_column_graph,
@@ -527,11 +525,11 @@ def run_piece_transformer_experiments(all_results: dict, data: TestData):
 
 def run_graph_transformer_experiments(all_results: dict, data: TestData):
     experiments = [
-        {
-            "name": "CellGraphTransformer",
-            "model_class": CellGraphTransformer,
-            "input_creator": create_cell_graph,
-        },
+        # {
+        #     "name": "CellGraphTransformer",
+        #     "model_class": CellGraphTransformer,
+        #     "input_creator": create_cell_graph,
+        # },
         {
             "name": "CellColumnGraphTransformer",
             "model_class": CellColumnGraphTransformer,

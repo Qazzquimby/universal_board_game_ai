@@ -246,9 +246,9 @@ class CellGraphTransformer(nn.Module):
 
         game_token_out = transformer_output[:, 0, :]  # (batch_size, embed_dim)
 
-        out = F.relu(self.fc1(game_token_out))
-        policy_logits = self.policy_head(out)
-        value = torch.tanh(self.value_head(out))
+        game_token_encoded = F.relu(self.fc1(game_token_out))
+        policy_logits = self.policy_head(game_token_encoded)
+        value = torch.tanh(self.value_head(game_token_encoded))
 
         return policy_logits, value
 
@@ -287,8 +287,10 @@ class CellColumnGraphTransformer(nn.Module):
         )
         self.dropout = nn.Dropout(dropout)
 
+        fc_out_size = 64
         self.policy_head = nn.Linear(embed_dim, 1)
-        self.value_head = nn.Linear(embed_dim, 1)
+        self.value_fc = nn.Linear(embed_dim, fc_out_size)
+        self.value_head = nn.Linear(fc_out_size, 1)
 
     def forward(self, data: Data):
         cell_states = data.x
@@ -338,7 +340,8 @@ class CellColumnGraphTransformer(nn.Module):
         transformer_output = x
 
         game_token_out = transformer_output[:, 0, :]  # (batch_size, embed_dim)
-        value = torch.tanh(self.value_head(game_token_out))
+        game_token_encoded = F.relu(self.value_fc(game_token_out))
+        value = torch.tanh(self.value_head(game_token_encoded))
 
         num_cell_nodes = self.board_height * self.board_width
         # After game token, the node embeddings from the graph data start.
