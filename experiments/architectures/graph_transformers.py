@@ -9,10 +9,6 @@ from torch_geometric.data import Batch, Data, HeteroData
 from experiments.architectures.shared import BOARD_WIDTH
 
 
-# TODO highly unsure this is what I want
-# I want to be able to say "token A has a directed edge of some type, pointing to token B."
-# I want that to adjust both token's attention towards each other, and learn it differently for each edge type and for from and to.
-# There may be very few edges, so I don't like the input being a matrix like this.
 class HeteroEdgeBias(nn.Module):
     def __init__(self, num_heads, num_edge_types):
         super().__init__()
@@ -68,26 +64,23 @@ class EdgeBiasedMultiHeadAttention(nn.Module):
             num_heads,
             embed_dim // num_heads,
         )
-        self.in_proj = nn.Linear(embed_dim, embed_dim * 3)
+        self.in_proj = nn.Linear(embed_dim, embed_dim * 3)  # q, k, v
         self.out_proj = nn.Linear(embed_dim, embed_dim)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x, edge_bias, key_padding_mask=None):
-        B, N, D = x.shape
+        batch_len, seq_len, embed_dim = x.shape
         q, k, v = self.in_proj(x).chunk(3, dim=-1)
-        q = q.view(B, N, self.num_heads, self.head_dim).transpose(1, 2)
-        k = k.view(B, N, self.num_heads, self.head_dim).transpose(1, 2)
-        v = v.view(B, N, self.num_heads, self.head_dim).transpose(1, 2)
+        q = q.view(batch_len, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+        k = k.view(batch_len, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+        v = v.view(batch_len, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
 
         scale = math.sqrt(self.head_dim)
         attn_scores = torch.matmul(q, k.transpose(-2, -1)) / scale
-
-        # Inject the edge bias
         attn_scores = attn_scores + edge_bias
 
-        # Add padding mask to prevent attention to padding tokens
         if key_padding_mask is not None:
-            # Reshape mask for broadcasting: [B, N] -> [B, 1, 1, N]
+            # Reshape mask for broadcasting: [batch, seq] -> [batch, 1, 1, seq]
             attn_scores = attn_scores.masked_fill(
                 key_padding_mask.unsqueeze(1).unsqueeze(2), float("-inf")
             )
@@ -95,58 +88,99 @@ class EdgeBiasedMultiHeadAttention(nn.Module):
         attn_weights = F.softmax(attn_scores, dim=-1)
         attn_weights = self.dropout(attn_weights)
         output = torch.matmul(attn_weights, v)
-        output = output.transpose(1, 2).contiguous().view(B, N, D)
-        return self.out_proj(output)
+        output = output.transpose(1, 2).contiguous().view(batch_len, seq_len, embed_dim)
+        return self.out_proj(output), attn_weights
+
+
+class EdgeUpdateGate(nn.Module):
+    def __init__(self, embed_dim: int, num_edge_types: int):
+        super().__init__()
+        # Each edge type gets its own learnable update vector.
+        self.edge_vector_embedding = nn.Embedding(
+            num_embeddings=num_edge_types + 1, embedding_dim=embed_dim
+        )
+
+    def forward(
+        self,
+        attention_weights: Tensor,
+        edge_type_matrix: Tensor,
+    ):
+        # attention_weights: [batch, heads, nodes, nodes]
+        # edge_type_matrix:  [batch, nodes, nodes]
+
+        # First, get the update vector for each edge in the graph.
+        # edge_vector_matrix shape: [batch, nodes, nodes, embed_dim]
+        edge_vector_matrix = self.edge_vector_embedding(edge_type_matrix)
+
+        # We average the attention weights across the heads to get a single
+        # importance score for each pair of nodes.
+        # avg_attention_weights shape: [batch, nodes, nodes, 1]
+        avg_attention_weights = attention_weights.mean(dim=1).unsqueeze(-1)
+
+        # Now, we "gate" the edge vectors with the attention weights.
+        # For each node, this calculates a weighted sum of the update vectors
+        # from all other nodes.
+        # update_vectors shape: [batch, nodes, embed_dim]
+        update_vectors = (avg_attention_weights * edge_vector_matrix).sum(dim=2)
+
+        return update_vectors
 
 
 class GraphTransformerLayer(nn.Module):
-    def __init__(self, embedding_dim, num_heads, dim_feedforward=512, dropout=0.1):
+    def __init__(
+        self,
+        embed_dim,
+        num_heads,
+        num_edge_types: int,
+        dim_feedforward=512,
+        dropout=0.1,
+    ):
         super().__init__()
-        self.attn = EdgeBiasedMultiHeadAttention(embedding_dim, num_heads, dropout)
-        self.ffn = nn.Sequential(
-            nn.Linear(embedding_dim, dim_feedforward),
-            nn.ReLU(),
-            nn.Linear(dim_feedforward, embedding_dim),
-        )
-        self.norm1 = nn.LayerNorm(embedding_dim)
-        self.norm2 = nn.LayerNorm(embedding_dim)
-        self.dropout1 = nn.Dropout(dropout)
-        self.dropout2 = nn.Dropout(dropout)
+        self.num_edge_types = num_edge_types
 
-    def forward(self, x, edge_bias, key_padding_mask=None):
-        attn_output = self.attn(self.norm1(x), edge_bias, key_padding_mask)
-        x = x + self.dropout1(attn_output)
-        ffn_output = self.ffn(self.norm2(x))
-        x = x + self.dropout2(ffn_output)
+        self.attention = EdgeBiasedMultiHeadAttention(embed_dim, num_heads, dropout)
+        self.edge_gate = EdgeUpdateGate(
+            embed_dim=embed_dim, num_edge_types=num_edge_types
+        )
+        self.ffn = nn.Sequential(
+            nn.Linear(embed_dim, dim_feedforward),
+            nn.ReLU(),
+            nn.Linear(dim_feedforward, embed_dim),
+        )
+        self.norm1 = nn.LayerNorm(embed_dim)
+        self.norm2 = nn.LayerNorm(embed_dim)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x, edge_bias, edge_type_matrix, key_padding_mask=None):
+        normalized_x = self.norm1(x)  # batch, nodes, embed_dim
+        attention_output, attention_weights = self.attention(
+            normalized_x, edge_bias, key_padding_mask
+        )
+        edge_update_output = self.edge_gate(attention_weights, edge_type_matrix)
+
+        x = x + self.dropout(attention_output + edge_update_output)
+        x = x + self.dropout(self.ffn(self.norm2(x)))
         return x
 
 
-# Should have one token for each cell (connect4) containing empty, mine, opponent.
-# There should be an edge affecting attention for east and north.
-# Reverse connections should also be learned but dont need their own reverse-edge. That is, if A has edge of type 3 to B, A and B should both have a learned an attention bias for the other.
-# This is not a message passing gnn. It's a fully connected transformer.
-
-
 class CellGraphTransformer(nn.Module):
-    def __init__(
-        self, num_encoder_layers=4, embedding_dim=128, num_heads=8, dropout=0.1
-    ):
+    def __init__(self, num_encoder_layers=4, embed_dim=128, num_heads=8, dropout=0.1):
         super().__init__()
 
         # Could embed or 1hot linear
-        self.patch_embedding = nn.Embedding(
-            3, embedding_dim
-        )  # 0: empty, 1: mine, 2: opp
-        self.game_tokens = nn.Parameter(torch.randn(1, 1, embedding_dim))
+        self.patch_embedding = nn.Embedding(3, embed_dim)  # 0: empty, 1: mine, 2: opp
+        self.game_tokens = nn.Parameter(torch.randn(1, 1, embed_dim))
 
-        num_edge_types = 4  # N, E
+        num_edge_types = 4  # N, E (and reverse)
+
         self.edge_bias_module = HeteroEdgeBias(num_heads, num_edge_types)
 
         self.layers = nn.ModuleList(
             [
                 GraphTransformerLayer(
-                    embedding_dim=embedding_dim,
+                    embed_dim=embed_dim,
                     num_heads=num_heads,
+                    num_edge_types=num_edge_types,
                     dropout=dropout,
                 )
                 for _ in range(num_encoder_layers)
@@ -156,7 +190,7 @@ class CellGraphTransformer(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
         fc1_out_size = 64
-        self.fc1 = nn.Linear(embedding_dim, fc1_out_size)
+        self.fc1 = nn.Linear(embed_dim, fc1_out_size)
         self.policy_head = nn.Linear(fc1_out_size, BOARD_WIDTH)
         self.value_head = nn.Linear(fc1_out_size, 1)
 
@@ -177,28 +211,37 @@ class CellGraphTransformer(nn.Module):
         x = rearrange(
             x_embedded, "(batch seq) emb_dim -> batch seq emb_dim", batch=batch_size
         )
-
-        # Prepend game token
         game_tokens = self.game_tokens.expand(batch_size, -1, -1)
         x = torch.cat((game_tokens, x), dim=1)
         x = self.dropout(x)
+        num_nodes_with_token = num_nodes_per_graph + 1  # +1 for game token
 
+        ## scalar edge bias matrix
         edge_bias = self.edge_bias_module(
-            data.edge_index,
-            data.edge_type,
-            data.batch,
-            batch_size,
-            num_nodes_per_graph,
+            data.edge_index, data.edge_type, data.batch, batch_size, num_nodes_per_graph
         )
-        # Pad bias for game token (no bias for game token)
-        edge_bias = F.pad(edge_bias, (1, 0, 1, 0))
+        edge_bias = F.pad(edge_bias, (1, 0, 1, 0), "constant", 0)  # Pad for game token
 
-        key_padding_mask = None  # since static
+        ## edge type matrix for gating
+        edge_type_matrix = torch.zeros(
+            batch_size,
+            num_nodes_with_token,
+            num_nodes_with_token,
+            dtype=torch.long,
+            device=x.device,
+        )
+        src, dst = data.edge_index
+        batch_indices = data.batch[src]
+        src_in_graph = src % num_nodes_per_graph + 1  # +1 to account for game_token
+        dst_in_graph = dst % num_nodes_per_graph + 1  # +1 to account for game_token
+        edge_type_matrix[batch_indices, src_in_graph, dst_in_graph] = data.edge_type
+
+        key_padding_mask = None
         for layer in self.layers:
-            x = layer(x, edge_bias, key_padding_mask)
+            x = layer(x, edge_bias, edge_type_matrix, key_padding_mask)
         transformer_output = x
 
-        game_token_out = transformer_output[:, 0, :]  # (batch_size, embedding_dim)
+        game_token_out = transformer_output[:, 0, :]  # (batch_size, embed_dim)
 
         out = F.relu(self.fc1(game_token_out))
         policy_logits = self.policy_head(out)
@@ -211,7 +254,7 @@ class CellColumnGraphTransformer(nn.Module):
     def __init__(
         self,
         num_encoder_layers=4,
-        embedding_dim=128,
+        embed_dim=128,
         num_heads=8,
         dropout=0.1,
         board_height=6,
@@ -222,17 +265,18 @@ class CellColumnGraphTransformer(nn.Module):
         self.board_width = board_width
 
         # 0: empty, 1: mine, 2: opp, 3: column token
-        self.token_embedding = nn.Embedding(4, embedding_dim)
-        self.game_token = nn.Parameter(torch.randn(1, 1, embedding_dim))
+        self.token_embedding = nn.Embedding(4, embed_dim)
+        self.game_token = nn.Parameter(torch.randn(1, 1, embed_dim))
 
-        num_edge_types = 6  # N, S, E, W, cell->col, col->cell
+        num_edge_types = 6  # N, E, cell->col (and reverse)
         self.edge_bias_module = HeteroEdgeBias(num_heads, num_edge_types)
 
         self.layers = nn.ModuleList(
             [
                 GraphTransformerLayer(
-                    embedding_dim=embedding_dim,
+                    embed_dim=embed_dim,
                     num_heads=num_heads,
+                    num_edge_types=num_edge_types,
                     dropout=dropout,
                 )
                 for _ in range(num_encoder_layers)
@@ -240,11 +284,11 @@ class CellColumnGraphTransformer(nn.Module):
         )
         self.dropout = nn.Dropout(dropout)
 
-        self.policy_head = nn.Linear(embedding_dim, 1)
-        self.value_head = nn.Linear(embedding_dim, 1)
+        self.policy_head = nn.Linear(embed_dim, 1)
+        self.value_head = nn.Linear(embed_dim, 1)
 
     def forward(self, data: Data):
-        node_features = data.x
+        cell_states = data.x
 
         batch_size = data.num_graphs
         if batch_size == 0:
@@ -253,35 +297,44 @@ class CellColumnGraphTransformer(nn.Module):
                 0, 1, device=device
             )
 
-        num_nodes_total = node_features.size(0)
+        num_nodes_total = cell_states.size(0)
         num_nodes_per_graph = num_nodes_total // batch_size
 
-        x_embedded = self.token_embedding(node_features)
+        x_embedded = self.token_embedding(cell_states)
         x = rearrange(
             x_embedded, "(batch seq) emb_dim -> batch seq emb_dim", batch=batch_size
         )
 
-        # Prepend game token
         game_tokens = self.game_token.expand(batch_size, -1, -1)
         x = torch.cat((game_tokens, x), dim=1)
         x = self.dropout(x)
+        num_nodes_with_token = num_nodes_per_graph + 1  # +1 for game token
 
+        ## scalar edge bias matrix
         edge_bias = self.edge_bias_module(
-            data.edge_index,
-            data.edge_type,
-            data.batch,
-            batch_size,
-            num_nodes_per_graph,
+            data.edge_index, data.edge_type, data.batch, batch_size, num_nodes_per_graph
         )
-        # Pad bias for game token (no bias for game token)
-        edge_bias = F.pad(edge_bias, (1, 0, 1, 0))
+        edge_bias = F.pad(edge_bias, (1, 0, 1, 0), "constant", 0)  # Pad for game token
+
+        edge_type_matrix = torch.zeros(
+            batch_size,
+            num_nodes_with_token,
+            num_nodes_with_token,
+            dtype=torch.long,
+            device=x.device,
+        )
+        src, dst = data.edge_index
+        batch_indices = data.batch[src]
+        src_in_graph = src % num_nodes_per_graph + 1  # +1 to account for game_token
+        dst_in_graph = dst % num_nodes_per_graph + 1  # +1 to account for game_token
+        edge_type_matrix[batch_indices, src_in_graph, dst_in_graph] = data.edge_type
 
         key_padding_mask = None  # since static
         for layer in self.layers:
-            x = layer(x, edge_bias, key_padding_mask)
+            x = layer(x, edge_bias, edge_type_matrix, key_padding_mask)
         transformer_output = x
 
-        game_token_out = transformer_output[:, 0, :]  # (batch_size, embedding_dim)
+        game_token_out = transformer_output[:, 0, :]  # (batch_size, embed_dim)
         value = torch.tanh(self.value_head(game_token_out))
 
         num_cell_nodes = self.board_height * self.board_width
@@ -294,11 +347,11 @@ class CellColumnGraphTransformer(nn.Module):
 
 
 class CellPieceGraphTransformer(nn.Module):
-    def __init__(self, embedding_dim=128, num_heads=4, num_layers=4, dropout=0.1):
+    def __init__(self, embed_dim=128, num_heads=4, num_layers=4, dropout=0.1):
         super().__init__()
-        self.embedding_dim = embedding_dim
-        self.cell_embedding = nn.Embedding(1, embedding_dim)
-        self.piece_embedding = nn.Embedding(2, embedding_dim)
+        self.embed_dim = embed_dim
+        self.cell_embedding = nn.Embedding(1, embed_dim)
+        self.piece_embedding = nn.Embedding(2, embed_dim)
 
         # TODO pretty sure I don't want a conv, I want to add edge attention manually.
         # todo redo this and all later cell graph transformers.
@@ -309,8 +362,8 @@ class CellPieceGraphTransformer(nn.Module):
             conv = pyg_nn.HeteroConv(
                 {
                     ("piece", "occupies", "cell"): pyg_nn.GATv2Conv(
-                        in_channels=embedding_dim,
-                        out_channels=embedding_dim,
+                        in_channels=embed_dim,
+                        out_channels=embed_dim,
                         heads=num_heads,
                         dropout=dropout,
                         add_self_loops=False,
@@ -324,7 +377,7 @@ class CellPieceGraphTransformer(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
         fc1_out_size = 64
-        self.fc1 = nn.Linear(embedding_dim, fc1_out_size)
+        self.fc1 = nn.Linear(embed_dim, fc1_out_size)
         self.policy_head = nn.Linear(fc1_out_size, BOARD_WIDTH)
         self.value_head = nn.Linear(fc1_out_size, 1)
 
@@ -349,11 +402,11 @@ class CellPieceGraphTransformer(nn.Module):
 
 
 class CombinedGraphTransformer(nn.Module):
-    def __init__(self, embedding_dim=128, num_heads=4, num_layers=4, dropout=0.1):
+    def __init__(self, embed_dim=128, num_heads=4, num_layers=4, dropout=0.1):
         super().__init__()
-        self.embedding_dim = embedding_dim
-        self.cell_embedding = nn.Embedding(1, embedding_dim)
-        self.piece_embedding = nn.Embedding(2, embedding_dim)
+        self.embed_dim = embed_dim
+        self.cell_embedding = nn.Embedding(1, embed_dim)
+        self.piece_embedding = nn.Embedding(2, embed_dim)
 
         self.convs = nn.ModuleList()
         directions = ["N", "E"]
@@ -361,8 +414,8 @@ class CombinedGraphTransformer(nn.Module):
         for _ in range(num_layers):
             conv_dict = {
                 ("piece", "occupies", "cell"): pyg_nn.GATv2Conv(
-                    embedding_dim,
-                    embedding_dim,
+                    embed_dim,
+                    embed_dim,
                     heads=num_heads,
                     dropout=dropout,
                     add_self_loops=False,
@@ -371,8 +424,8 @@ class CombinedGraphTransformer(nn.Module):
             }
             for d in directions:
                 conv_dict[("cell", d, "cell")] = pyg_nn.GATv2Conv(
-                    embedding_dim,
-                    embedding_dim,
+                    embed_dim,
+                    embed_dim,
                     heads=num_heads,
                     dropout=dropout,
                     add_self_loops=False,
@@ -385,7 +438,7 @@ class CombinedGraphTransformer(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
         fc1_out_size = 64
-        self.fc1 = nn.Linear(embedding_dim, fc1_out_size)
+        self.fc1 = nn.Linear(embed_dim, fc1_out_size)
         self.policy_head = nn.Linear(fc1_out_size, BOARD_WIDTH)
         self.value_head = nn.Linear(fc1_out_size, 1)
 
