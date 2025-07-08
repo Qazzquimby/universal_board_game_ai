@@ -136,8 +136,10 @@ def train_and_evaluate(
         test_acc = total_test_policy_acc / len(test_loader.dataset)
         test_mse = total_test_value_mse / test_batches
 
+        elapsed_time = time.time() - start_time
         log_info = {
             "epoch": epoch + 1,
+            "elapsed_time": elapsed_time,
             "train_loss": train_loss,
             "train_policy_loss": train_policy_loss,
             "train_value_loss": train_value_loss,
