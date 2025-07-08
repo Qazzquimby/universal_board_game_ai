@@ -531,16 +531,16 @@ def run_piece_transformer_experiments(all_results: dict, data: TestData):
 
 def run_graph_transformer_experiments(all_results: dict, data: TestData):
     experiments = [
-        # {
-        #     "name": "CellGraphTransformer",
-        #     "model_class": CellGraphTransformer,
-        #     "input_creator": create_cell_graph,
-        # },
-        # { # very strong
-        #     "name": "CellColumnGraphTransformer",
-        #     "model_class": CellColumnGraphTransformer,
-        #     "input_creator": create_cell_column_graph,
-        # },
+        {
+            "name": "CellGraphTransformer",
+            "model_class": CellGraphTransformer,
+            "input_creator": create_cell_graph,
+        },
+        {  # very strong
+            "name": "CellColumnGraphTransformer",
+            "model_class": CellColumnGraphTransformer,
+            "input_creator": create_cell_column_graph,
+        },
         {
             "name": "CellColumnPieceGraphTransformer",
             "model_class": CellColumnPieceGraphTransformer,
@@ -550,17 +550,7 @@ def run_graph_transformer_experiments(all_results: dict, data: TestData):
             "name": "PieceColumnGraphTransformer",
             "model_class": PieceColumnGraphTransformer,
             "input_creator": create_piece_column_graph,
-        }
-        # {
-        #     "name": "CellPieceGraphTransformer",
-        #     "model_class": CellPieceGraphTransformer,
-        #     "input_creator": create_cell_piece_graph,
-        # },
-        # {
-        #     "name": "CombinedGraphTransformer",
-        #     "model_class": CombinedGraphTransformer,
-        #     "input_creator": create_combined_graph,
-        # },
+        },
     ]
 
     run_experiments(

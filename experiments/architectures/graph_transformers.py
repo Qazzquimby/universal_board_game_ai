@@ -13,7 +13,7 @@ from experiments.architectures.shared import BOARD_WIDTH
 # todo at some point I want to replace these enums with something automatically generated.
 
 
-class CellToken:
+class CellToken(IntEnum):
     EMPTY = 0
     MY_PIECE = 1
     OPP_PIECE = 2
@@ -151,7 +151,8 @@ class EdgeBiasedMultiHeadAttention(nn.Module):
 
         scale = math.sqrt(self.head_dim)
         attn_scores = torch.matmul(q, k.transpose(-2, -1)) / scale
-        attn_scores = attn_scores + edge_bias
+        if edge_bias is not None:
+            attn_scores = attn_scores + edge_bias
 
         if key_padding_mask is not None:
             # Reshape mask for broadcasting: [batch, seq] -> [batch, 1, 1, seq]
@@ -212,8 +213,10 @@ class GraphTransformerLayer(nn.Module):
         num_edge_types: int,
         dim_feedforward=512,
         dropout=0.1,
+        use_edge_info: bool = True,
     ):
         super().__init__()
+        self.use_edge_info = use_edge_info
         self.num_edge_types = num_edge_types
 
         self.attention = EdgeBiasedMultiHeadAttention(embed_dim, num_heads, dropout)
@@ -231,12 +234,18 @@ class GraphTransformerLayer(nn.Module):
 
     def forward(self, x, edge_bias, edge_type_matrix, key_padding_mask=None):
         normalized_x = self.norm1(x)  # batch, nodes, embed_dim
-        attention_output, attention_weights = self.attention(
-            normalized_x, edge_bias, key_padding_mask
-        )
-        edge_update_output = self.edge_gate(attention_weights, edge_type_matrix)
 
-        x = x + self.dropout(attention_output + edge_update_output)
+        current_edge_bias = edge_bias if self.use_edge_info else None
+        attention_output, attention_weights = self.attention(
+            normalized_x, current_edge_bias, key_padding_mask
+        )
+
+        if self.use_edge_info:
+            edge_update_output = self.edge_gate(attention_weights, edge_type_matrix)
+            x = x + self.dropout(attention_output + edge_update_output)
+        else:
+            x = x + self.dropout(attention_output)
+
         x = x + self.dropout(self.ffn(self.norm2(x)))
         return x
 
@@ -267,8 +276,9 @@ class CellGraphTransformer(nn.Module):
                     num_heads=num_heads,
                     num_edge_types=num_edge_types,
                     dropout=dropout,
+                    use_edge_info=(i == 0),
                 )
-                for _ in range(num_encoder_layers)
+                for i in range(num_encoder_layers)
             ]
         )
 
@@ -403,8 +413,9 @@ class CellColumnGraphTransformer(nn.Module):
                     num_heads=num_heads,
                     num_edge_types=num_edge_types,
                     dropout=dropout,
+                    use_edge_info=(i == 0),
                 )
-                for _ in range(num_encoder_layers)
+                for i in range(num_encoder_layers)
             ]
         )
         self.dropout = nn.Dropout(dropout)
@@ -535,8 +546,9 @@ class CellColumnPieceGraphTransformer(nn.Module):
                     num_heads=num_heads,
                     num_edge_types=num_edge_types,
                     dropout=dropout,
+                    use_edge_info=(i == 0),
                 )
-                for _ in range(num_encoder_layers)
+                for i in range(num_encoder_layers)
             ]
         )
         self.dropout = nn.Dropout(dropout)
@@ -665,8 +677,9 @@ class PieceColumnGraphTransformer(nn.Module):
                     num_heads=num_heads,
                     num_edge_types=num_edge_types,
                     dropout=dropout,
+                    use_edge_info=(i == 0),
                 )
-                for _ in range(num_encoder_layers)
+                for i in range(num_encoder_layers)
             ]
         )
         self.dropout = nn.Dropout(dropout)
