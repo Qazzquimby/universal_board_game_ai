@@ -546,7 +546,7 @@ class CellColumnPieceGraphTransformer(nn.Module):
                     num_heads=num_heads,
                     num_edge_types=num_edge_types,
                     dropout=dropout,
-                    use_edge_info=(i == 0),
+                    use_edge_info=True,  # (i == 0),
                 )
                 for i in range(num_encoder_layers)
             ]

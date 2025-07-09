@@ -28,7 +28,6 @@ from experiments.architectures.graph_transformers import (
 from experiments.data_utils import load_and_process_data
 from experiments.architectures.basic import AZDataset, AZGraphDataset
 from experiments.architectures.shared import (
-    MAX_EPOCHS,
     LEARNING_RATE,
     BATCH_SIZE,
     EARLY_STOPPING_PATIENCE,
@@ -42,6 +41,7 @@ from experiments.architectures.transformers import (
 )
 
 TINY_RUN = False
+MAX_TRAINING_TIME_SECONDS = 2 * 3600  # 2h
 
 
 def _process_batch(model, data_batch, device, policy_criterion, value_criterion):
@@ -82,8 +82,9 @@ def train_and_evaluate(
     results = []
     best_test_loss = float("inf")
     epochs_no_improve = 0
+    epoch = 0
 
-    for epoch in range(MAX_EPOCHS):
+    while time.time() - start_time < MAX_TRAINING_TIME_SECONDS:
         model.train()
         total_train_loss, total_train_policy_acc, total_train_value_mse = 0, 0, 0
         total_train_policy_loss, total_train_value_loss = 0, 0
@@ -166,10 +167,18 @@ def train_and_evaluate(
             print(f"Early stopping triggered after {epoch + 1} epochs.")
             break
 
+        epoch += 1
+
+    if time.time() - start_time >= MAX_TRAINING_TIME_SECONDS:
+        print(f"Max training time of {MAX_TRAINING_TIME_SECONDS} seconds reached.")
+
     training_time = time.time() - start_time
     final_epoch = len(results)
+    if not results:
+        print("No epochs were completed.")
+        return pd.DataFrame(), training_time
     final_results = results[-1]
-    print(f"Converged after {final_epoch} epochs.")
+    print(f"Finished training after {final_epoch} epochs.")
     print(
         f"Final Results | Test Loss: {final_results['test_loss']:.4f}, Test Acc: {final_results['test_acc']:.4f}, Test MSE: {final_results['test_mse']:.4f}"
     )
@@ -531,16 +540,16 @@ def run_piece_transformer_experiments(all_results: dict, data: TestData):
 
 def run_graph_transformer_experiments(all_results: dict, data: TestData):
     experiments = [
-        {
-            "name": "CellGraphTransformer",
-            "model_class": CellGraphTransformer,
-            "input_creator": create_cell_graph,
-        },
-        {  # very strong
-            "name": "CellColumnGraphTransformer",
-            "model_class": CellColumnGraphTransformer,
-            "input_creator": create_cell_column_graph,
-        },
+        # {
+        #     "name": "CellGraphTransformer",
+        #     "model_class": CellGraphTransformer,
+        #     "input_creator": create_cell_graph,
+        # },
+        # {  # very strong
+        #     "name": "CellColumnGraphTransformer",
+        #     "model_class": CellColumnGraphTransformer,
+        #     "input_creator": create_cell_column_graph,
+        # },
         {
             "name": "CellColumnPieceGraphTransformer",
             "model_class": CellColumnPieceGraphTransformer,
