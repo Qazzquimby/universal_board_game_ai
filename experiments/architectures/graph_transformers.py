@@ -178,29 +178,52 @@ class EdgeUpdateGate(nn.Module):
     def forward(
         self,
         attention_weights: Tensor,
-        edge_type_matrix: Tensor,
+        edge_index: Tensor,
+        edge_type: Tensor,
+        batch_vec: Tensor,
+        graph_node_offsets: Tensor,
+        num_special_tokens: int,
     ):
         # attention_weights: [batch, heads, nodes, nodes]
-        # edge_type_matrix:  [batch, nodes, nodes]
+        batch_size, num_heads, max_len, _ = attention_weights.shape
+        embed_dim = self.edge_vector_embedding.embedding_dim
+        avg_attention_weights = attention_weights.mean(dim=1)  # [B, N, N]
 
-        # First, get the update vector for each edge in the graph.
-        # edge_vector_matrix shape: [batch, nodes, nodes, embed_dim]
-        edge_vector_matrix = self.edge_vector_embedding(edge_type_matrix)
+        # E_0 is the embedding for non-edges (type 0)
+        E_0 = self.edge_vector_embedding(
+            torch.tensor([0], device=attention_weights.device)
+        )
 
-        # We average the attention weights across the heads to get a single
-        # importance score for each pair of nodes.
-        # avg_attention_weights shape: [batch, nodes, nodes, 1]
-        avg_attention_weights = attention_weights.mean(dim=1).unsqueeze(-1)
+        # Each node's update starts with E_0, since sum of attentions is 1.
+        update_vectors = E_0.repeat(batch_size, max_len, 1)
 
-        # Now, we "gate" the edge vectors with the attention weights.
-        # For each node, this calculates a weighted sum of the update vectors
-        # from all other nodes.
-        # update_vectors shape: [batch, nodes, embed_dim]
-        # Transpose edge_vector_matrix to use incoming edge embeddings for updates.
-        # For node i, we use attention(i,j) to weight edge_vector(j,i).
-        update_vectors = (
-            avg_attention_weights * edge_vector_matrix.transpose(1, 2)
-        ).sum(dim=2)
+        if edge_index.numel() == 0:
+            return update_vectors
+
+        # Get embeddings for existing edge types
+        E_t = self.edge_vector_embedding(edge_type)  # [num_edges, D]
+
+        # We compute: update_vectors_i = E_0 + sum_{j->i} attn(i,j) * (E_type(j,i) - E_0)
+        # An edge u->v from edge_index is a j->i edge where j=u and i=v.
+        src, dst = edge_index
+        batch_indices = batch_vec[src]
+
+        src_in_graph = (
+            src - graph_node_offsets[batch_indices] + num_special_tokens
+        )
+        dst_in_graph = (
+            dst - graph_node_offsets[batch_indices] + num_special_tokens
+        )
+
+        # attn_val is for attn(dst, src) -> attn(i, j)
+        attn_val = avg_attention_weights[batch_indices, dst_in_graph, src_in_graph]
+
+        # update is [num_edges, D]
+        update = attn_val.unsqueeze(-1) * (E_t - E_0)
+
+        # We add the update to the `dst` nodes.
+        flat_dst_indices = batch_indices * max_len + dst_in_graph
+        update_vectors.view(-1, embed_dim).index_add_(0, flat_dst_indices, update)
 
         return update_vectors
 
@@ -232,7 +255,7 @@ class GraphTransformerLayer(nn.Module):
         self.norm2 = nn.LayerNorm(embed_dim)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x, edge_bias, edge_type_matrix, key_padding_mask=None):
+    def forward(self, x, edge_bias, edge_props, key_padding_mask=None):
         normalized_x = self.norm1(x)  # batch, nodes, embed_dim
 
         current_edge_bias = edge_bias if self.use_edge_info else None
@@ -241,7 +264,7 @@ class GraphTransformerLayer(nn.Module):
         )
 
         if self.use_edge_info:
-            edge_update_output = self.edge_gate(attention_weights, edge_type_matrix)
+            edge_update_output = self.edge_gate(attention_weights, **edge_props)
             x = x + self.dropout(attention_output + edge_update_output)
         else:
             x = x + self.dropout(attention_output)
@@ -342,27 +365,16 @@ class CellGraphTransformer(nn.Module):
             0,
         )
 
-        ## edge type matrix for gating
-        edge_type_matrix = torch.zeros(
-            batch_size,
-            max_len,
-            max_len,
-            dtype=torch.long,
-            device=x.device,
-        )
-        src, dst = data.edge_index
-        batch_indices = data.batch[src]
-        src_nodes_in_graph = src - data.ptr[batch_indices]
-        dst_nodes_in_graph = dst - data.ptr[batch_indices]
-
-        edge_type_matrix[
-            batch_indices,
-            src_nodes_in_graph + self.num_special_tokens,
-            dst_nodes_in_graph + self.num_special_tokens,
-        ] = data.edge_type
-
+        sparse_edge_props = {
+            "edge_index": data.edge_index,
+            "edge_type": data.edge_type,
+            "batch_vec": data.batch,
+            "graph_node_offsets": data.ptr,
+            "num_special_tokens": self.num_special_tokens,
+        }
         for layer in self.layers:
-            x = layer(x, edge_bias, edge_type_matrix, final_key_padding_mask)
+            props = sparse_edge_props if layer.use_edge_info else None
+            x = layer(x, edge_bias, props, final_key_padding_mask)
         transformer_output = x
 
         game_token_out = transformer_output[
@@ -477,21 +489,16 @@ class CellColumnGraphTransformer(nn.Module):
         # Pad for game token. The padding adds a row and column for the game token, which is at index 0.
         edge_bias = F.pad(edge_bias, (num_special, 0, num_special, 0), "constant", 0)
 
-        edge_type_matrix = torch.zeros(
-            batch_size, max_len, max_len, dtype=torch.long, device=x.device
-        )
-        src, dst = data.edge_index
-        batch_indices = data.batch[src]
-        src_nodes_in_graph = src - data.ptr[batch_indices]
-        dst_nodes_in_graph = dst - data.ptr[batch_indices]
-        edge_type_matrix[
-            batch_indices,
-            src_nodes_in_graph + num_special,
-            dst_nodes_in_graph + num_special,
-        ] = data.edge_type
-
+        sparse_edge_props = {
+            "edge_index": data.edge_index,
+            "edge_type": data.edge_type,
+            "batch_vec": data.batch,
+            "graph_node_offsets": data.ptr,
+            "num_special_tokens": num_special,
+        }
         for layer in self.layers:
-            x = layer(x, edge_bias, edge_type_matrix, final_key_padding_mask)
+            props = sparse_edge_props if layer.use_edge_info else None
+            x = layer(x, edge_bias, props, final_key_padding_mask)
         transformer_output = x
 
         game_token_out = transformer_output[:, self.special_token_enum.GAME, :]
@@ -610,21 +617,16 @@ class CellColumnPieceGraphTransformer(nn.Module):
         # Pad for game token. The padding adds a row and column for the game token, which is at index 0.
         edge_bias = F.pad(edge_bias, (num_special, 0, num_special, 0), "constant", 0)
 
-        edge_type_matrix = torch.zeros(
-            batch_size, max_len, max_len, dtype=torch.long, device=x.device
-        )
-        src, dst = data.edge_index
-        batch_indices = data.batch[src]
-        src_nodes_in_graph = src - data.ptr[batch_indices]
-        dst_nodes_in_graph = dst - data.ptr[batch_indices]
-        edge_type_matrix[
-            batch_indices,
-            src_nodes_in_graph + num_special,
-            dst_nodes_in_graph + num_special,
-        ] = data.edge_type
-
+        sparse_edge_props = {
+            "edge_index": data.edge_index,
+            "edge_type": data.edge_type,
+            "batch_vec": data.batch,
+            "graph_node_offsets": data.ptr,
+            "num_special_tokens": num_special,
+        }
         for layer in self.layers:
-            x = layer(x, edge_bias, edge_type_matrix, final_key_padding_mask)
+            props = sparse_edge_props if layer.use_edge_info else None
+            x = layer(x, edge_bias, props, final_key_padding_mask)
         transformer_output = x
 
         game_token_out = transformer_output[:, self.special_token_enum.GAME, :]
@@ -745,21 +747,16 @@ class PieceColumnGraphTransformer(nn.Module):
         # Pad for game token.
         edge_bias = F.pad(edge_bias, (num_special, 0, num_special, 0), "constant", 0)
 
-        edge_type_matrix = torch.zeros(
-            batch_size, max_len, max_len, dtype=torch.long, device=x.device
-        )
-        src, dst = data.edge_index
-        batch_indices = data.batch[src]
-        src_nodes_in_graph = src - data.ptr[batch_indices]
-        dst_nodes_in_graph = dst - data.ptr[batch_indices]
-        edge_type_matrix[
-            batch_indices,
-            src_nodes_in_graph + num_special,
-            dst_nodes_in_graph + num_special,
-        ] = data.edge_type
-
+        sparse_edge_props = {
+            "edge_index": data.edge_index,
+            "edge_type": data.edge_type,
+            "batch_vec": data.batch,
+            "graph_node_offsets": data.ptr,
+            "num_special_tokens": num_special,
+        }
         for layer in self.layers:
-            x = layer(x, edge_bias, edge_type_matrix, final_key_padding_mask)
+            props = sparse_edge_props if layer.use_edge_info else None
+            x = layer(x, edge_bias, props, final_key_padding_mask)
         transformer_output = x
 
         game_token_out = transformer_output[:, self.special_token_enum.GAME, :]
