@@ -1,8 +1,8 @@
 from enum import Enum
-from typing import List, Tuple, Optional, Generic, TypeVar
+from typing import List, Tuple, Optional, Generic, TypeVar, Any, Iterable
 
 import numpy as np
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator, model_validator
 
 from environments.base import (
     BaseEnvironment,
@@ -40,7 +40,42 @@ class Players:
 # type that players are a cycle of 2 and have names R, Y
 # Cell is an Optional[Player]
 # Board is a Grid with fixed dimensions w=7, h=6
-Cell = Optional[Player]
+
+Cell_T = TypeVar("Cell_T")
+
+
+class Grid(BaseModel):
+    width: int
+    height: int
+
+    cells: List[List[Cell_T]] = None
+
+    @model_validator(mode="after")
+    def init_cells(self):
+        if self.cells is None:
+            return [[None for _ in range(self.width)] for _ in range(self.height)]
+        return self
+
+    def __getitem__(self, item: Tuple[int, int]) -> Optional[int]:
+        return self.cells[item[0]][item[1]]
+
+    def __setitem__(self, key: Tuple[int, int], value: int) -> None:
+        self.cells[key[0]][key[1]] = value
+
+    def get_column(self, x: int) -> list[Optional[Cell_T]]:
+        return [row[x] for row in self.cells]
+
+    def get_row(self, y: int) -> list[Optional[Cell_T]]:
+        return self.cells[y]
+
+    def _is_in_bounds(self, x: int, y: int) -> bool:
+        return 0 <= x < self.width and 0 <= y < self.height
+
+    def __str__(self) -> str:
+        result = []
+        for row in self.cells:
+            result.append("".join(str(cell) if cell else "." for cell in row))
+        return "\n".join(result)
 
 
 class BaseState(BaseModel):
@@ -52,8 +87,14 @@ class BaseState(BaseModel):
         arbitrary_types_allowed = True
 
 
+class Connect4Board(Grid):
+
+
+
+Connect4Cell = Optional[Player]
+
 class Connect4State(BaseState):
-    board: Board
+    board: Connect4Board
 
 
 class Connect4(BaseEnvironment):
