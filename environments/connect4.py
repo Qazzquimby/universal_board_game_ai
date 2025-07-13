@@ -11,104 +11,11 @@ from environments.base import (
     ActionType,
     ActionResult,
     StateWithKey,
+    Grid,
+    BaseState, Player,
 )
 
 ColumnActionType = int
-
-# Could make state a separate data class.
-# for connect4 is just a grid.
-# Grid contains player identifier and can be empty
-# In this case the grid is fixed size, but we want to be able to type if it's parameterized size.
-
-PlayerId = int
-
-
-class Player(BaseModel):
-    id: PlayerId
-    name: str
-
-
-class Players(Iterable):
-    def __init__(
-        self,
-        num_players: Optional[int] = None,
-        player_labels: Optional[List[str]] = None,
-    ):
-        if player_labels is None:
-            if num_players is None:
-                raise ValueError("Either num_players or player_labels must be provided")
-            player_labels = [f"Player {i}" for i in range(num_players)]
-
-        if num_players is None:
-            num_players = len(player_labels)
-
-        if len(player_labels) != num_players:
-            raise ValueError("Number of player labels must match num_players.")
-
-        self.players = [Player(id=i, name=player_labels[i]) for i in range(num_players)]
-
-    def __iter__(self):
-        for player in self.players:
-            yield player
-
-    def __getitem__(self, item):
-        return self.players[item]
-
-
-# type that players are a cycle of 2 and have names R, Y
-# Cell is an Optional[Player]
-# Board is a Grid with fixed dimensions w=7, h=6
-
-Cell_T = TypeVar("Cell_T")
-
-
-class Grid(BaseModel, Generic[Cell_T]):
-    width: int
-    height: int
-
-    cells: List[List[Optional[Cell_T]]] = None
-
-    @model_validator(mode="after")
-    def init_cells(self):
-        if self.cells is None:
-            self.cells = [[None for _ in range(self.width)] for _ in range(self.height)]
-        return self
-
-    def __getitem__(self, item: Tuple[int, int]) -> Optional[Cell_T]:
-        return self.cells[item[0]][item[1]]
-
-    def __setitem__(self, key: Tuple[int, int], value: Optional[Cell_T]) -> None:
-        self.cells[key[0]][key[1]] = value
-
-    def get_column(self, x: int) -> list[Optional[Cell_T]]:
-        return [row[x] for row in self.cells]
-
-    def get_row(self, y: int) -> list[Optional[Cell_T]]:
-        return self.cells[y]
-
-    def _is_in_bounds(self, x: int, y: int) -> bool:
-        return 0 <= x < self.width and 0 <= y < self.height
-
-    def __str__(self) -> str:
-        result = []
-        for row in self.cells:
-            result.append(
-                "".join(str(cell) if cell is not None else "." for cell in row)
-            )
-        return "\n".join(result)
-
-
-class BaseState(BaseModel):
-    players: Players
-    current_player_index: int = 0
-
-    rewards: dict[PlayerId, float] = {}
-    done: bool = False
-
-    @property
-    def current_player(self):
-        return self.players[self.current_player_index]
-
 
 Connect4Cell = Optional[Player]
 
