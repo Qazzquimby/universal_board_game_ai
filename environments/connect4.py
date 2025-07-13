@@ -1,3 +1,4 @@
+from enum import Enum
 from typing import List, Tuple, Optional, Generic, TypeVar
 
 import numpy as np
@@ -13,37 +14,52 @@ from environments.base import (
 )
 
 ColumnActionType = int
-Player = int  # todo
 
 # Could make state a separate data class.
 # for connect4 is just a grid.
 # Grid contains player identifier and can be empty
 # In this case the grid is fixed size, but we want to be able to type if it's parameterized size.
 
+PlayerId = int
 
 
+class Player(BaseModel):
+    id: PlayerId
+    name: str
 
-class BaseState(BaseModel):
-    current_player: Player
-    rewards: dict[Player, float] = {}
-    done: bool = False
+
+class Players:
+    def __init__(self, num_players: int, player_labels: Optional[List[str]] = None):
+        if player_labels is not None and len(player_labels) != num_players:
+            raise ValueError("Number of player labels must match num_players.")
+        if player_labels is None:
+            player_labels = [f"Player {i}" for i in range(num_players)]
+        self.players = [Player(id=i, name=player_labels[i]) for i in range(num_players)]
+
 
 # type that players are a cycle of 2 and have names R, Y
 # Cell is an Optional[Player]
 # Board is a Grid with fixed dimensions w=7, h=6
+Cell = Optional[Player]
 
-Cell =
 
-class Connect4Cell(Cell):
+class BaseState(BaseModel):
+    current_player: Player
+    rewards: dict[PlayerId, float] = {}
+    done: bool = False
+
+    class Config:
+        arbitrary_types_allowed = True
+
 
 class Connect4State(BaseState):
-    board:
+    board: Board
 
 
 class Connect4(BaseEnvironment):
     def __init__(self):
         super().__init__()
-        self.state = Connect4State()
+        self.state: Optional[Connect4State] = None
 
         self.board = None
 

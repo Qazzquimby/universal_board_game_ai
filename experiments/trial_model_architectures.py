@@ -38,7 +38,8 @@ from experiments.architectures.transformers import (
     create_transformer_input,
     _process_batch_transformer,
     transformer_collate_fn,
-    PieceTransformer_EncoderSum_SimpleOut_ParamGameToken, PieceTransformerNet,
+    PieceTransformer_EncoderSum_SimpleOut_ParamGameToken,
+    PieceTransformerNet,
 )
 
 TINY_RUN = False
