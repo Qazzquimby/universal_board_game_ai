@@ -17,7 +17,7 @@ from typing import (
     Iterable,
 )
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, model_validator, ConfigDict
 
 ActionType = TypeVar("ActionType")
 StateType = Dict[str, Any]
@@ -238,6 +238,8 @@ class BaseState(BaseModel):
 
     rewards: dict[PlayerId, float] = {}
     done: bool = False
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     @property
     def current_player(self):

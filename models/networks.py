@@ -70,6 +70,32 @@ class AutoGraphNet(nn.Module):
             policy_probs = F.softmax(policy_logits, dim=0)
             return policy_probs.cpu().numpy(), value
 
+    def forward(self, src_batch, src_key_padding_mask_batch):
+        state_tokens, value_preds = self.state_model(
+            src_batch, src_key_padding_mask_batch
+        )
+
+        game_token_embedding = state_tokens[:, 0, :]  # (batch, state_embedding_dim)
+
+        action_indices = torch.arange(self.env.num_action_types, device=self.device)
+        action_embs = self.policy_model.action_embedding(action_indices)
+
+        batch_size = game_token_embedding.shape[0]
+        num_actions = action_embs.shape[0]
+
+        game_token_expanded = game_token_embedding.unsqueeze(1).expand(
+            -1, num_actions, -1
+        )
+        action_embs_expanded = action_embs.unsqueeze(0).expand(batch_size, -1, -1)
+
+        policy_input = torch.cat([game_token_expanded, action_embs_expanded], dim=-1)
+
+        policy_input_flat = policy_input.view(batch_size * num_actions, -1)
+        policy_logits_flat = self.policy_model.policy_head(policy_input_flat)
+        policy_logits = policy_logits_flat.view(batch_size, num_actions)
+
+        return policy_logits, value_preds
+
 
 class _StateModel(nn.Module):
     """Internal StateModel for the AutoGraphNet."""
@@ -164,11 +190,8 @@ class _StateModel(nn.Module):
         return sequence, mask
 
     def forward(
-        self, state_with_key: StateWithKey
+        self, src: torch.Tensor, src_key_padding_mask: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        src, src_key_padding_mask = self.create_input_tensors_from_state(
-            state_with_key.state
-        )
         batch_size = src.shape[0]
 
         # Prepend game token to sequence

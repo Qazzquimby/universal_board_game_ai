@@ -3,7 +3,12 @@ from loguru import logger
 
 from agents.mcts_agent_old import MCTSAgent_Old
 
-from agents.alphazero_agent import AlphaZeroAgent
+import torch.optim as optim
+from agents.alphazero_agent import (
+    AlphaZeroAgent,
+    AlphaZeroExpansion,
+    AlphaZeroEvaluation,
+)
 from core.agent_interface import Agent
 from core.config import (
     AppConfig,
@@ -13,18 +18,15 @@ from environments.base import BaseEnvironment
 from environments.connect4 import Connect4
 from environments.nim_env import NimEnv
 from agents.mcts_agent import MCTSAgent, make_pure_mcts
+from models.networks import AutoGraphNet
+from algorithms.mcts import UCB1Selection, StandardBackpropagation
 
 
 def get_environment(env_config: EnvConfig) -> BaseEnvironment:
     """Factory function to create environment instances."""
     if env_config.name.lower() == "connect4":
         # Use connect4 specific dimensions from config
-        return Connect4(
-            width=env_config.width,
-            height=env_config.height,
-            num_players=env_config.num_players,
-            max_steps=env_config.max_steps,
-        )
+        return Connect4()
     elif env_config.name.lower() == "nim":
         return NimEnv(
             initial_piles=env_config.nim_piles, num_players=env_config.num_players
@@ -37,10 +39,32 @@ def get_agents(env: BaseEnvironment, config: AppConfig) -> Dict[str, Agent]:
     """Factory function to create agent instances for the given environment."""
 
     az_agent_name = "AlphaZero"
-    az_agent = AlphaZeroAgent(
+
+    az_config = config.alpha_zero
+    training_config = config.training
+
+    # Create the AutoGraphNet network and optimizer
+    network = AutoGraphNet(
         env=env,
-        config=config.alpha_zero,
-        training_config=config.training,
+        state_model_params=az_config.state_model_params,
+        policy_model_params=az_config.policy_model_params,
+    )
+    optimizer = optim.AdamW(network.parameters(), lr=training_config.lr)
+
+    az_agent = AlphaZeroAgent(
+        num_simulations=az_config.num_simulations,
+        selection_strategy=UCB1Selection(
+            exploration_constant=az_config.exploration_constant
+        ),
+        expansion_strategy=AlphaZeroExpansion(network=network),
+        evaluation_strategy=AlphaZeroEvaluation(network=network),
+        backpropagation_strategy=StandardBackpropagation(),
+        network=network,
+        optimizer=optimizer,
+        env=env,
+        config=az_config,
+        training_config=training_config,
+        temperature=az_config.temperature,
     )
     if not az_agent.load():
         logger.warning(

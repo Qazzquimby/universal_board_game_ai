@@ -3,16 +3,15 @@ from collections import deque
 from typing import List, Tuple, Optional, Dict
 from dataclasses import dataclass
 import random
+import copy
 
 import torch
-import copy
-from torch import optim
+from torch import optim, nn
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 import torch.nn.functional as F
 import numpy as np
 from loguru import logger
-from cachetools import LRUCache
 
 from core.agent_interface import Agent
 from environments.base import BaseEnvironment, StateType, ActionType, StateWithKey
@@ -29,23 +28,27 @@ from algorithms.mcts import (
     BackpropagationStrategy,
     SelectionStrategy,
 )
-from models.networks import AlphaZeroNet
+from models.networks import AutoGraphNet
 from core.config import AlphaZeroConfig, DATA_DIR, TrainingConfig
 
 
 class ReplayBufferDataset(Dataset):
-    def __init__(self, buffer: deque, network: AlphaZeroNet):
+    def __init__(self, buffer: deque, state_model: nn.Module):
         self.buffer_list = list(buffer)
-        self.network = network
+        self.state_model = state_model
 
     def __len__(self):
         return len(self.buffer_list)
 
     def __getitem__(self, idx):
         state_dict, policy_target, value_target = self.buffer_list[idx]
-        flat_state = self.network._flatten_state(state_dict)
+        # Create tensor inputs for the state model
+        src, src_key_padding_mask = self.state_model.create_input_tensors_from_state(
+            state_dict
+        )
         return (
-            flat_state,
+            src.squeeze(0),  # Remove batch dim
+            src_key_padding_mask.squeeze(0),  # Remove batch dim
             torch.tensor(policy_target, dtype=torch.float32),
             torch.tensor([value_target], dtype=torch.float32),
         )
@@ -60,7 +63,7 @@ class EpisodeResult:
 
 
 class AlphaZeroEvaluation(EvaluationStrategy):
-    def __init__(self, network: AlphaZeroNet):
+    def __init__(self, network: nn.Module):
         self.network = network
 
     def evaluate(self, node: "MCTSNode", env: BaseEnvironment) -> float:
@@ -84,14 +87,14 @@ class AlphaZeroEvaluation(EvaluationStrategy):
         else:
             self.network.eval()
             with torch.no_grad():
-                policy_np, value = self.network.predict(node.state_with_key.state)
+                policy_np, value = self.network.predict(node.state_with_key)
             self.network.cache[key] = (policy_np, value)
 
         return float(value)
 
 
 class AlphaZeroExpansion(ExpansionStrategy):
-    def __init__(self, network: AlphaZeroNet):
+    def __init__(self, network: nn.Module):
         self.network = network
 
     def expand(self, node: "MCTSNode", env: BaseEnvironment) -> None:
@@ -110,7 +113,7 @@ class AlphaZeroExpansion(ExpansionStrategy):
 
         legal_actions = env.get_legal_actions()
         for action in legal_actions:
-            action_idx = self.network.get_action_index(action)
+            action_idx = env.map_action_to_policy_index(action)
             if action_idx is not None:
                 prior = policy_np[action_idx]
                 action_key = tuple(action) if isinstance(action, list) else action
@@ -128,7 +131,7 @@ class AlphaZeroAgent(Agent):
         expansion_strategy: ExpansionStrategy,
         evaluation_strategy: EvaluationStrategy,
         backpropagation_strategy: BackpropagationStrategy,
-        network: AlphaZeroNet,
+        network: nn.Module,
         optimizer,
         env: BaseEnvironment,
         config: AlphaZeroConfig,
@@ -148,6 +151,13 @@ class AlphaZeroAgent(Agent):
 
         self.root: MCTSNode = None
         self.node_cache = MCTSNodeCache()
+
+        self.network = network
+        self.optimizer = optimizer
+        self.env = env
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if self.network:
+            self.network.to(self.device)
 
         self.config = config
         self.training_config = training_config
@@ -241,7 +251,7 @@ class AlphaZeroAgent(Agent):
 
         if visit_sum > 0:
             for action, visit_count in action_visits.items():
-                action_idx = self.network.get_action_index(action)
+                action_idx = self.env.map_action_to_policy_index(action)
                 if action_idx is not None:
                     policy_vector[action_idx] = visit_count / visit_sum
         return policy_vector
@@ -473,8 +483,12 @@ class AlphaZeroAgent(Agent):
             return None
 
         # --- Create Datasets and DataLoaders from pre-split buffers ---
-        train_dataset = ReplayBufferDataset(self.train_replay_buffer, self.network)
-        val_dataset = ReplayBufferDataset(self.val_replay_buffer, self.network)
+        train_dataset = ReplayBufferDataset(
+            self.train_replay_buffer, self.network.state_model
+        )
+        val_dataset = ReplayBufferDataset(
+            self.val_replay_buffer, self.network.state_model
+        )
 
         train_loader = DataLoader(
             train_dataset,
@@ -520,13 +534,19 @@ class AlphaZeroAgent(Agent):
                 else train_loader
             )
             for batch_data in train_iterator:
-                states_batch, policy_targets_batch, value_targets_batch = batch_data
-                states_batch = states_batch.to(self.device)
+                (
+                    src_batch,
+                    mask_batch,
+                    policy_targets_batch,
+                    value_targets_batch,
+                ) = batch_data
+                src_batch = src_batch.to(self.device)
+                mask_batch = mask_batch.to(self.device)
                 policy_targets_batch = policy_targets_batch.to(self.device)
                 value_targets_batch = value_targets_batch.to(self.device)
 
                 self.optimizer.zero_grad()
-                policy_logits, value_preds = self.network(states_batch)
+                policy_logits, value_preds = self.network(src_batch, mask_batch)
                 total_loss, value_loss, policy_loss = self._calculate_loss(
                     policy_logits,
                     value_preds,
@@ -548,11 +568,17 @@ class AlphaZeroAgent(Agent):
             val_batches = 0
             with torch.no_grad():
                 for batch_data in val_loader:
-                    states_batch, policy_targets_batch, value_targets_batch = batch_data
-                    states_batch = states_batch.to(self.device)
+                    (
+                        src_batch,
+                        mask_batch,
+                        policy_targets_batch,
+                        value_targets_batch,
+                    ) = batch_data
+                    src_batch = src_batch.to(self.device)
+                    mask_batch = mask_batch.to(self.device)
                     policy_targets_batch = policy_targets_batch.to(self.device)
                     value_targets_batch = value_targets_batch.to(self.device)
-                    policy_logits, value_preds = self.network(states_batch)
+                    policy_logits, value_preds = self.network(src_batch, mask_batch)
                     total_loss, _, _ = self._calculate_loss(
                         policy_logits,
                         value_preds,
@@ -698,27 +724,31 @@ class AlphaZeroAgent(Agent):
 
 
 def make_pure_az(
-    num_simulations,
+    env: BaseEnvironment,
+    config: AlphaZeroConfig,
+    training_config: TrainingConfig,
     should_use_network: bool,
-    embedding_dim: int,
-    lr: float,
 ):
     if should_use_network:
-        network = AlphaZeroNet()
-        optimizer = optim.AdamW(
-            network.parameters(),
-            lr=lr,
+        network = AutoGraphNet(
+            env=env,
+            state_model_params=config.state_model_params,
+            policy_model_params=config.policy_model_params,
         )
+        optimizer = optim.AdamW(network.parameters(), lr=training_config.lr)
     else:
-        network = DummyAlphaZeroNet()
+        network = DummyAlphaZeroNet(env)
         optimizer = None
 
     return AlphaZeroAgent(
-        num_simulations=num_simulations,
+        num_simulations=config.num_simulations,
         selection_strategy=UCB1Selection(exploration_constant=1.41),
         expansion_strategy=AlphaZeroExpansion(network=network),
         evaluation_strategy=AlphaZeroEvaluation(network=network),
         backpropagation_strategy=StandardBackpropagation(),
         network=network,
         optimizer=optimizer,
+        env=env,
+        config=config,
+        training_config=training_config,
     )

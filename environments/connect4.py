@@ -19,12 +19,12 @@ Connect4Cell = Optional[Player]
 
 
 class Connect4Board(Grid[Player]):
-    width = 7
-    height = 6
+    width: int = 7
+    height: int = 6
 
 
 class Connect4State(BaseState):
-    players = Players(player_labels=["Y", "R"])
+    players: Players = Players(player_labels=["Y", "R"])
     board: Connect4Board = Connect4Board()
 
 
