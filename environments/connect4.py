@@ -1,6 +1,7 @@
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Generic, TypeVar
 
 import numpy as np
+from pydantic import BaseModel
 
 from environments.base import (
     BaseEnvironment,
@@ -12,67 +13,39 @@ from environments.base import (
 )
 
 ColumnActionType = int
+Player = int  # todo
+
+# Could make state a separate data class.
+# for connect4 is just a grid.
+# Grid contains player identifier and can be empty
+# In this case the grid is fixed size, but we want to be able to type if it's parameterized size.
+
+
+
+
+class BaseState(BaseModel):
+    current_player: Player
+    rewards: dict[Player, float] = {}
+    done: bool = False
+
+# type that players are a cycle of 2 and have names R, Y
+# Cell is an Optional[Player]
+# Board is a Grid with fixed dimensions w=7, h=6
+
+Cell =
+
+class Connect4Cell(Cell):
+
+class Connect4State(BaseState):
+    board:
 
 
 class Connect4(BaseEnvironment):
-    """
-    Implements the standard Connect-4 game with gravity.
-    Board size is width x height (e.g., 7 columns x 6 rows).
-    """
-
-    metadata = {"render_modes": ["human"], "name": "connect4"}
-
-    def __init__(
-        self, width: int = 7, height: int = 6, num_players: int = 2, max_steps: int = 43
-    ):
-        """
-        Initialize the Connect-4 environment.
-
-        Args:
-            width: Number of columns (default 7).
-            height: Number of rows (default 6).
-            num_players: Number of players (default 2).
-            max_steps: Maximum number of steps before draw (default width*height + 1).
-        """
-
+    def __init__(self):
         super().__init__()
-        self._width = width
-        self._height = height
-        self._num_players = num_players
-        self._max_steps = max_steps
+        self.state = Connect4State()
 
-        self.num_actions = self._width
-
-        # State tracking
         self.board = None
-        self.current_player = None
-        self.done = None
-        self.winner = None
-        self.step_count = None
-        self.last_action = None
-        self.rewards = None
-
-        self.reset()
-
-    @property
-    def num_players(self) -> int:
-        return self._num_players
-
-    @property
-    def width(self) -> int:
-        return self._width
-
-    @property
-    def height(self) -> int:
-        return self._height
-
-    @property
-    def observation_tensor_shape(self) -> Tuple[int, ...]:
-        return self.height, self.width
-
-    @property
-    def policy_vector_size(self) -> int:
-        return self.width
 
     def map_action_to_policy_index(self, action: ActionType) -> Optional[int]:
         return action
@@ -110,6 +83,8 @@ class Connect4(BaseEnvironment):
             reward: The reward received by the player who just acted.
             done: Boolean indicating if the game has ended.
         """
+        # TODO return a class. Default rewards to 0 and done to False.
+
         current_legal_actions = self.get_legal_actions()
         assert (
             action in current_legal_actions
@@ -141,12 +116,6 @@ class Connect4(BaseEnvironment):
             if self.board[r, col] == 0:
                 row = r
                 break
-
-        # This check should be redundant if _is_valid_action is correct, but safety first
-        if row == -1:
-            raise ValueError(
-                f"Column {col} is full, but was considered a valid action."
-            )
 
         # Place piece on the board at the calculated row
         self.board[row, col] = self.current_player + 1

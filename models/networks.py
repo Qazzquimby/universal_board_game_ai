@@ -10,13 +10,15 @@ from core.config import MuZeroConfig
 from environments.base import BaseEnvironment, ActionType, StateWithKey
 
 
-class AlphaZeroNet(nn.Module):
-    """
-    Simple MLP network for AlphaZero.
-    Takes a flattened representation of the environment state.
-    Outputs policy logits and a value prediction.
-    """
+# TODO currently assumes simple flattening
+# Want:
+#    Detached policy model
+#    See grid: create cell tokens.
+#        See that each dimension is fixed and <=12 so embed them.
+#    Derive policy from
 
+
+class AlphaZeroNet(nn.Module):
     def __init__(
         self,
         env: BaseEnvironment,

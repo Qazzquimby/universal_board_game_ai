@@ -12,6 +12,7 @@ from tqdm import tqdm
 import pandas as pd
 
 import wandb
+from experiments.architectures.detached import DetachedPolicyNet
 from experiments.architectures.graph_transformers import (
     CellGraphTransformer,
     CellColumnGraphTransformer,
@@ -37,7 +38,7 @@ from experiments.architectures.transformers import (
     create_transformer_input,
     _process_batch_transformer,
     transformer_collate_fn,
-    PieceTransformer_EncoderSum_SimpleOut_ParamGameToken,
+    PieceTransformer_EncoderSum_SimpleOut_ParamGameToken, PieceTransformerNet,
 )
 
 TINY_RUN = False
@@ -363,25 +364,25 @@ def run_basic_experiments(all_results: dict, data: TestData):
 
 def run_piece_transformer_experiments(all_results: dict, data: TestData):
     experiments = [
-        # {
-        #     "name": "DetachedPolicy_v1",
-        #     "model_class": DetachedPolicyNet,
-        #     "params": {
-        #         "state_model_params": {
-        #             "embedding_dim": 128,
-        #             "num_heads": 8,
-        #             "num_encoder_layers": 4,
-        #             "dropout": 0.1,
-        #         },
-        #         "policy_model_params": {
-        #             "embedding_dim": 128,
-        #         },
-        #     },
-        # },
-        # {
-        #     "name": "PieceTransformer_v2",
-        #     "model_class": PieceTransformerNet,
-        # },
+        {
+            "name": "DetachedPolicy_v1",
+            "model_class": DetachedPolicyNet,
+            "params": {
+                "state_model_params": {
+                    "embedding_dim": 128,
+                    "num_heads": 8,
+                    "num_encoder_layers": 4,
+                    "dropout": 0.1,
+                },
+                "policy_model_params": {
+                    "embedding_dim": 128,
+                },
+            },
+        },
+        {
+            "name": "PieceTransformer_v2",
+            "model_class": PieceTransformerNet,
+        },
         # {
         #     "name": "PieceTransformer_Sinusoidal",
         #     "model_class": PieceTransformerNet_Sinusoidal,

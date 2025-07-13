@@ -124,7 +124,13 @@ class BaseEnvironment(abc.ABC):
         self.event_stack = deque()
         self.game_log = []
         self.turn = 0
+        self.current_player = None
         self.is_processing = False
+
+        self.winner = None
+        self.rewards = None
+
+        self.reset()
 
     def define_action(
         self,
@@ -276,12 +282,6 @@ class BaseEnvironment(abc.ABC):
         Returns:
             A list of valid actions.
         """
-        pass
-
-    @property
-    @abc.abstractmethod
-    def num_players(self) -> int:
-        """Number of players in the game."""
         pass
 
     @abc.abstractmethod
