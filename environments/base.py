@@ -185,6 +185,52 @@ class Grid(BaseModel, Generic[Cell_T]):
             )
         return "\n".join(result)
 
+    def get_network_config(self, env: "BaseEnvironment"):
+        """
+        Inspects the Grid's own generic type to determine its structure
+        and features for automatic network configuration.
+        """
+        from typing import get_args, get_origin
+
+        entity_type_arg = self.__pydantic_generic_metadata__["args"][0]
+
+        # Handle Optional[EntityType] by extracting the non-None type
+        origin = get_origin(entity_type_arg)
+        if origin is Union:
+            non_none_args = [
+                arg for arg in get_args(entity_type_arg) if arg is not type(None)
+            ]
+            if len(non_none_args) == 1:
+                entity_type = non_none_args[0]
+            else:
+                # This logic might need to be more sophisticated for complex Unions
+                entity_type = non_none_args[0]
+        else:
+            entity_type = entity_type_arg
+
+        if not isinstance(entity_type, type) or not issubclass(entity_type, BaseModel):
+            return None
+
+        position_dims = {"y": self.height, "x": self.width}
+
+        features = {}
+        for e_fname, e_field in entity_type.model_fields.items():
+            # Heuristic: find integer fields named 'id' to treat as categorical features
+            if e_field.annotation == int and e_fname == "id":
+                if hasattr(env, "players"):
+                    features[e_fname] = {
+                        "cardinality": len(env.players) + 1
+                    }  # +1 for empty/None cell
+
+        if not features:
+            return None
+
+        return {
+            "position_dims": position_dims,
+            "features": features,
+            "entity_type": entity_type,
+        }
+
 
 class BaseState(BaseModel):
     players: Players
@@ -329,6 +375,22 @@ class BaseEnvironment(abc.ABC):
             if match:
                 matching_hooks.append(triggered_ability)
         return matching_hooks
+
+    @abc.abstractmethod
+    def map_action_to_policy_index(self, action: ActionType) -> Optional[int]:
+        """Maps a specific action to its index in the policy output array."""
+        pass
+
+    @abc.abstractmethod
+    def map_policy_index_to_action(self, index: int) -> Optional[ActionType]:
+        """Maps a policy index back to a specific action."""
+        pass
+
+    @property
+    @abc.abstractmethod
+    def num_action_types(self) -> int:
+        """The total number of distinct actions possible in the game."""
+        pass
 
     @property
     @abc.abstractmethod

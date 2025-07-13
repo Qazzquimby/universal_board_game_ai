@@ -1,8 +1,4 @@
-from enum import Enum
-from typing import List, Tuple, Optional, Generic, TypeVar, Any, Iterable
-
-import numpy as np
-from pydantic import BaseModel, field_validator, model_validator
+from typing import List, Optional, Iterable
 
 from environments.base import (
     BaseEnvironment,
@@ -14,6 +10,7 @@ from environments.base import (
     Grid,
     BaseState,
     Player,
+    Players,
 )
 
 ColumnActionType = int
@@ -27,17 +24,22 @@ class Connect4Board(Grid[Player]):
 
 
 class Connect4State(BaseState):
+    players = Players(player_labels=["Y", "R"])
     board: Connect4Board = Connect4Board()
 
 
 class Connect4(BaseEnvironment):
-    def __init__(
-        self,
-        num_players: int = 2,
-    ):
+    def __init__(self):
         super().__init__()
-        self.players = Players(player_labels=["Y", "R"])
         self.state: Connect4State = Connect4State()
+
+    @property
+    def width(self) -> int:
+        return self.state.board.width
+
+    @property
+    def num_action_types(self) -> int:
+        return self.width
 
     def map_action_to_policy_index(self, action: ActionType) -> Optional[int]:
         return action
