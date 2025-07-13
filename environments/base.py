@@ -12,7 +12,9 @@ from typing import (
     Callable,
     Literal,
     Union,
-    Type, Generic, Iterable,
+    Type,
+    Generic,
+    Iterable,
 )
 
 from pydantic import BaseModel, model_validator
@@ -108,6 +110,7 @@ def mutator(method):
         return method(self, *args, **kwargs)
 
     return wrapper
+
 
 PlayerId = int
 

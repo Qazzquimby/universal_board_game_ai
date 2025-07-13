@@ -12,7 +12,8 @@ from environments.base import (
     ActionResult,
     StateWithKey,
     Grid,
-    BaseState, Player,
+    BaseState,
+    Player,
 )
 
 ColumnActionType = int
