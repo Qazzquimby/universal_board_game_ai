@@ -191,28 +191,25 @@ class Grid(BaseModel, Generic[Cell_T]):
         and features for automatic network configuration.
         """
         from typing import get_args, get_origin
-        import inspect
 
-        entity_type_arg = None
-
-        # Walk the MRO to find the specialized Generic class (e.g., Grid[Player]).
-        # This works for both `class MyGrid(Grid[Player])` and `Grid[Player]()`.
-        for base in type(self).__mro__:
-            if getattr(base, "__origin__", None) is Grid:
-                args = get_args(base)
-                if args:
-                    entity_type_arg = args[0]
-                    break
-
-        if entity_type_arg is None:
-            # This happens if Grid is used without a type parameter, e.g. `Grid()`
-            # instead of `Grid[MyEntity]()` or `class MyGrid(Grid[MyEntity]): ...`
-            # We cannot automatically determine the network structure in this case.
+        # todo crap temp code assuming all grids contain players
+        # Pydantic models resolve generic type parameters. We can inspect
+        # the type annotation of the `cells` field to find the entity type.
+        try:
+            # e.g., List[List[Optional[Player]]]
+            cells_annotation = type(self).model_fields["cells"].rebuild_annotation()
+            # e.g., (List[Optional[Player]],)
+            list_of_optional_player = get_args(cells_annotation)
+            # e.g., (Optional[Player],)
+            optional_player = get_args(list_of_optional_player[0])
+            # e.g., Optional[Player]
+            entity_type_arg = optional_player[0]
+        except (KeyError, IndexError):
+            # This can happen if the model is not set up as expected.
             raise TypeError(
-                f"Grid of type {type(self).__name__} was not specialized with an entity type, "
-                f"e.g., `class MyGrid(Grid[MyEntityType])` or `Grid[MyEntityType]()`. "
+                f"Could not determine entity type for Grid of type {type(self).__name__}. "
                 f"MRO: {[c.__name__ for c in type(self).__mro__]}. "
-                "Cannot automatically configure network."
+                "Ensure it's a Pydantic model with a 'cells' field like `List[List[Optional[EntityType]]]`."
             )
 
         # Handle Optional[EntityType] by extracting the non-None type
@@ -229,11 +226,9 @@ class Grid(BaseModel, Generic[Cell_T]):
         else:
             entity_type = entity_type_arg
 
-        if not isinstance(entity_type, type) or not issubclass(entity_type, BaseModel):
-            return None
-
         position_dims = {"y": self.height, "x": self.width}
 
+        # TODO player should subclass GameEntity. All game entities should have get_features.
         features = {}
         for e_fname, e_field in entity_type.model_fields.items():
             # Heuristic: find integer fields named 'id' to treat as categorical features
@@ -242,9 +237,6 @@ class Grid(BaseModel, Generic[Cell_T]):
                     features[e_fname] = {
                         "cardinality": len(env.players) + 1
                     }  # +1 for empty/None cell
-
-        if not features:
-            return None
 
         return {
             "position_dims": position_dims,
