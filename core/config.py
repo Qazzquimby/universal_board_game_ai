@@ -48,6 +48,18 @@ class AlphaZeroConfig:
     # --- Dirichlet Noise for Exploration during Self-Play ---
     dirichlet_alpha: float = 0.3  # Shape parameter for noise (typical value 0.3)
     dirichlet_epsilon: float = 0.25  # Weight of noise vs. priors (typical value 0.25)
+    # --- AutoGraphNet model parameters ---
+    state_model_params: Dict[str, Any] = field(
+        default_factory=lambda: {
+            "embedding_dim": 64,
+            "num_heads": 4,
+            "num_encoder_layers": 2,
+            "dropout": 0.1,
+        }
+    )
+    policy_model_params: Dict[str, Any] = field(
+        default_factory=lambda: {"embedding_dim": 64}
+    )
     # --- Dynamic Simulations ---
     dynamic_simulations_enabled: bool = True  # Set to True to enable early stopping
     dynamic_simulations_min_visits: int = 30  # Min total visits before stopping early
@@ -91,6 +103,7 @@ class TrainingConfig:
     save_checkpoint_frequency: int = 2
     # MCTS Profiling configuration
     enable_mcts_profiling: bool = True
+    learning_rate: float = 0.001
 
 
 # --- WandB Configuration ---

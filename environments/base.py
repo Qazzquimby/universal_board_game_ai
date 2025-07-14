@@ -268,7 +268,7 @@ class BaseEnvironment(abc.ABC):
         self.winner = None
         self.rewards = None
 
-        self.reset()
+        self.state = None  # The current state of the game, to be set by subclasses
 
     def define_action(
         self,
@@ -392,12 +392,6 @@ class BaseEnvironment(abc.ABC):
     @abc.abstractmethod
     def num_action_types(self) -> int:
         """The total number of distinct actions possible in the game."""
-        pass
-
-    @property
-    @abc.abstractmethod
-    def observation_tensor_shape(self) -> Tuple[int, ...]:
-        """Returns the shape of the flattened observation tensor for network input."""
         pass
 
     def reset(self) -> StateWithKey:

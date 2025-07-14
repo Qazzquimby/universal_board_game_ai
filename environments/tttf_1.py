@@ -117,16 +117,6 @@ class TTTF_1(BaseEnvironment):
     def num_players(self) -> int:
         return self._num_players
 
-    # TODO later, replace this with one tensor size per entity type, including player, and one for Game
-    # Will be input to transformer architecture
-    @property
-    def observation_tensor_shape(self) -> Tuple[int, ...]:
-        # Vector: [h1_hp, h2_hp, ..., hn_hp]
-        num_features = len(self.heroes)
-        return (num_features,)
-
-    # dont worry about the policy handling. That'd be handled differently
-
     def _reset(self) -> StateWithKey:
         # Clear engine-related state, but preserve action definitions
         self.triggered_abilities.clear()

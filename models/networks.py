@@ -113,6 +113,7 @@ class _StateModel(nn.Module):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         # 1. Find grid in state and get its network configuration
+        # Todo Get everything from the state.
         from environments.base import Grid
 
         grid_instance = None
@@ -123,14 +124,7 @@ class _StateModel(nn.Module):
                 self.grid_field_name = field.name
                 grid_instance = field.annotation()  # Create instance to call method
                 break
-        if not grid_instance:
-            raise ValueError(
-                "Could not find a 'Grid' in the environment's state model."
-            )
-
         self.network_config = grid_instance.get_network_config(self.env)
-        if not self.network_config:
-            raise ValueError("Failed to get network config from grid.")
 
         # 2. Create embedding layers based on config
         self.embedding_layers = nn.ModuleDict()

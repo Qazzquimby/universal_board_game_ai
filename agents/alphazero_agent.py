@@ -126,7 +126,6 @@ class AlphaZeroAgent(Agent):
 
     def __init__(
         self,
-        num_simulations: int,
         selection_strategy: SelectionStrategy,
         expansion_strategy: ExpansionStrategy,
         evaluation_strategy: EvaluationStrategy,
@@ -136,18 +135,14 @@ class AlphaZeroAgent(Agent):
         env: BaseEnvironment,
         config: AlphaZeroConfig,
         training_config: TrainingConfig,
-        temperature=0,
     ):
-        if num_simulations <= 0:
+        if config.num_simulations <= 0:
             raise ValueError("Number of simulations must be positive.")
 
         self.selection_strategy = selection_strategy
         self.expansion_strategy = expansion_strategy
         self.evaluation_strategy = evaluation_strategy
         self.backpropagation_strategy = backpropagation_strategy
-
-        self.num_simulations = num_simulations
-        self.temperature = temperature
 
         self.root: MCTSNode = None
         self.node_cache = MCTSNodeCache()
@@ -169,6 +164,7 @@ class AlphaZeroAgent(Agent):
         self.train_replay_buffer = deque(maxlen=train_buffer_size)
         self.val_replay_buffer = deque(maxlen=val_buffer_size)
 
+
     def _ensure_state_is_root(self, state_with_key: StateWithKey):
         if self.root and self.root.state_with_key.key == state_with_key.key:
             return  # already root
@@ -179,6 +175,7 @@ class AlphaZeroAgent(Agent):
         else:
             self.root = MCTSNode(state_with_key=state_with_key)
             self.node_cache.cache_node(key=state_with_key.key, node=self.root)
+
 
     def act(self, state: StateType, train: bool = False) -> ActionType:
         """
@@ -239,7 +236,7 @@ class AlphaZeroAgent(Agent):
                 "Must run `act()` to perform a search before getting a policy target."
             )
 
-        policy_vector = np.zeros(self.env.policy_vector_size, dtype=np.float32)
+        policy_vector = np.zeros(self.env.num_action_types, dtype=np.float32)
         if not self.root.edges:
             return policy_vector  # Return zeros if no actions were possible/explored
 
@@ -290,7 +287,7 @@ class AlphaZeroAgent(Agent):
                 max_visits = visit_counts[-1]
                 second_most_visits = visit_counts[-2]
                 sims_needed_to_change_mind = max_visits - second_most_visits
-                remaining_sims = self.num_simulations - sim_idx
+                remaining_sims = self.config.num_simulations - sim_idx
                 if remaining_sims < sims_needed_to_change_mind:
                     break
 
@@ -741,8 +738,7 @@ def make_pure_az(
         optimizer = None
 
     return AlphaZeroAgent(
-        num_simulations=config.num_simulations,
-        selection_strategy=UCB1Selection(exploration_constant=1.41),
+        selection_strategy=UCB1Selection(exploration_constant=config.cpuct),
         expansion_strategy=AlphaZeroExpansion(network=network),
         evaluation_strategy=AlphaZeroEvaluation(network=network),
         backpropagation_strategy=StandardBackpropagation(),

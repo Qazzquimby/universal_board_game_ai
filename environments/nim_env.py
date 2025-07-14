@@ -56,12 +56,6 @@ class NimEnv(BaseEnvironment):
         return self._num_players
 
     @property
-    def observation_tensor_shape(self) -> Tuple[int, ...]:
-        """Returns the shape of the flattened observation tensor (piles + current_player)."""
-        # Shape is 1D: (number_of_piles + 1 for current_player)
-        return (len(self.initial_piles) + 1,)
-
-    @property
     def policy_vector_size(self) -> int:
         """
         Calculates the fixed size of the policy vector.

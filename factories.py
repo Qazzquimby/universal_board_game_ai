@@ -17,7 +17,7 @@ from core.config import (
 from environments.base import BaseEnvironment
 from environments.connect4 import Connect4
 from environments.nim_env import NimEnv
-from agents.mcts_agent import MCTSAgent, make_pure_mcts
+from agents.mcts_agent import make_pure_mcts
 from models.networks import AutoGraphNet
 from algorithms.mcts import UCB1Selection, StandardBackpropagation
 
@@ -37,9 +37,6 @@ def get_environment(env_config: EnvConfig) -> BaseEnvironment:
 
 def get_agents(env: BaseEnvironment, config: AppConfig) -> Dict[str, Agent]:
     """Factory function to create agent instances for the given environment."""
-
-    az_agent_name = "AlphaZero"
-
     az_config = config.alpha_zero
     training_config = config.training
 
@@ -49,13 +46,10 @@ def get_agents(env: BaseEnvironment, config: AppConfig) -> Dict[str, Agent]:
         state_model_params=az_config.state_model_params,
         policy_model_params=az_config.policy_model_params,
     )
-    optimizer = optim.AdamW(network.parameters(), lr=training_config.lr)
+    optimizer = optim.AdamW(network.parameters(), lr=training_config.learning_rate)
 
     az_agent = AlphaZeroAgent(
-        num_simulations=az_config.num_simulations,
-        selection_strategy=UCB1Selection(
-            exploration_constant=az_config.exploration_constant
-        ),
+        selection_strategy=UCB1Selection(exploration_constant=az_config.cpuct),
         expansion_strategy=AlphaZeroExpansion(network=network),
         evaluation_strategy=AlphaZeroEvaluation(network=network),
         backpropagation_strategy=StandardBackpropagation(),
@@ -64,7 +58,6 @@ def get_agents(env: BaseEnvironment, config: AppConfig) -> Dict[str, Agent]:
         env=env,
         config=az_config,
         training_config=training_config,
-        temperature=az_config.temperature,
     )
     if not az_agent.load():
         logger.warning(
