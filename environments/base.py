@@ -191,8 +191,29 @@ class Grid(BaseModel, Generic[Cell_T]):
         and features for automatic network configuration.
         """
         from typing import get_args, get_origin
+        import inspect
 
-        entity_type_arg = self.__pydantic_generic_metadata__["args"][0]
+        entity_type_arg = None
+
+        # Walk the MRO to find the specialized Generic class (e.g., Grid[Player]).
+        # This works for both `class MyGrid(Grid[Player])` and `Grid[Player]()`.
+        for base in type(self).__mro__:
+            if getattr(base, "__origin__", None) is Grid:
+                args = get_args(base)
+                if args:
+                    entity_type_arg = args[0]
+                    break
+
+        if entity_type_arg is None:
+            # This happens if Grid is used without a type parameter, e.g. `Grid()`
+            # instead of `Grid[MyEntity]()` or `class MyGrid(Grid[MyEntity]): ...`
+            # We cannot automatically determine the network structure in this case.
+            raise TypeError(
+                f"Grid of type {type(self).__name__} was not specialized with an entity type, "
+                f"e.g., `class MyGrid(Grid[MyEntityType])` or `Grid[MyEntityType]()`. "
+                f"MRO: {[c.__name__ for c in type(self).__mro__]}. "
+                "Cannot automatically configure network."
+            )
 
         # Handle Optional[EntityType] by extracting the non-None type
         origin = get_origin(entity_type_arg)

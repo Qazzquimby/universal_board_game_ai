@@ -116,15 +116,18 @@ class _StateModel(nn.Module):
         from environments.base import Grid
 
         grid_instance = None
-        for _key, val in self.env.state.__dict__.items():
+        grid_field_name = None
+        for key, val in self.env.state.__dict__.items():
             if isinstance(val, Grid):
                 grid_instance = val
+                grid_field_name = key
                 break
 
         if grid_instance is None:
             raise TypeError(
                 "Could not find a `Grid` field in the environment's state model."
             )
+        self.grid_field_name = grid_field_name
         self.network_config = grid_instance.get_network_config(self.env)
 
         self.embedding_layers = nn.ModuleDict()
@@ -181,9 +184,21 @@ class _StateModel(nn.Module):
         mask = torch.zeros(1, sequence.shape[1], dtype=torch.bool, device=self.device)
         return sequence, mask
 
-    def forward(
-        self, src: torch.Tensor, src_key_padding_mask: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, *args) -> Tuple[torch.Tensor, torch.Tensor]:
+        if isinstance(args[0], StateWithKey):
+            # Inference path: called with a single StateWithKey object
+            state_with_key: StateWithKey = args[0]
+            src, src_key_padding_mask = self.create_input_tensors_from_state(
+                state_with_key.state
+            )
+        elif torch.is_tensor(args[0]) and len(args) == 2:
+            # Training path: called with tensors
+            src, src_key_padding_mask = args
+        else:
+            raise TypeError(
+                f"Unsupported input type for _StateModel.forward: {[type(arg) for arg in args]}"
+            )
+
         batch_size = src.shape[0]
 
         # Prepend game token to sequence
