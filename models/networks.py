@@ -112,21 +112,21 @@ class _StateModel(nn.Module):
         self.env = env
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        # 1. Find grid in state and get its network configuration
-        # Todo Get everything from the state.
+        # Todo Get everything from the state. Don't assert state is 1 grid.
         from environments.base import Grid
 
         grid_instance = None
-        for field in type(self.env.state).model_fields.values():
-            if isinstance(field.annotation, type) and issubclass(
-                field.annotation, Grid
-            ):
-                self.grid_field_name = field.name
-                grid_instance = field.annotation()  # Create instance to call method
+        for _key, val in self.env.state.__dict__.items():
+            if isinstance(val, Grid):
+                grid_instance = val
                 break
+
+        if grid_instance is None:
+            raise TypeError(
+                "Could not find a `Grid` field in the environment's state model."
+            )
         self.network_config = grid_instance.get_network_config(self.env)
 
-        # 2. Create embedding layers based on config
         self.embedding_layers = nn.ModuleDict()
         self.embedding_dim = embedding_dim
         for pos_dim, size in self.network_config["position_dims"].items():
@@ -136,7 +136,6 @@ class _StateModel(nn.Module):
                 info["cardinality"], embedding_dim
             )
 
-        # 3. Transformer Encoder
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=embedding_dim, nhead=num_heads, dropout=dropout, batch_first=True
         )
@@ -145,7 +144,6 @@ class _StateModel(nn.Module):
         )
         self.game_token = nn.Parameter(torch.randn(1, 1, embedding_dim))
 
-        # 4. Value Head
         self.value_head = nn.Sequential(nn.Linear(embedding_dim, 1), nn.Tanh())
 
     def create_input_tensors_from_state(

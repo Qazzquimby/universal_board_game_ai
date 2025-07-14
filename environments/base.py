@@ -268,7 +268,7 @@ class BaseEnvironment(abc.ABC):
         self.winner = None
         self.rewards = None
 
-        self.state = None  # The current state of the game, to be set by subclasses
+        self.state: Optional[BaseState] = None
 
     def define_action(
         self,
