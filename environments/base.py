@@ -115,7 +115,7 @@ def mutator(method):
 PlayerId = int
 
 
-class Networkable(BaseModel, abc.ABC):
+class Networkable(abc.ABC):
     @classmethod
     @abc.abstractmethod
     def get_feature_schema(cls, env: "BaseEnvironment") -> Dict[str, Dict[str, Any]]:
@@ -134,9 +134,76 @@ class Networkable(BaseModel, abc.ABC):
         pass
 
 
-class Player(Networkable):
+TargetFilter = Union[Selector, Type, Any]
+
+
+class GameEntity(Networkable, abc.ABC):
+    def __init__(self, env: "BaseEnvironment", name: str):
+        self.env = env
+        self.name = name
+        env.entities[self.name] = self
+
+    def _add_hook(
+        self,
+        timing: TriggerTiming,
+        target_filter: TargetFilter,
+        action: Callable,
+        handler: Callable,
+    ):
+        hook = TriggeredAbility(
+            timing=timing,
+            filter=target_filter,
+            on_event=action.__name__,
+            response=handler,
+            owner=self,
+        )
+        self.env.triggered_abilities[hook.on_event].append(hook)
+
+    def modify(self, target_filter: TargetFilter, action: Callable, handler: Callable):
+        self._add_hook(
+            timing="modify",
+            target_filter=target_filter,
+            action=action,
+            handler=handler,
+        )
+
+    def replace(self, target_filter: TargetFilter, action: Callable, handler: Callable):
+        self._add_hook(
+            timing="replace",
+            target_filter=target_filter,
+            action=action,
+            handler=handler,
+        )
+
+    def before(self, target_filter: TargetFilter, action: Callable, handler: Callable):
+        self._add_hook(
+            timing="before",
+            target_filter=target_filter,
+            action=action,
+            handler=handler,
+        )
+
+    def after(self, target_filter: TargetFilter, action: Callable, handler: Callable):
+        self._add_hook(
+            timing="after",
+            target_filter=target_filter,
+            action=action,
+            handler=handler,
+        )
+
+
+class Player(BaseModel, GameEntity):
     id: PlayerId
     name: str
+
+    # This makes Player compatible with GameEntity while being a Pydantic model.
+    # The GameEntity part is only initialized if an `env` is provided.
+    # Player instances used as simple data (e.g., in BaseState) can be
+    # created without an env, and they won't be registered as active entities.
+    def __init__(self, env: Optional["BaseEnvironment"] = None, **data):
+        super().__init__(**data)
+        if env:
+            GameEntity.__init__(self, env=env, name=self.name)
 
     @classmethod
     def get_feature_schema(cls, env: "BaseEnvironment") -> Dict[str, Dict[str, Any]]:
@@ -449,20 +516,14 @@ class BaseEnvironment(abc.ABC):
                 if isinstance(value, Grid):
                     grid_instance = value
                     break
+        assert grid_instance
 
-        if not grid_instance:
-            return None
-
-        # --- Logic moved from Grid.get_network_config ---
-        try:
-            cells_annotation = type(grid_instance).model_fields[
-                "cells"
-            ].rebuild_annotation()
-            list_of_optional_entity = get_args(cells_annotation)
-            optional_entity = get_args(list_of_optional_entity[0])
-            entity_type_arg = optional_entity[0]
-        except (KeyError, IndexError):
-            return None
+        cells_annotation = (
+            type(grid_instance).model_fields["cells"].rebuild_annotation()
+        )
+        list_of_optional_entity = get_args(cells_annotation)
+        optional_entity = get_args(list_of_optional_entity[0])
+        entity_type_arg = optional_entity[0]
 
         origin = get_origin(entity_type_arg)
         if origin is Union:
@@ -473,14 +534,17 @@ class BaseEnvironment(abc.ABC):
         else:
             entity_type = entity_type_arg
 
-        if not entity_type or not issubclass(entity_type, Networkable):
-            return None
+        if (
+            not entity_type
+            or not issubclass(entity_type, BaseModel)
+            or not issubclass(entity_type, Networkable)
+        ):
+            assert False
 
         position_dims = {"y": grid_instance.height, "x": grid_instance.width}
         features = entity_type.get_feature_schema(self)
 
-        if not features:
-            return None
+        assert features
 
         return {
             "position_dims": position_dims,
@@ -562,61 +626,3 @@ class BaseEnvironment(abc.ABC):
     def close(self) -> None:
         """Clean up any resources (optional)."""
         pass
-
-
-TargetFilter = Union[Selector, Type, Any]
-
-
-class GameEntity:
-    def __init__(self, env: "BaseEnvironment", name: str):
-        self.env = env
-        self.name = name
-        env.entities[self.name] = self
-
-    def _add_hook(
-        self,
-        timing: TriggerTiming,
-        target_filter: TargetFilter,
-        action: Callable,
-        handler: Callable,
-    ):
-        hook = TriggeredAbility(
-            timing=timing,
-            filter=target_filter,
-            on_event=action.__name__,
-            response=handler,
-            owner=self,
-        )
-        self.env.triggered_abilities[hook.on_event].append(hook)
-
-    def modify(self, target_filter: TargetFilter, action: Callable, handler: Callable):
-        self._add_hook(
-            timing="modify",
-            target_filter=target_filter,
-            action=action,
-            handler=handler,
-        )
-
-    def replace(self, target_filter: TargetFilter, action: Callable, handler: Callable):
-        self._add_hook(
-            timing="replace",
-            target_filter=target_filter,
-            action=action,
-            handler=handler,
-        )
-
-    def before(self, target_filter: TargetFilter, action: Callable, handler: Callable):
-        self._add_hook(
-            timing="before",
-            target_filter=target_filter,
-            action=action,
-            handler=handler,
-        )
-
-    def after(self, target_filter: TargetFilter, action: Callable, handler: Callable):
-        self._add_hook(
-            timing="after",
-            target_filter=target_filter,
-            action=action,
-            handler=handler,
-        )
