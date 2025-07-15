@@ -112,23 +112,13 @@ class _StateModel(nn.Module):
         self.env = env
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        # Todo Get everything from the state. Don't assert state is 1 grid.
-        from environments.base import Grid
-
-        grid_instance = None
-        grid_field_name = None
-        for key, val in self.env.state.__dict__.items():
-            if isinstance(val, Grid):
-                grid_instance = val
-                grid_field_name = key
-                break
-
-        if grid_instance is None:
+        self.network_config = self.env.get_network_config()
+        if self.network_config is None:
             raise TypeError(
-                "Could not find a `Grid` field in the environment's state model."
+                f"Could not automatically configure network for environment '{type(self.env).__name__}'. "
+                "The default implementation of `get_network_config` requires a `Grid` in the state. "
+                "For non-grid environments, you may need to override this method."
             )
-        self.grid_field_name = grid_field_name
-        self.network_config = grid_instance.get_network_config(self.env)
 
         self.embedding_layers = nn.ModuleDict()
         self.embedding_dim = embedding_dim
@@ -149,36 +139,53 @@ class _StateModel(nn.Module):
 
         self.value_head = nn.Sequential(nn.Linear(embedding_dim, 1), nn.Tanh())
 
-    def create_input_tensors_from_state(
-        self, state_dict: dict
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        grid_data = state_dict[self.grid_field_name]
-        height = self.network_config["position_dims"]["y"]
-        width = self.network_config["position_dims"]["x"]
+    def create_input_tensors_from_state(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Creates input tensors from the current state of the environment.
+        Relies on the agent to have set the environment to the correct state.
+        """
+        from environments.base import Networkable
+
         features = self.network_config["features"]
+        entity_type = self.network_config["entity_type"]
+        all_entities = self.env.get_all_networkable_entities()
 
         entity_tokens = []
-        for r in range(height):
-            for c in range(width):
-                cell = grid_data["cells"][r][c]
-                # Sum embeddings for position and features
-                pos_y_idx = torch.tensor([r], device=self.device)
-                pos_x_idx = torch.tensor([c], device=self.device)
-                token = self.embedding_layers["y"](pos_y_idx) + self.embedding_layers[
-                    "x"
-                ](pos_x_idx)
+        for entity_instance, pos_data in all_entities:
+            # Create position part of token by summing position dimension embeddings
+            token = 0
+            for pos_dim_name, pos_dim_val in pos_data.items():
+                pos_idx = torch.tensor([pos_dim_val], device=self.device)
+                token += self.embedding_layers[pos_dim_name](pos_idx)
 
-                for feat_name in features:
-                    if cell is None:
-                        # Use last index for None/empty
-                        feat_idx_val = (
-                            self.embedding_layers[feat_name].num_embeddings - 1
-                        )
-                    else:
-                        feat_idx_val = cell[feat_name]
-                    feat_idx = torch.tensor([feat_idx_val], device=self.device)
-                    token += self.embedding_layers[feat_name](feat_idx)
-                entity_tokens.append(token)
+            # Create feature part of token by summing feature embeddings
+            feature_values = None
+            if entity_instance is not None:
+                # The entity might be a raw dict (from Pydantic) or already an object
+                if isinstance(entity_instance, dict):
+                    entity_obj = entity_type(**entity_instance)
+                elif isinstance(entity_instance, Networkable):
+                    entity_obj = entity_instance
+                else:
+                    raise TypeError(f"Unexpected entity type: {type(entity_instance)}")
+                feature_values = entity_obj.get_feature_values()
+
+            for feat_name in features:
+                if feature_values is None:
+                    # Use last index for None/empty cell
+                    feat_idx_val = self.embedding_layers[feat_name].num_embeddings - 1
+                else:
+                    feat_idx_val = feature_values[feat_name]
+
+                feat_idx = torch.tensor([feat_idx_val], device=self.device)
+                token += self.embedding_layers[feat_name](feat_idx)
+            entity_tokens.append(token)
+
+        if not entity_tokens:
+            # Handle case with no entities (e.g., empty board)
+            # Create a zero tensor with the correct embedding dimension
+            zero_token = torch.zeros(1, self.embedding_dim, device=self.device)
+            entity_tokens.append(zero_token)
 
         sequence = torch.cat(entity_tokens, dim=0).unsqueeze(0)
         mask = torch.zeros(1, sequence.shape[1], dtype=torch.bool, device=self.device)
@@ -186,11 +193,9 @@ class _StateModel(nn.Module):
 
     def forward(self, *args) -> Tuple[torch.Tensor, torch.Tensor]:
         if isinstance(args[0], StateWithKey):
-            # Inference path: called with a single StateWithKey object
-            state_with_key: StateWithKey = args[0]
-            src, src_key_padding_mask = self.create_input_tensors_from_state(
-                state_with_key.state
-            )
+            # Inference path: called with a single StateWithKey object.
+            # The agent is responsible for setting the env state before calling predict.
+            src, src_key_padding_mask = self.create_input_tensors_from_state()
         elif torch.is_tensor(args[0]) and len(args) == 2:
             # Training path: called with tensors
             src, src_key_padding_mask = args

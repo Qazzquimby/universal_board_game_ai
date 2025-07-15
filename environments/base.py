@@ -115,9 +115,38 @@ def mutator(method):
 PlayerId = int
 
 
-class Player(BaseModel):
+class Networkable(BaseModel, abc.ABC):
+    @classmethod
+    @abc.abstractmethod
+    def get_feature_schema(cls, env: "BaseEnvironment") -> Dict[str, Dict[str, Any]]:
+        """
+        Returns a schema for the entity's features for network configuration.
+        Example: {"feature_name": {"cardinality": 10}}
+        """
+        pass
+
+    @abc.abstractmethod
+    def get_feature_values(self) -> Dict[str, int]:
+        """
+        Returns the concrete feature values for this entity instance.
+        Example: {"feature_name": 3}
+        """
+        pass
+
+
+class Player(Networkable):
     id: PlayerId
     name: str
+
+    @classmethod
+    def get_feature_schema(cls, env: "BaseEnvironment") -> Dict[str, Dict[str, Any]]:
+        if hasattr(env, "players"):
+            # +1 for empty/None cell
+            return {"id": {"cardinality": len(env.players) + 1}}
+        return {}
+
+    def get_feature_values(self) -> Dict[str, int]:
+        return {"id": self.id}
 
 
 class Players(Iterable):
@@ -185,64 +214,12 @@ class Grid(BaseModel, Generic[Cell_T]):
             )
         return "\n".join(result)
 
-    def get_network_config(self, env: "BaseEnvironment"):
-        """
-        Inspects the Grid's own generic type to determine its structure
-        and features for automatic network configuration.
-        """
-        from typing import get_args, get_origin
-
-        # todo crap temp code assuming all grids contain players
-        # Pydantic models resolve generic type parameters. We can inspect
-        # the type annotation of the `cells` field to find the entity type.
-        try:
-            # e.g., List[List[Optional[Player]]]
-            cells_annotation = type(self).model_fields["cells"].rebuild_annotation()
-            # e.g., (List[Optional[Player]],)
-            list_of_optional_player = get_args(cells_annotation)
-            # e.g., (Optional[Player],)
-            optional_player = get_args(list_of_optional_player[0])
-            # e.g., Optional[Player]
-            entity_type_arg = optional_player[0]
-        except (KeyError, IndexError):
-            # This can happen if the model is not set up as expected.
-            raise TypeError(
-                f"Could not determine entity type for Grid of type {type(self).__name__}. "
-                f"MRO: {[c.__name__ for c in type(self).__mro__]}. "
-                "Ensure it's a Pydantic model with a 'cells' field like `List[List[Optional[EntityType]]]`."
-            )
-
-        # Handle Optional[EntityType] by extracting the non-None type
-        origin = get_origin(entity_type_arg)
-        if origin is Union:
-            non_none_args = [
-                arg for arg in get_args(entity_type_arg) if arg is not type(None)
-            ]
-            if len(non_none_args) == 1:
-                entity_type = non_none_args[0]
-            else:
-                # This logic might need to be more sophisticated for complex Unions
-                entity_type = non_none_args[0]
-        else:
-            entity_type = entity_type_arg
-
-        position_dims = {"y": self.height, "x": self.width}
-
-        # TODO player should subclass GameEntity. All game entities should have get_features.
-        features = {}
-        for e_fname, e_field in entity_type.model_fields.items():
-            # Heuristic: find integer fields named 'id' to treat as categorical features
-            if e_field.annotation == int and e_fname == "id":
-                if hasattr(env, "players"):
-                    features[e_fname] = {
-                        "cardinality": len(env.players) + 1
-                    }  # +1 for empty/None cell
-
-        return {
-            "position_dims": position_dims,
-            "features": features,
-            "entity_type": entity_type,
-        }
+    def get_entities_with_position(
+        self,
+    ) -> Iterable[Tuple[Optional[Cell_T], Dict[str, int]]]:
+        for r in range(self.height):
+            for c in range(self.width):
+                yield self.cells[r][c], {"y": r, "x": c}
 
 
 class BaseState(BaseModel):
@@ -454,6 +431,84 @@ class BaseEnvironment(abc.ABC):
             The current player index (e.g., 0 or 1).
         """
         pass
+
+    def get_network_config(self) -> Optional[Dict[str, Any]]:
+        """
+        Provides the network configuration by inspecting the environment's state.
+
+        The default implementation looks for a `Grid` instance in the state and
+        derives the configuration from it. Environments with different state
+        structures should override this method.
+        """
+        from typing import get_args, get_origin
+
+        # Default implementation: find the first Grid in the state.
+        grid_instance = None
+        if self.state:
+            for _key, value in self.state:
+                if isinstance(value, Grid):
+                    grid_instance = value
+                    break
+
+        if not grid_instance:
+            return None
+
+        # --- Logic moved from Grid.get_network_config ---
+        try:
+            cells_annotation = type(grid_instance).model_fields[
+                "cells"
+            ].rebuild_annotation()
+            list_of_optional_entity = get_args(cells_annotation)
+            optional_entity = get_args(list_of_optional_entity[0])
+            entity_type_arg = optional_entity[0]
+        except (KeyError, IndexError):
+            return None
+
+        origin = get_origin(entity_type_arg)
+        if origin is Union:
+            non_none_args = [
+                arg for arg in get_args(entity_type_arg) if arg is not type(None)
+            ]
+            entity_type = non_none_args[0] if non_none_args else None
+        else:
+            entity_type = entity_type_arg
+
+        if not entity_type or not issubclass(entity_type, Networkable):
+            return None
+
+        position_dims = {"y": grid_instance.height, "x": grid_instance.width}
+        features = entity_type.get_feature_schema(self)
+
+        if not features:
+            return None
+
+        return {
+            "position_dims": position_dims,
+            "features": features,
+            "entity_type": entity_type,
+        }
+
+    def get_all_networkable_entities(
+        self,
+    ) -> Iterable[Tuple[Optional["Networkable"], Dict[str, int]]]:
+        """
+        Retrieves all networkable entities and their positions from the state.
+
+        The default implementation looks for a `Grid` and returns its entities.
+        Environments with different state structures should override this method.
+        """
+        # Default implementation: find the first Grid in the state.
+        grid_instance = None
+        if self.state:
+            for _key, value in self.state:
+                if isinstance(value, Grid):
+                    grid_instance = value
+                    break
+
+        if grid_instance:
+            return grid_instance.get_entities_with_position()
+
+        return []
 
     def get_state_with_key(self) -> StateWithKey:
         if self._dirty:
