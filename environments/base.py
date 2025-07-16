@@ -17,7 +17,7 @@ from typing import (
     Iterable,
 )
 
-from pydantic import BaseModel, model_validator, ConfigDict
+from pydantic import BaseModel, model_validator, ConfigDict, PrivateAttr
 
 ActionType = TypeVar("ActionType")
 StateType = Dict[str, Any]
@@ -137,11 +137,24 @@ class Networkable(abc.ABC):
 TargetFilter = Union[Selector, Type, Any]
 
 
-class GameEntity(Networkable, abc.ABC):
-    def __init__(self, env: "BaseEnvironment", name: str):
-        self.env = env
-        self.name = name
+class GameEntity(BaseModel, Networkable, abc.ABC):
+    name: str
+    _env: Optional["BaseEnvironment"] = PrivateAttr(default=None)
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    def bind(self, env: "BaseEnvironment"):
+        """Binds the entity to a live environment."""
+        self._env = env
         env.entities[self.name] = self
+
+    @property
+    def env(self) -> "BaseEnvironment":
+        if self._env is None:
+            raise AttributeError(
+                f"'{type(self).__name__}' instance '{self.name}' is not bound to an environment."
+            )
+        return self._env
 
     def _add_hook(
         self,
@@ -192,25 +205,15 @@ class GameEntity(Networkable, abc.ABC):
         )
 
 
-class Player(BaseModel, GameEntity):
+class Player(GameEntity):
     id: PlayerId
-    name: str
-
-    # This makes Player compatible with GameEntity while being a Pydantic model.
-    # The GameEntity part is only initialized if an `env` is provided.
-    # Player instances used as simple data (e.g., in BaseState) can be
-    # created without an env, and they won't be registered as active entities.
-    def __init__(self, env: Optional["BaseEnvironment"] = None, **data):
-        super().__init__(**data)
-        if env:
-            GameEntity.__init__(self, env=env, name=self.name)
 
     @classmethod
     def get_feature_schema(cls, env: "BaseEnvironment") -> Dict[str, Dict[str, Any]]:
-        if hasattr(env, "players"):
+        if hasattr(env, "state") and env.state and hasattr(env.state, "players"):
             # +1 for empty/None cell
-            return {"id": {"cardinality": len(env.players) + 1}}
-        return {}
+            return {"id": {"cardinality": len(env.state.players) + 1}}
+        return {"id": {"cardinality": 3}}  # Fallback for P1, P2, None
 
     def get_feature_values(self) -> Dict[str, int]:
         return {"id": self.id}
@@ -234,6 +237,9 @@ class Players(Iterable):
             raise ValueError("Number of player labels must match num_players.")
 
         self.players = [Player(id=i, name=player_labels[i]) for i in range(num_players)]
+
+    def __len__(self):
+        return len(self.players)
 
     def __iter__(self):
         for player in self.players:
@@ -326,6 +332,25 @@ class BaseEnvironment(abc.ABC):
         self.rewards = None
 
         self.state: Optional[BaseState] = None
+
+    def _bind_state_entities(self):
+        """
+        Traverses the current state and binds any unbound GameEntity objects
+        to this environment instance.
+        """
+        if not self.state:
+            return
+
+        # Bind players
+        if hasattr(self.state, "players"):
+            for player in self.state.players:
+                if isinstance(player, GameEntity) and player._env is None:
+                    player.bind(self)
+
+        # Bind other entities, e.g., from a grid
+        for entity, _position in self.get_all_networkable_entities():
+            if isinstance(entity, GameEntity) and entity._env is None:
+                entity.bind(self)
 
     def define_action(
         self,
@@ -459,7 +484,9 @@ class BaseEnvironment(abc.ABC):
             The initial state observation.
         """
         self._dirty = True
-        return self._reset()
+        state_with_key = self._reset()
+        self._bind_state_entities()
+        return state_with_key
 
     @abc.abstractmethod
     def _reset(self) -> StateWithKey:
@@ -584,7 +611,6 @@ class BaseEnvironment(abc.ABC):
     def _get_state(self):
         pass
 
-    @abc.abstractmethod
     def get_winning_player(self) -> Optional[int]:
         """
         Get the index of the winning player.
@@ -592,7 +618,11 @@ class BaseEnvironment(abc.ABC):
         Returns:
             The winner's index, or None if there is no winner (draw or game not over).
         """
-        pass
+        if self.done and self.rewards:
+            # todo return index of highest reward
+            raise NotImplementedError
+
+        return None
 
     @abc.abstractmethod
     def copy(self) -> "BaseEnvironment":
@@ -608,6 +638,9 @@ class BaseEnvironment(abc.ABC):
     def set_state(self, state: StateType) -> None:
         """
         Set the environment to a specific state.
+
+        Implementations should call `self._bind_state_entities()` after setting
+        the state to ensure all game entities are correctly bound.
 
         Args:
             state: The state dictionary to load.

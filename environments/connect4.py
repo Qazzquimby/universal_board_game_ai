@@ -84,48 +84,24 @@ class Connect4(BaseEnvironment):
             )
 
         col = action  # Action is the column index
-        self.state.last_action = col  # Store the column chosen
 
-        # Reset rewards for all players
-        self.state.rewards = {p.id: 0.0 for p in self.players.players}
-
-        # Check if action is valid
-        if not self._is_valid_action(col):
-            # Raise error for invalid actions (column full or out of bounds)
-            raise ValueError(f"Invalid action (column {col}) for board state.")
+        assert self._is_valid_action(col)
 
         # Find the lowest available row in the chosen column (gravity)
         row = -1
-        for r in range(
-            self.height - 1, -1, -1
-        ):  # Iterate from bottom row (height-1) up to 0
+        for r in range(self.state.board.height - 1, -1, -1):
             if self.state.board[r, col] is None:
                 row = r
                 break
 
-        # Place piece on the board at the calculated row
         self.state.board[row, col] = self.state.current_player
-        self.state.step_count += 1
 
-        # Check for win starting from the placed piece's location (row, col)
         if self._check_win(row, col):
             self.state.done = True
-            self.state.winner = self.state.current_player
-            # Winner gets positive reward, loser gets negative reward
             self.state.rewards[self.state.current_player.id] = 1.0
-            for other_player in self.players.players:
+            for other_player in self.state.players.players:
                 if other_player.id != self.state.current_player.id:
                     self.state.rewards[other_player.id] = -1.0
-
-        # Check for draw
-        elif self.state.step_count >= self._max_steps or all(
-            all(cell is not None for cell in row) for row in self.state.board.cells
-        ):
-            self.state.done = True
-            # All players get 0 reward for draw (consistent with win/loss being +/- 1)
-            # Or keep 0.1 if desired, but 0 seems more standard for zero-sum games. Let's use 0.
-            for player in self.players.players:
-                self.state.rewards[player.id] = 0.0
 
         # Store the reward for the player who just moved *before* switching player
         reward_for_acting_player = self.state.rewards.get(
@@ -133,9 +109,13 @@ class Connect4(BaseEnvironment):
         )
 
         if not self.state.done:
-            current_player_idx = self.players.players.index(self.state.current_player)
-            next_player_idx = (current_player_idx + 1) % self.num_players
-            self.state.current_player = self.players.players[next_player_idx]
+            current_player_idx = self.state.players.players.index(
+                self.state.current_player
+            )
+            next_player_idx = (current_player_idx + 1) % len(self.state.players)
+            self.state.players.current_player = self.state.players.players[
+                next_player_idx
+            ]
 
         return ActionResult(
             next_state_with_key=self.get_state_with_key(),
@@ -145,10 +125,8 @@ class Connect4(BaseEnvironment):
 
     def _is_valid_action(self, col: ColumnActionType) -> bool:
         """Check if dropping a piece in the column is valid."""
-        # Check column bounds
         if not (0 <= col < self.width):
             return False
-        # Check if the top cell (row 0) of the column is empty
         if self.state.board[0, col] is not None:
             return False
         return True
@@ -215,13 +193,11 @@ class Connect4(BaseEnvironment):
             mode: The mode to render with
         """
         if mode == "human":
-            print(
-                f"Step: {self.state.step_count}, Player: {self.state.current_player.id}"
-            )
+            print(f"Player: {self.state.current_player.id}")
             # Print column numbers
             print("  " + " ".join(map(str, range(self.width))))
             print(" +" + "--" * self.width + "+")
-            for r in range(self.height):
+            for r in range(self.state.board.height):
                 row_str = f"{r}|"  # Print row numbers
                 for c in range(self.width):
                     cell = self.state.board[r, c]
@@ -248,13 +224,6 @@ class Connect4(BaseEnvironment):
                 valid_actions.append(col)
         return valid_actions
 
-    # Ensure method signatures match EnvInterface
-    def get_winning_player(self) -> Optional[int]:
-        """Return the winning player number, or None if no winner."""
-        if self.state.winner:
-            return self.state.winner.id
-        return None
-
     # This helper method isn't part of the interface, keep it if useful internally
     def is_draw(self) -> bool:
         """Return whether the game ended in a draw."""
@@ -273,12 +242,7 @@ class Connect4(BaseEnvironment):
     # Ensure method signatures match EnvInterface
     def copy(self) -> "Connect4":
         """Create a copy of the environment"""
-        new_env = Connect4(
-            width=self.width,
-            height=self.height,
-            num_players=self.num_players,
-            max_steps=self._max_steps,
-        )
+        new_env = Connect4()
         new_env.state = self.state.model_copy(deep=True)
         return new_env
 
@@ -297,9 +261,7 @@ class Connect4(BaseEnvironment):
         states.append(
             SanityCheckState(
                 description="Empty board, Player 0 turn",
-                state_with_key=Connect4(
-                    width=self.width, height=self.height
-                ).get_state_with_key(),
+                state_with_key=Connect4().get_state_with_key(),
                 expected_value=0.0,
                 expected_action=None,
             )
@@ -313,7 +275,7 @@ class Connect4(BaseEnvironment):
         # . . . . . . .
         # . . . . . . .
         # 0 0 0 . 1 1 .  <- Player 0 to move
-        env2 = Connect4(width=self.width, height=self.height)
+        env2 = Connect4()
         p0 = env2.players.players[0]
         p1 = env2.players.players[1]
         env2.state.board[5, 0] = p0
