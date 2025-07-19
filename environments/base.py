@@ -100,8 +100,8 @@ class SanityCheckState:
 @dataclass
 class ActionResult:
     next_state_with_key: StateWithKey
-    reward: float  #  The reward received by the player who just acted.
-    done: bool
+    reward: float = 0  #  The reward received by the player who just acted.
+    done: bool = False
 
 
 def mutator(method):
@@ -237,6 +237,17 @@ class Players(Iterable):
             raise ValueError("Number of player labels must match num_players.")
 
         self.players = [Player(id=i, name=player_labels[i]) for i in range(num_players)]
+        self.current_index = 0
+
+    @property
+    def current_player(self):
+        return self.players[self.current_index]
+
+    def set_to_next(self):
+        self.current_index = (self.current_index + 1) % len(self.players)
+
+    def set_to_previous(self):
+        self.current_index = (self.current_index - 1) % len(self.players)
 
     def __len__(self):
         return len(self.players)
@@ -283,7 +294,7 @@ class Grid(BaseModel, Generic[Cell_T]):
         result = []
         for row in self.cells:
             result.append(
-                "".join(str(cell) if cell is not None else "." for cell in row)
+                "".join(str(cell.name) if cell is not None else "." for cell in row)
             )
         return "\n".join(result)
 
@@ -297,16 +308,11 @@ class Grid(BaseModel, Generic[Cell_T]):
 
 class BaseState(BaseModel):
     players: Players
-    current_player_index: int = 0
 
     rewards: dict[PlayerId, float] = {}
     done: bool = False
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    @property
-    def current_player(self):
-        return self.players[self.current_player_index]
 
 
 class BaseEnvironment(abc.ABC):
@@ -315,7 +321,6 @@ class BaseEnvironment(abc.ABC):
     def __init__(self):
         self._dirty = True
         self._state_with_key: Optional[StateWithKey] = None
-        self.done = False  # is game currently over
 
         self.entities: dict[str, "GameEntity"] = {}
         self.action_resolvers: dict[str, Callable[[Any], None]] = {}
@@ -325,7 +330,6 @@ class BaseEnvironment(abc.ABC):
         self.event_stack = deque()
         self.game_log = []
         self.turn = 0
-        self.current_player = None
         self.is_processing = False
 
         self.winner = None
@@ -516,7 +520,6 @@ class BaseEnvironment(abc.ABC):
         """
         pass
 
-    @abc.abstractmethod
     def get_current_player(self) -> int:
         """
         Get the index of the player whose turn it is.
@@ -524,7 +527,7 @@ class BaseEnvironment(abc.ABC):
         Returns:
             The current player index (e.g., 0 or 1).
         """
-        pass
+        return self.state.players.current_index
 
     def get_network_config(self) -> Optional[Dict[str, Any]]:
         """
@@ -618,7 +621,7 @@ class BaseEnvironment(abc.ABC):
         Returns:
             The winner's index, or None if there is no winner (draw or game not over).
         """
-        if self.done and self.rewards:
+        if self.state.done and self.rewards:
             # todo return index of highest reward
             raise NotImplementedError
 

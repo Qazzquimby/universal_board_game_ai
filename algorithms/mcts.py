@@ -314,7 +314,7 @@ class UCB1Selection(SelectionStrategy):
         path = SearchPath(initial_node=node)
         current_node: MCTSNode = node
 
-        while not sim_env.done:
+        while not sim_env.state.done:
             if not current_node.is_expanded:
                 return SelectionResult(path=path, leaf_env=sim_env)
 
@@ -350,7 +350,7 @@ class UniformExpansion(ExpansionStrategy):
     """Expands a node by creating children for all legal actions with uniform priors."""
 
     def expand(self, node: MCTSNode, env_at_node: BaseEnvironment) -> None:
-        if node.is_expanded or env_at_node.done:
+        if node.is_expanded or env_at_node.state.done:
             return
 
         legal_actions = env_at_node.get_legal_actions()
@@ -373,24 +373,32 @@ class RandomRolloutEvaluation(EvaluationStrategy):
         """Simulate game from the given environment state using random policy."""
         player_at_start = env.get_current_player()
 
-        if env.done:
+        if env.state.done:
             winner = env.get_winning_player()
             if winner is None:
                 return 0.0  # Draw
             return 1.0 if winner == player_at_start else -1.0
 
         sim_env = env.copy()
-        steps = 0
+        current_step = 0
 
-        while not sim_env.done and steps < self.max_rollout_depth:
+        while not sim_env.state.done and current_step < self.max_rollout_depth:
             legal_actions = sim_env.get_legal_actions()
             action = random.choice(legal_actions)
             sim_env.step(action)
-            steps += 1
-        if steps >= self.max_rollout_depth:
+            # print()
+            # print("step", current_step)
+            # print("action", action)
+            # print(sim_env.state.board)
+            # print("next player", sim_env.state.players.current_player)
+            current_step += 1
+        if current_step >= self.max_rollout_depth:
             logger.warning(
                 f"MCTS Rollout: Reached max depth ({self.max_rollout_depth}). Treating as draw."
             )
+            # legal_actions = sim_env.get_legal_actions()
+            # action = random.choice(legal_actions)
+            # sim_env.step(action)
             return 0.0
 
         winner = sim_env.get_winning_player()
@@ -401,7 +409,7 @@ class RandomRolloutEvaluation(EvaluationStrategy):
         else:
             value = -1.0
 
-        value *= self.discount_factor**steps
+        value *= self.discount_factor**current_step
 
         return value
 
@@ -416,9 +424,10 @@ class StandardBackpropagation(BackpropagationStrategy):
             node, action_to_node, parent_of_node = path.get_step_details(
                 steps_from_end=i
             )
-            acting_player = node.state_with_key.state["current_player"]  # safe?
+            state = node.state_with_key.state
+            current_player_index = state["players"].current_index
             node.num_visits += 1
-            node.total_value += player_to_value.get(acting_player)
+            node.total_value += player_to_value.get(current_player_index)
 
             if parent_of_node and action_to_node is not None:
                 # not start of path
@@ -431,7 +440,7 @@ class StandardBackpropagation(BackpropagationStrategy):
                 edge_to_update = parent_of_node.edges[action_key]
                 edge_to_update.num_visits += 1
                 edge_to_update.total_value += player_to_value.get(
-                    parent_of_node.state_with_key.state["current_player"]
+                    parent_of_node.state_with_key.state["players"].current_index
                 )
 
 

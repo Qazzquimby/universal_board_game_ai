@@ -69,7 +69,7 @@ class MCTS_Old:
         self, node: MCTSNode_Old, sim_env: BaseEnvironment
     ) -> Tuple[MCTSNode_Old, BaseEnvironment]:
         """Select child node with highest UCB score until a leaf node is reached."""
-        while node.is_expanded() and not sim_env.done:
+        while node.is_expanded() and not sim_env.state.done:
             parent_visits = node.visit_count
 
             child_scores = {
@@ -98,7 +98,7 @@ class MCTS_Old:
 
     def _expand(self, node: MCTSNode_Old, env: BaseEnvironment):
         """Expand the leaf node by creating children for all legal actions."""
-        if node.is_expanded() or env.done:
+        if node.is_expanded() or env.state.done:
             return
 
         legal_actions = env.get_legal_actions()
@@ -120,7 +120,7 @@ class MCTS_Old:
             else 100
         )
 
-        while not sim_env.done and steps < max_steps:
+        while not sim_env.state.done and steps < max_steps:
             legal_actions = sim_env.get_legal_actions()
             if not legal_actions:
                 logger.warning("MCTS _rollout: Game not over, but no legal actions.")
@@ -173,17 +173,17 @@ class MCTS_Old:
             sim_env.set_state(state)
 
             # 1. Selection: Find a leaf node using UCB1.
-            leaf_node, leaf_env_state = self._select(self.root, sim_env)
+            leaf_node, leaf_env = self._select(self.root, sim_env)
 
             # 2. Evaluation: Get the value of the leaf node.
-            if not leaf_env_state.done:
+            if not leaf_env.state.done:
                 if not leaf_node.is_expanded():
-                    self._expand(leaf_node, leaf_env_state)
-                value = self._rollout(leaf_env_state)
+                    self._expand(leaf_node, leaf_env)
+                value = self._rollout(leaf_env)
 
             else:
-                player_at_leaf = leaf_env_state.get_current_player()
-                winner = leaf_env_state.get_winning_player()
+                player_at_leaf = leaf_env.get_current_player()
+                winner = leaf_env.get_winning_player()
 
                 if winner is None:
                     value = 0.0

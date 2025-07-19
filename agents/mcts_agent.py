@@ -1,7 +1,6 @@
 from typing import Optional, Dict
 
 import numpy as np
-from cachetools import LRUCache
 
 from algorithms.mcts import (
     UCB1Selection,
@@ -45,7 +44,7 @@ class MCTSAgent(Agent):
         self.root: MCTSNode = None
         self.node_cache = MCTSNodeCache()
 
-    def _ensure_state_is_root(self, state_with_key: StateWithKey):
+    def set_root_to_state(self, state_with_key: StateWithKey):
         if self.root and self.root.state_with_key.key == state_with_key.key:
             return  # already root
 
@@ -57,7 +56,7 @@ class MCTSAgent(Agent):
             self.node_cache.cache_node(key=state_with_key.key, node=self.root)
 
     def act(self, env: BaseEnvironment) -> Optional[ActionType]:
-        self._ensure_state_is_root(state_with_key=env.get_state_with_key())
+        self.set_root_to_state(state_with_key=env.get_state_with_key())
         self.search(env=env)
         policy_result = self.get_policy()
         return policy_result.chosen_action
@@ -72,7 +71,7 @@ class MCTSAgent(Agent):
         Returns:
             The root node of the search tree after simulations.
         """
-        self._ensure_state_is_root(
+        self.set_root_to_state(
             state_with_key=env.get_state_with_key()
         )  # remove in prod
 
@@ -111,7 +110,7 @@ class MCTSAgent(Agent):
                 self.expansion_strategy.expand(leaf_node, leaf_env)
             value = float(self.evaluation_strategy.evaluate(leaf_node, leaf_env))
             player_to_value = {}
-            for player in range(env.num_players):
+            for player in range(len(env.state.players)):
                 if player == player_at_leaf:
                     player_to_value[player] = value
                 else:

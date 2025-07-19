@@ -69,7 +69,7 @@ class Connect4(BaseEnvironment):
             reward: The reward received by the player who just acted.
             done: Boolean indicating if the game has ended.
         """
-        # TODO return a class. Default rewards to 0 and done to False.
+        #
 
         current_legal_actions = self.get_legal_actions()
         assert (
@@ -79,7 +79,7 @@ class Connect4(BaseEnvironment):
         if self.state.done:
             return ActionResult(
                 next_state_with_key=self.get_state_with_key(),
-                reward=self.state.rewards.get(self.state.current_player.id, 0.0),
+                reward=self.state.rewards.get(self.state.players.current_index, 0.0),
                 done=True,
             )
 
@@ -94,28 +94,25 @@ class Connect4(BaseEnvironment):
                 row = r
                 break
 
-        self.state.board[row, col] = self.state.current_player
+        self.state.board[row, col] = self.state.players.current_player
 
         if self._check_win(row, col):
             self.state.done = True
-            self.state.rewards[self.state.current_player.id] = 1.0
+            self.state.rewards[self.state.players.current_index] = 1.0
             for other_player in self.state.players.players:
-                if other_player.id != self.state.current_player.id:
+                if other_player.id != self.state.players.current_index:
                     self.state.rewards[other_player.id] = -1.0
+        elif len(self.get_legal_actions()) == 0:
+            self.state.done = True
+            self.state.rewards = {}
 
         # Store the reward for the player who just moved *before* switching player
         reward_for_acting_player = self.state.rewards.get(
-            self.state.current_player.id, 0.0
+            self.state.players.current_index, 0.0
         )
 
         if not self.state.done:
-            current_player_idx = self.state.players.players.index(
-                self.state.current_player
-            )
-            next_player_idx = (current_player_idx + 1) % len(self.state.players)
-            self.state.players.current_player = self.state.players.players[
-                next_player_idx
-            ]
+            self.state.players.set_to_next()
 
         return ActionResult(
             next_state_with_key=self.get_state_with_key(),
@@ -137,7 +134,7 @@ class Connect4(BaseEnvironment):
         Check if the player who just moved to (row, col) has won.
         Only checks lines passing through the last move.
         """
-        player = self.state.current_player
+        player = self.state.players.current_player
         board = self.state.board
         win_condition = 4
 
@@ -193,7 +190,7 @@ class Connect4(BaseEnvironment):
             mode: The mode to render with
         """
         if mode == "human":
-            print(f"Player: {self.state.current_player.id}")
+            print(f"Player: {self.state.players.current_index}")
             # Print column numbers
             print("  " + " ".join(map(str, range(self.width))))
             print(" +" + "--" * self.width + "+")
@@ -223,16 +220,6 @@ class Connect4(BaseEnvironment):
             if self.state.board[0, col] is None:
                 valid_actions.append(col)
         return valid_actions
-
-    # This helper method isn't part of the interface, keep it if useful internally
-    def is_draw(self) -> bool:
-        """Return whether the game ended in a draw."""
-        return self.state.done and self.state.winner is None
-
-    # Ensure method signatures match EnvInterface
-    def get_current_player(self) -> int:
-        """Return the current player's number."""
-        return self.state.current_player.id
 
     # Ensure method signatures match EnvInterface
     def close(self) -> None:
@@ -276,8 +263,8 @@ class Connect4(BaseEnvironment):
         # . . . . . . .
         # 0 0 0 . 1 1 .  <- Player 0 to move
         env2 = Connect4()
-        p0 = env2.players.players[0]
-        p1 = env2.players.players[1]
+        p0 = env2.state.players.players[0]
+        p1 = env2.state.players.players[1]
         env2.state.board[5, 0] = p0
         env2.state.board[5, 1] = p0
         env2.state.board[5, 2] = p0
@@ -302,9 +289,9 @@ class Connect4(BaseEnvironment):
         # 1 . 0 . . . .
         # 1 . 0 . . . .
         # 0 . 0 . . . . <- Player 1 to move
-        env3 = Connect4(width=self.width, height=self.height)
-        p0 = env3.players.players[0]
-        p1 = env3.players.players[1]
+        env3 = Connect4()
+        p0 = env3.state.players.players[0]
+        p1 = env3.state.players.players[1]
         env3.state.board[5, 0] = p0
         env3.state.board[4, 2] = p0
         env3.state.board[5, 2] = p0
@@ -331,9 +318,9 @@ class Connect4(BaseEnvironment):
         # . . . . . . 1
         # 0 0 . . . . 1
         # 0 0 . . . . 1 <- Player 0 to move
-        env4 = Connect4(width=self.width, height=self.height)
-        p0 = env4.players.players[0]
-        p1 = env4.players.players[1]
+        env4 = Connect4()
+        p0 = env4.state.players.players[0]
+        p1 = env4.state.players.players[1]
         env4.state.board[5, 0] = p0
         env4.state.board[4, 0] = p0
         env4.state.board[5, 1] = p0
