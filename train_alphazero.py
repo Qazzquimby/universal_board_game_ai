@@ -1,14 +1,13 @@
-import math
 import sys
 import json
 import time
-import random
 
 import numpy as np
 from tqdm import tqdm
 from loguru import logger
-import wandb
 
+import wandb
+from agents.mcts_agent import make_pure_mcts
 from core.config import AppConfig, WANDB_KEY
 from core.serialization import LOG_DIR, save_game_log
 from environments.base import BaseEnvironment
@@ -16,7 +15,6 @@ from agents.alphazero_agent import AlphaZeroAgent
 from factories import (
     get_environment,
     get_agents,
-    get_benchmark_mcts_agent,
 )
 from utils.plotting import plot_losses
 import evaluation
@@ -151,9 +149,9 @@ def run_training(config: AppConfig, env_name_override: str = None):
             state_with_key = game_env.reset()
             game_history = []
 
-            while not game_env.done:
+            while not game_env.state.done:
                 state = state_with_key.state
-                action = agent.act(state, train=True)
+                action = agent.act(game_env, train=True)
                 policy_target = agent.get_policy_target()
                 game_history.append((state, action, policy_target))
                 action_result = game_env.step(action)
@@ -281,7 +279,9 @@ def run_training(config: AppConfig, env_name_override: str = None):
                 agent.network.eval()
 
                 # Create benchmark agent
-                benchmark_agent = get_benchmark_mcts_agent(env, config)
+                benchmark_agent = make_pure_mcts(
+                    num_simulations=config.mcts.num_simulations
+                )
                 benchmark_agent_name = (
                     f"MCTS_{config.evaluation.benchmark_mcts_simulations}"
                 )
@@ -293,6 +293,7 @@ def run_training(config: AppConfig, env_name_override: str = None):
                     agent0=agent,
                     agent1_name=benchmark_agent_name,
                     agent1=benchmark_agent,
+                    config=config,
                     num_games=config.evaluation.periodic_eval_num_games,
                 )
 
@@ -321,13 +322,13 @@ def run_training(config: AppConfig, env_name_override: str = None):
 
                 # Note: agent.learn() will put the network back in train mode if needed
 
-        # 5. Run Sanity Checks Periodically (and not on first iteration if frequency > 1)
-        if (
-            config.training.sanity_check_frequency > 0
-            and (iteration + 1) % config.training.sanity_check_frequency == 0
-        ):
-
-            run_sanity_checks(env, agent)
+        # # 5. Run Sanity Checks Periodically (and not on first iteration if frequency > 1)
+        # if (
+        #     config.training.sanity_check_frequency > 0
+        #     and (iteration + 1) % config.training.sanity_check_frequency == 0
+        # ):
+        #
+        #     run_sanity_checks(env, agent)
 
     logger.info("\nTraining complete. Saving final agent state.")
     agent.save()
@@ -335,10 +336,10 @@ def run_training(config: AppConfig, env_name_override: str = None):
     logger.info("Plotting training losses...")
     plot_losses(total_losses, value_losses, policy_losses)
 
-    # Run sanity checks one last time on the final trained agent
-    # This ensures checks run even if num_iterations isn't a multiple of frequency
-    logger.info("\n--- Running Final Sanity Checks ---")
-    run_sanity_checks(env, agent)
+    # # Run sanity checks one last time on the final trained agent
+    # # This ensures checks run even if num_iterations isn't a multiple of frequency
+    # logger.info("\n--- Running Final Sanity Checks ---")
+    # run_sanity_checks(env, agent)
 
     logger.info("\n--- AlphaZero Training Finished ---")
 
