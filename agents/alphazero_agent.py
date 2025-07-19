@@ -67,7 +67,7 @@ class AlphaZeroEvaluation(EvaluationStrategy):
         self.network = network
 
     def evaluate(self, node: "MCTSNode", env: BaseEnvironment) -> float:
-        if env.done:
+        if env.state.done:
             winner = env.get_winning_player()
             if winner is None:
                 return 0.0  # Draw
@@ -98,7 +98,7 @@ class AlphaZeroExpansion(ExpansionStrategy):
         self.network = network
 
     def expand(self, node: "MCTSNode", env: BaseEnvironment) -> None:
-        if node.is_expanded or env.done:
+        if node.is_expanded or env.state.done:
             return
 
         key = node.state_with_key.key
@@ -164,7 +164,6 @@ class AlphaZeroAgent(Agent):
         self.train_replay_buffer = deque(maxlen=train_buffer_size)
         self.val_replay_buffer = deque(maxlen=val_buffer_size)
 
-
     def _ensure_state_is_root(self, state_with_key: StateWithKey):
         if self.root and self.root.state_with_key.key == state_with_key.key:
             return  # already root
@@ -176,29 +175,14 @@ class AlphaZeroAgent(Agent):
             self.root = MCTSNode(state_with_key=state_with_key)
             self.node_cache.cache_node(key=state_with_key.key, node=self.root)
 
-
-    def act(self, state: StateType, train: bool = False) -> ActionType:
-        """
-        Choose an action using MCTS guided by the neural network.
-        The policy for training should be retrieved via `get_policy_target()` after this call.
-
-        Args:
-            state: The current environment state observation.
-            train: If True, use temperature sampling and Dirichlet noise for exploration.
-                   If False, choose the most visited node (greedy).
-
-        Returns:
-            The chosen action.
-        """
-        search_env = self.env.copy()
-        search_env.set_state(state)
-        self.search(env=search_env, train=train)
+    def act(self, env: BaseEnvironment, train: bool = False) -> ActionType:
+        self.search(env=env, train=train)
 
         temperature = self.config.temperature if train else 0.0
 
         assert self.root is not None
         if not self.root.edges:
-            legal_actions = search_env.get_legal_actions()
+            legal_actions = env.get_legal_actions()
             if not legal_actions:
                 logger.warning("No legal actions from a non-expanded root. Cannot act.")
                 return None
@@ -303,7 +287,7 @@ class AlphaZeroAgent(Agent):
 
             # 2. Expansion & Evaluation
             player_at_leaf = leaf_env.get_current_player()
-            if not leaf_node.is_expanded and not leaf_env.done:
+            if not leaf_node.is_expanded and not leaf_env.state.done:
                 self.expansion_strategy.expand(leaf_node, leaf_env)
 
                 if (
@@ -315,7 +299,7 @@ class AlphaZeroAgent(Agent):
 
             value = self.evaluation_strategy.evaluate(leaf_node, leaf_env)
             player_to_value = {}
-            for player in range(env.num_players):
+            for player in range(len(env.state.players)):
                 if player == player_at_leaf:
                     player_to_value[player] = value
                 else:
@@ -732,7 +716,7 @@ def make_pure_az(
             state_model_params=config.state_model_params,
             policy_model_params=config.policy_model_params,
         )
-        optimizer = optim.AdamW(network.parameters(), lr=training_config.lr)
+        optimizer = optim.AdamW(network.parameters(), lr=training_config.learning_rate)
     else:
         network = DummyAlphaZeroNet(env)
         optimizer = None

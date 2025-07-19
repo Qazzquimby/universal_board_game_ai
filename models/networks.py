@@ -23,6 +23,8 @@ class AutoGraphNet(nn.Module):
         policy_model_params: dict,
     ):
         super().__init__()
+        self.cache = {}
+
         self.env = env
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
