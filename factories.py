@@ -48,6 +48,7 @@ def get_agents(env: BaseEnvironment, config: AppConfig) -> Dict[str, Agent]:
     )
     optimizer = optim.AdamW(network.parameters(), lr=training_config.learning_rate)
 
+    az_agent_name = f"AZ_{config.mcts.num_simulations}"
     az_agent = AlphaZeroAgent(
         selection_strategy=UCB1Selection(exploration_constant=az_config.cpuct),
         expansion_strategy=AlphaZeroExpansion(network=network),
@@ -81,9 +82,9 @@ def get_agents(env: BaseEnvironment, config: AppConfig) -> Dict[str, Agent]:
     )
 
     agents = {
-        # az_agent_name: az_agent,
+        az_agent_name: az_agent,
         mcts_agent_name: mcts_agent,
-        mcts_agent_old_name: mcts_agent_old,
+        # mcts_agent_old_name: mcts_agent_old,
     }
 
     return agents

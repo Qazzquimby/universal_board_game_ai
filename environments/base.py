@@ -332,9 +332,6 @@ class BaseEnvironment(abc.ABC):
         self.turn = 0
         self.is_processing = False
 
-        self.winner = None
-        self.rewards = None
-
         self.state: Optional[BaseState] = None
 
     def _bind_state_entities(self):
@@ -621,9 +618,8 @@ class BaseEnvironment(abc.ABC):
         Returns:
             The winner's index, or None if there is no winner (draw or game not over).
         """
-        if self.state.done and self.rewards:
-            # todo return index of highest reward
-            raise NotImplementedError
+        if self.state.done and self.state.rewards:
+            return max(self.state.rewards, key=self.state.rewards.get)
 
         return None
 
