@@ -91,7 +91,7 @@ def run_training(config: AppConfig, env_name_override: str = None):
 
     env = get_environment(config.env)
     agents = get_agents(env, config)
-    agent = agents.get("AlphaZero")
+    agent = agents["AZ_400"]
 
     if not isinstance(agent, AlphaZeroAgent):
         logger.error("Failed to retrieve AlphaZeroAgent from factory.")

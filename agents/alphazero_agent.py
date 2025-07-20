@@ -361,11 +361,6 @@ class AlphaZeroAgent(Agent):
                 buffer_state["board"] = np.array(
                     buffer_state["board"], dtype=np.int8
                 )  # Or appropriate dtype
-            elif "piles" in buffer_state and not isinstance(
-                buffer_state["piles"], np.ndarray
-            ):
-                # NimEnv currently returns tuple, convert it
-                buffer_state["piles"] = np.array(buffer_state["piles"], dtype=np.int32)
 
             # Prepare the experience tuple for the buffer
             buffer_experiences.append((buffer_state, policy_target, value_target))
