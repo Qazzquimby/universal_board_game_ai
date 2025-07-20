@@ -8,6 +8,7 @@ from loguru import logger
 
 import wandb
 from agents.mcts_agent import make_pure_mcts
+from core.agent_interface import Agent
 from core.config import AppConfig, WANDB_KEY
 from core.serialization import LOG_DIR, save_game_log
 from environments.base import BaseEnvironment
@@ -63,10 +64,6 @@ def load_game_logs_into_buffer(agent: AlphaZeroAgent, env_name: str, buffer_limi
                     and value_target is not None
                 ):
                     policy_target = np.array(policy_target_list, dtype=np.float32)
-                    if "board" in state and isinstance(state["board"], list):
-                        state["board"] = np.array(state["board"], dtype=np.int8)
-                    elif "piles" in state and isinstance(state["piles"], list):
-                        state["piles"] = np.array(state["piles"], dtype=np.int32)
                     all_experiences.append((state, policy_target, value_target))
         except json.JSONDecodeError:
             logger.warning(f"Skipping corrupted JSON file: {filepath.name}")
@@ -139,73 +136,13 @@ def run_training(config: AppConfig, env_name_override: str = None):
         if agent.network:
             agent.network.eval()
 
-        logger.info("Collecting self-play data serially...")
-
-        num_games_total = config.training.num_games_per_iteration
-        all_experiences_iteration = []
-
-        for _ in tqdm(range(num_games_total), desc="Self-Play Games"):
-            game_env = env.copy()
-            state_with_key = game_env.reset()
-            game_history = []
-
-            while not game_env.state.done:
-                state = state_with_key.state
-                action = agent.act(game_env, train=True)
-                policy_target = agent.get_policy_target()
-                game_history.append((state, action, policy_target))
-                action_result = game_env.step(action)
-                state_with_key = action_result.next_state_with_key
-
-            # Game finished, determine outcome for player 0
-            winner = game_env.get_winning_player()
-            if winner is None:
-                final_outcome = 0.0
-            elif winner == 0:
-                final_outcome = 1.0
-            else:  # winner == 1
-                final_outcome = -1.0
-
-            all_experiences_iteration.append((game_history, final_outcome))
-
-        # --- Process collected game results and add to buffer ---
-        total_experiences_added = 0
-        total_games_processed = 0
-        game_log_index_offset = (
-            iteration * config.training.num_games_per_iteration
-        )  # Base index for this iteration
-
-        logger.info(
-            f"Processing {len(all_experiences_iteration)} collected game results..."
-        )
-        for i, (raw_history, final_outcome) in enumerate(all_experiences_iteration):
-            if not raw_history:
-                logger.warning(f"Skipping game {i} with empty raw history.")
-                continue
-
-            # Process the raw history using the agent to get buffer experiences and loggable history
-            episode_result = agent.process_finished_episode(raw_history, final_outcome)
-
-            # Add processed experiences to the central replay buffer
-            agent.add_experiences_to_buffer(episode_result.buffer_experiences)
-            total_experiences_added += len(episode_result.buffer_experiences)
-
-            # Save the processed game log (now includes value targets)
-            # Use a unique game index across the entire training run
-            current_game_log_index = game_log_index_offset + total_games_processed + 1
-            save_game_log(
-                logged_history=episode_result.logged_history,
-                iteration=iteration + 1,
-                game_index=current_game_log_index,
-                env_name=config.env.name,
-            )
-            total_games_processed += 1
-
-        logger.info(
-            f"Processed {total_games_processed} games, adding {total_experiences_added} experiences to replay buffer."
+        all_experiences_iteration = run_self_play(agent=agent, env=env)
+        add_results_to_buffer(
+            iteration=iteration,
+            all_experiences_iteration=all_experiences_iteration,
+            agent=agent,
         )
 
-        # 2. Learning Phase
         logger.info("Running learning step...")
         loss_results = agent.learn()  # Agent learns using its local network
         if loss_results:
@@ -216,7 +153,6 @@ def run_training(config: AppConfig, env_name_override: str = None):
         else:
             logger.info("Learning Time: Skipped (buffer too small)")
 
-        # 3. Save Checkpoint Periodically
         if (
             config.training.save_checkpoint_frequency > 0
             and (iteration + 1) % config.training.save_checkpoint_frequency == 0
@@ -347,6 +283,78 @@ def run_training(config: AppConfig, env_name_override: str = None):
     if config.wandb.enabled and wandb.run is not None:
         wandb.finish()
         logger.info("WandB run finished.")
+
+
+def run_self_play(agent: AlphaZeroAgent, env: BaseEnvironment):
+    logger.info("Running self play")
+
+    num_games_total = config.training.num_games_per_iteration
+    all_experiences_iteration = []
+
+    for _ in tqdm(range(num_games_total), desc="Self-Play Games"):
+        game_env = env.copy()
+        state_with_key = game_env.reset()
+        game_history = []
+
+        while not game_env.state.done:
+            state = state_with_key.state
+            action = agent.act(game_env, train=True)
+            policy_target = agent.get_policy_target()
+            game_history.append((state, action, policy_target))
+            action_result = game_env.step(action)
+            state_with_key = action_result.next_state_with_key
+
+        # Game finished, determine outcome for player 0
+        winner = game_env.get_winning_player()
+        if winner is None:
+            final_outcome = 0.0
+        elif winner == 0:
+            final_outcome = 1.0
+        else:  # winner == 1
+            final_outcome = -1.0
+
+        all_experiences_iteration.append((game_history, final_outcome))
+    return all_experiences_iteration
+
+
+def add_results_to_buffer(
+    iteration: int, all_experiences_iteration: list, agent: AlphaZeroAgent
+):
+    total_experiences_added = 0
+    total_games_processed = 0
+    game_log_index_offset = (
+        iteration * config.training.num_games_per_iteration
+    )  # Base index for this iteration
+
+    logger.info(
+        f"Processing {len(all_experiences_iteration)} collected game results..."
+    )
+    for i, (raw_history, final_outcome) in enumerate(all_experiences_iteration):
+        if not raw_history:
+            logger.warning(f"Skipping game {i} with empty raw history.")
+            continue
+
+        # Process the raw history using the agent to get buffer experiences and loggable history
+        episode_result = agent.process_finished_episode(raw_history, final_outcome)
+
+        # Add processed experiences to the central replay buffer
+        agent.add_experiences_to_buffer(episode_result.buffer_experiences)
+        total_experiences_added += len(episode_result.buffer_experiences)
+
+        # Save the processed game log (now includes value targets)
+        # Use a unique game index across the entire training run
+        current_game_log_index = game_log_index_offset + total_games_processed + 1
+        save_game_log(
+            logged_history=episode_result.logged_history,
+            iteration=iteration + 1,
+            game_index=current_game_log_index,
+            env_name=config.env.name,
+        )
+        total_games_processed += 1
+
+    logger.info(
+        f"Processed {total_games_processed} games, adding {total_experiences_added} experiences to replay buffer."
+    )
 
 
 def run_sanity_checks(env: BaseEnvironment, agent: AlphaZeroAgent):

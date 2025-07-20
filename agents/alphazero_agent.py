@@ -36,16 +36,20 @@ class ReplayBufferDataset(Dataset):
     def __init__(self, buffer: deque, state_model: nn.Module):
         self.buffer_list = list(buffer)
         self.state_model = state_model
+        # The state model has its own env reference, which we will use.
+        # This assumes that this dataset is used in a single-threaded way
+        # (num_workers=0 in DataLoader), so we can mutate the state_model's env.
 
     def __len__(self):
         return len(self.buffer_list)
 
     def __getitem__(self, idx):
         state_dict, policy_target, value_target = self.buffer_list[idx]
-        # Create tensor inputs for the state model
-        src, src_key_padding_mask = self.state_model.create_input_tensors_from_state(
-            state_dict
-        )
+
+        # Set environment in the state model to the state from the replay buffer
+        self.state_model.env.set_state(state_dict)
+        src, src_key_padding_mask = self.state_model.create_input_tensors_from_state()
+
         return (
             src.squeeze(0),  # Remove batch dim
             src_key_padding_mask.squeeze(0),  # Remove batch dim
@@ -350,19 +354,8 @@ class AlphaZeroAgent(Agent):
                 )
                 value_target = 0.0
 
-            # --- Standardize state before adding to buffer ---
-            # Ensure board/piles are numpy arrays for consistent network input processing
-            buffer_state = (
-                state_at_step.copy()
-            )  # Avoid modifying original history state
-            if "board" in buffer_state and not isinstance(
-                buffer_state["board"], np.ndarray
-            ):
-                buffer_state["board"] = np.array(
-                    buffer_state["board"], dtype=np.int8
-                )  # Or appropriate dtype
-
-            # Prepare the experience tuple for the buffer
+            # The state dictionary is stored as-is. `env.set_state()` will reconstruct it.
+            buffer_state = state_at_step.copy()
             buffer_experiences.append((buffer_state, policy_target, value_target))
 
             # Store the original step info (without modification) for the returned history log
