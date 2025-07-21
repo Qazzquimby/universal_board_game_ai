@@ -384,7 +384,7 @@ class AlphaZeroAgent(Agent):
     def _calculate_loss(
         self, policy_logits, value_preds, policy_targets, value_targets
     ):
-        """Calculates the combined loss for AlphaZero."""
+        """Calculates the combined loss for AlphaZero and performance metrics."""
 
         # --- Add Temporary Debug Logging (using WARNING level) ---
         # Log ~10% of batches, showing first 8 samples
@@ -421,21 +421,28 @@ class AlphaZeroAgent(Agent):
         value_loss = F.mse_loss(value_preds, value_targets)
 
         # Policy loss: Cross-Entropy between predicted policy logits and MCTS policy target
-        # Ensure targets are probabilities (sum to 1) and logits are raw scores
-        # CrossEntropyLoss expects logits as input and class indices or probabilities as target.
-        # Here, policy_targets are probabilities derived from MCTS visits.
         policy_loss = F.cross_entropy(policy_logits, policy_targets)
 
         # Combine losses using configured weight for value loss
         total_loss = (self.config.value_loss_weight * value_loss) + policy_loss
-        return total_loss, value_loss, policy_loss
+
+        # --- Calculate Metrics ---
+        value_mse = value_loss.item()
+        # Policy accuracy: compare argmax of predicted policy with argmax of MCTS policy
+        _, predicted_policy_indices = torch.max(policy_logits, 1)
+        _, target_policy_indices = torch.max(policy_targets, 1)
+        policy_acc = (
+            (predicted_policy_indices == target_policy_indices).float().sum().item()
+        )
+
+        return total_loss, value_loss, policy_loss, policy_acc, value_mse
 
     # Conforms to Agent interface (no arguments)
-    def learn(self) -> Optional[Tuple]:
+    def learn(self) -> Optional[Dict[str, float]]:
         """
         Update the neural network by training for multiple epochs over the replay buffer,
         using early stopping based on a validation set.
-        Returns average losses for the learning step from the best epoch.
+        Returns a dictionary of losses and metrics from the best epoch.
         """
         if not self.network or not self.optimizer:
             logger.warning("Cannot learn: Network or optimizer not initialized.")
@@ -483,14 +490,13 @@ class AlphaZeroAgent(Agent):
         best_val_loss = float("inf")
         epochs_without_improvement = 0
         best_model_state = None
-        best_epoch_losses = None
+        best_epoch_metrics = None
 
         for epoch in range(max_epochs):
             # --- Training Phase ---
             self.network.train()
-            total_train_loss_epoch = 0.0
-            value_train_loss_epoch = 0.0
-            policy_train_loss_epoch = 0.0
+            total_train_loss, total_train_policy_loss, total_train_value_loss = 0, 0, 0
+            total_train_policy_acc, total_train_value_mse = 0, 0
             train_batches = 0
 
             train_iterator = (
@@ -516,7 +522,13 @@ class AlphaZeroAgent(Agent):
 
                 self.optimizer.zero_grad()
                 policy_logits, value_preds = self.network(src_batch, mask_batch)
-                total_loss, value_loss, policy_loss = self._calculate_loss(
+                (
+                    total_loss,
+                    value_loss,
+                    policy_loss,
+                    policy_acc,
+                    value_mse,
+                ) = self._calculate_loss(
                     policy_logits,
                     value_preds,
                     policy_targets_batch,
@@ -526,14 +538,17 @@ class AlphaZeroAgent(Agent):
                 torch.nn.utils.clip_grad_norm_(self.network.parameters(), max_norm=1.0)
                 self.optimizer.step()
 
-                total_train_loss_epoch += total_loss.item()
-                value_train_loss_epoch += value_loss.item()
-                policy_train_loss_epoch += policy_loss.item()
+                total_train_loss += total_loss.item()
+                total_train_value_loss += value_loss.item()
+                total_train_policy_loss += policy_loss.item()
+                total_train_policy_acc += policy_acc
+                total_train_value_mse += value_mse
                 train_batches += 1
 
             # --- Validation Phase ---
             self.network.eval()
-            total_val_loss = 0.0
+            total_val_loss, total_val_policy_loss, total_val_value_loss = 0, 0, 0
+            total_val_policy_acc, total_val_value_mse = 0, 0
             val_batches = 0
             with torch.no_grad():
                 for batch_data in val_loader:
@@ -548,21 +563,48 @@ class AlphaZeroAgent(Agent):
                     policy_targets_batch = policy_targets_batch.to(self.device)
                     value_targets_batch = value_targets_batch.to(self.device)
                     policy_logits, value_preds = self.network(src_batch, mask_batch)
-                    total_loss, _, _ = self._calculate_loss(
+                    (
+                        total_loss,
+                        value_loss,
+                        policy_loss,
+                        policy_acc,
+                        value_mse,
+                    ) = self._calculate_loss(
                         policy_logits,
                         value_preds,
                         policy_targets_batch,
                         value_targets_batch,
                     )
                     total_val_loss += total_loss.item()
+                    total_val_value_loss += value_loss.item()
+                    total_val_policy_loss += policy_loss.item()
+                    total_val_policy_acc += policy_acc
+                    total_val_value_mse += value_mse
                     val_batches += 1
 
-            avg_train_loss = total_train_loss_epoch / train_batches
-            avg_val_loss = (
-                total_val_loss / val_batches if val_batches > 0 else float("inf")
+            # --- Calculate and Log Epoch Metrics ---
+            avg_train_loss = total_train_loss / train_batches
+            avg_train_policy_loss = total_train_policy_loss / train_batches
+            avg_train_value_loss = total_train_value_loss / train_batches
+            avg_train_acc = total_train_policy_acc / len(train_dataset)
+            avg_train_mse = total_train_value_mse / train_batches
+
+            avg_val_loss = total_val_loss / val_batches if val_batches > 0 else 0
+            avg_val_policy_loss = (
+                total_val_policy_loss / val_batches if val_batches > 0 else 0
             )
+            avg_val_value_loss = (
+                total_val_value_loss / val_batches if val_batches > 0 else 0
+            )
+            avg_val_acc = (
+                total_val_policy_acc / len(val_dataset) if len(val_dataset) > 0 else 0
+            )
+            avg_val_mse = total_val_value_mse / val_batches if val_batches > 0 else 0
+
             logger.info(
-                f"Epoch {epoch+1}/{max_epochs}: Avg Train Loss = {avg_train_loss:.4f}, Avg Val Loss = {avg_val_loss:.4f}"
+                f"Epoch {epoch+1}/{max_epochs}: "
+                f"Train Loss={avg_train_loss:.4f}, Val Loss={avg_val_loss:.4f} | "
+                f"Train Acc={avg_train_acc:.4f}, Val Acc={avg_val_acc:.4f}"
             )
 
             # --- Early Stopping Check ---
@@ -570,11 +612,18 @@ class AlphaZeroAgent(Agent):
                 best_val_loss = avg_val_loss
                 epochs_without_improvement = 0
                 best_model_state = copy.deepcopy(self.network.state_dict())
-                best_epoch_losses = (
-                    avg_train_loss,
-                    value_train_loss_epoch / train_batches,
-                    policy_train_loss_epoch / train_batches,
-                )
+                best_epoch_metrics = {
+                    "train_loss": avg_train_loss,
+                    "train_policy_loss": avg_train_policy_loss,
+                    "train_value_loss": avg_train_value_loss,
+                    "train_acc": avg_train_acc,
+                    "train_mse": avg_train_mse,
+                    "val_loss": avg_val_loss,
+                    "val_policy_loss": avg_val_policy_loss,
+                    "val_value_loss": avg_val_value_loss,
+                    "val_acc": avg_val_acc,
+                    "val_mse": avg_val_mse,
+                }
                 logger.info(
                     f"  New best validation loss: {best_val_loss:.4f}. Saving model state."
                 )
@@ -597,13 +646,14 @@ class AlphaZeroAgent(Agent):
 
         self.network.eval()
 
-        if best_epoch_losses:
-            final_total_loss, final_value_loss, final_policy_loss = best_epoch_losses
+        if best_epoch_metrics:
             logger.info(
-                f"Learn Step Summary (best epoch): Avg Losses: "
-                f"Total={final_total_loss:.4f}, Value={final_value_loss:.4f}, Policy={final_policy_loss:.4f}"
+                f"Learn Step Summary (best epoch): "
+                f"Total Loss={best_epoch_metrics['train_loss']:.4f}, "
+                f"Value Loss={best_epoch_metrics['train_value_loss']:.4f}, "
+                f"Policy Loss={best_epoch_metrics['train_policy_loss']:.4f}"
             )
-            return final_total_loss, final_value_loss, final_policy_loss
+            return best_epoch_metrics
         else:
             logger.warning("No learning occurred or no improvement found.")
             return None
