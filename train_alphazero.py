@@ -6,9 +6,8 @@ import numpy as np
 from tqdm import tqdm
 from loguru import logger
 
-import wandb
 from agents.mcts_agent import make_pure_mcts
-from core.config import AppConfig, WANDB_KEY
+from core.config import AppConfig
 from core.serialization import LOG_DIR, save_game_log
 from environments.base import BaseEnvironment
 from agents.alphazero_agent import AlphaZeroAgent
@@ -17,6 +16,7 @@ from factories import (
     get_agents,
 )
 from utils.plotting import plot_losses
+from utils.training_reporter import TrainingReporter
 import evaluation
 
 
@@ -89,15 +89,6 @@ def run_training(config: AppConfig, env_name_override: str = None):
         f"({config.training.num_games_per_iteration} self-play games per iteration)"
     )
 
-    if config.wandb.enabled:
-        wandb.login(key=WANDB_KEY)
-        wandb.init(
-            project=config.wandb.project_name,
-            entity=config.wandb.entity or None,
-            name=config.wandb.run_name or None,
-            config=config.to_dict(),
-        )
-
     if not agent.network:
         logger.warning("No agent network found. Self-play will use DummyNet.")
 
@@ -108,19 +99,18 @@ def run_training(config: AppConfig, env_name_override: str = None):
 
     outer_loop_iterator = range(config.training.num_iterations)
     start_time = time.time()
+    reporter = TrainingReporter(config, agent, start_time)
 
     for iteration in outer_loop_iterator:
-        logger.info(
-            f"\n--- Iteration {iteration + 1}/{config.training.num_iterations} ---"
-        )
+        reporter.log_iteration_start(iteration)
 
-        # all_experiences_iteration = run_self_play(agent=agent, env=env, config=config)
-        # add_results_to_buffer(
-        #     iteration=iteration,
-        #     all_experiences_iteration=all_experiences_iteration,
-        #     agent=agent,
-        #     config=config,
-        # )
+        all_experiences_iteration = run_self_play(agent=agent, env=env, config=config)
+        add_results_to_buffer(
+            iteration=iteration,
+            all_experiences_iteration=all_experiences_iteration,
+            agent=agent,
+            config=config,
+        )
 
         logger.info("Running learning step...")
         metrics = agent.learn()  # Agent learns using its local network
@@ -128,8 +118,7 @@ def run_training(config: AppConfig, env_name_override: str = None):
             total_losses.append(metrics.train.loss)
             value_losses.append(metrics.train.value_loss)
             policy_losses.append(metrics.train.policy_loss)
-        else:
-            logger.info("Learning Time: Skipped (buffer too small)")
+            reporter.log_iteration_end(iteration=iteration, metrics=metrics)
 
         if (
             config.training.save_checkpoint_frequency > 0
@@ -137,45 +126,6 @@ def run_training(config: AppConfig, env_name_override: str = None):
         ):
             logger.info(f"Saving agent checkpoint (Iteration {iteration + 1})...")
             agent.save()
-
-        train_buffer_size = len(agent.train_replay_buffer)
-        val_buffer_size = len(agent.val_replay_buffer)
-        total_buffer_size = train_buffer_size + val_buffer_size
-        logger.info(
-            f"Iteration {iteration + 1} complete. "
-            f"Buffers: Train={train_buffer_size}/{agent.train_replay_buffer.maxlen}, "
-            f"Val={val_buffer_size}/{agent.val_replay_buffer.maxlen} "
-            f"({total_buffer_size}/{config.alpha_zero.replay_buffer_size})"
-        )
-        if metrics:
-            logger.info(
-                f"  Latest Losses: Train Total={metrics.train.loss:.4f}, Val Total={metrics.val.loss:.4f}"
-            )
-            logger.info(
-                f"  Latest Accs:   Train Policy={metrics.train.acc:.4f}, Val Policy={metrics.val.acc:.4f}"
-            )
-
-        if config.wandb.enabled:  # and (iteration + 1) % config.wandb.log_freq == 0:
-            log_data = {
-                "iteration": iteration + 1,
-                "buffer_size_total": total_buffer_size,
-                "buffer_size_train": train_buffer_size,
-                "buffer_size_val": val_buffer_size,
-                "wall_clock_time_s": time.time() - start_time,
-            }
-            if metrics:
-                # Flatten the BestEpochMetrics dataclass for wandb logging
-                wandb_metrics = {
-                    f"learn/train_{k}": v for k, v in metrics.train.__dict__.items()
-                }
-                wandb_metrics.update(
-                    {f"learn/val_{k}": v for k, v in metrics.val.__dict__.items()}
-                )
-                log_data.update(wandb_metrics)
-            try:
-                wandb.log(log_data)
-            except Exception as e:
-                logger.warning(f"Failed to log metrics to WandB: {e}")
 
         if (
             config.evaluation.run_periodic_evaluation
@@ -202,25 +152,10 @@ def run_training(config: AppConfig, env_name_override: str = None):
                 config=config,
                 num_games=config.evaluation.periodic_eval_num_games,
             )
-
-            # Log results to WandB if enabled
-            if config.wandb.enabled:
-                wandb_eval_log = {
-                    f"eval_vs_{benchmark_agent_name}/win_rate": eval_results.get(
-                        "AlphaZero_win_rate", 0.0
-                    ),
-                    f"eval_vs_{benchmark_agent_name}/loss_rate": eval_results.get(
-                        f"{benchmark_agent_name}_win_rate", 0.0
-                    ),
-                    f"eval_vs_{benchmark_agent_name}/draw_rate": eval_results.get(
-                        "draw_rate", 0.0
-                    ),
-                    "iteration": iteration + 1,
-                }
-                wandb.log(wandb_eval_log)
-                logger.info(f"Logged periodic evaluation results to WandB.")
-
-                # Note: agent.learn() will put the network back in train mode if needed
+            reporter.log_evaluation_results(
+                eval_results=eval_results, benchmark_agent_name=benchmark_agent_name, iteration=iteration
+            )
+            # Note: agent.learn() will put the network back in train mode if needed
 
     logger.info("\nTraining complete. Saving final agent state.")
     agent.save()
@@ -229,9 +164,7 @@ def run_training(config: AppConfig, env_name_override: str = None):
 
     logger.info("\n--- AlphaZero Training Finished ---")
 
-    if config.wandb.enabled and wandb.run is not None:
-        wandb.finish()
-        logger.info("WandB run finished.")
+    reporter.finish()
 
 
 def run_self_play(agent: AlphaZeroAgent, env: BaseEnvironment, config: AppConfig):
