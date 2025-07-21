@@ -252,15 +252,7 @@ def run_self_play(agent: AlphaZeroAgent, env: BaseEnvironment, config: AppConfig
             action_result = game_env.step(action)
             state_with_key = action_result.next_state_with_key
 
-        # Game finished, determine outcome for player 0
-        winner = game_env.get_winning_player()
-        if winner is None:
-            final_outcome = 0.0
-        elif winner == 0:
-            final_outcome = 1.0
-        else:  # winner == 1
-            final_outcome = -1.0
-
+        final_outcome = game_env.state.get_reward_for_player(0)
         all_experiences_iteration.append((game_history, final_outcome))
     return all_experiences_iteration
 

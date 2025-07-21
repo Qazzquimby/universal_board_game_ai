@@ -314,6 +314,9 @@ class BaseState(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
+    def get_reward_for_player(self, player_index):
+        return self.rewards.get(player_index, 0)
+
 
 class BaseEnvironment(abc.ABC):
     """Abstract base class for game environments."""

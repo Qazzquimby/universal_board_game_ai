@@ -136,12 +136,7 @@ class MCTS_Old:
             return 0.0
 
         winner = sim_env.get_winning_player()
-        if winner is None:
-            value = 0.0
-        elif winner == player_at_rollout_start:
-            value = 1.0
-        else:
-            value = -1.0
+        value = sim_env.state.get_reward_for_player(player_at_rollout_start)
         return value
 
     def _backpropagate(
@@ -172,27 +167,16 @@ class MCTS_Old:
             sim_env = env.copy()
             sim_env.set_state(state)
 
-            # 1. Selection: Find a leaf node using UCB1.
             leaf_node, leaf_env = self._select(self.root, sim_env)
 
-            # 2. Evaluation: Get the value of the leaf node.
             if not leaf_env.state.done:
                 if not leaf_node.is_expanded():
                     self._expand(leaf_node, leaf_env)
                 value = self._rollout(leaf_env)
-
             else:
                 player_at_leaf = leaf_env.get_current_player()
-                winner = leaf_env.get_winning_player()
+                value = leaf_env.state.get_reward_for_player(player_at_leaf)
 
-                if winner is None:
-                    value = 0.0
-                elif winner == player_at_leaf:
-                    value = 1.0
-                else:
-                    value = -1.0
-
-            # 3. Backpropagation: Update nodes along the path from the leaf to the root.
             self._backpropagate(leaf_node, value)
 
         return self.root

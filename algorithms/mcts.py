@@ -374,10 +374,7 @@ class RandomRolloutEvaluation(EvaluationStrategy):
         player_at_start = env.get_current_player()
 
         if env.state.done:
-            winner = env.get_winning_player()
-            if winner is None:
-                return 0.0  # Draw
-            return 1.0 if winner == player_at_start else -1.0
+            return env.state.get_reward_for_player(player_at_start)
 
         sim_env = env.copy()
         current_step = 0
@@ -402,12 +399,7 @@ class RandomRolloutEvaluation(EvaluationStrategy):
             return 0.0
 
         winner = sim_env.get_winning_player()
-        if winner is None:
-            value = 0.0
-        elif winner == player_at_start:
-            value = 1.0
-        else:
-            value = -1.0
+        value = sim_env.state.get_reward_for_player(player_at_start)
 
         value *= self.discount_factor**current_step
 

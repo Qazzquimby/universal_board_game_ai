@@ -131,7 +131,6 @@ class AlphaZeroAgent(BaseMCTSAgent):
         self.train_replay_buffer = deque(maxlen=train_buffer_size)
         self.val_replay_buffer = deque(maxlen=val_buffer_size)
 
-
     def act(self, env: BaseEnvironment, train: bool = False) -> ActionType:
         self.search(env=env, train=train)
 
@@ -198,11 +197,7 @@ class AlphaZeroAgent(BaseMCTSAgent):
         if not leaf_node.is_expanded and not leaf_env.state.done:
             self.expansion_strategy.expand(leaf_node, leaf_env)
 
-            if (
-                leaf_node == self.root
-                and train
-                and self.config.dirichlet_epsilon > 0
-            ):
+            if leaf_node == self.root and train and self.config.dirichlet_epsilon > 0:
                 self._apply_dirichlet_noise(self.root)
 
     def _apply_dirichlet_noise(self, node: MCTSNode):
@@ -215,7 +210,6 @@ class AlphaZeroAgent(BaseMCTSAgent):
             node.edges[action].prior = (
                 node.edges[action].prior * (1 - eps) + noise[i] * eps
             )
-
 
     def process_finished_episode(
         self,
