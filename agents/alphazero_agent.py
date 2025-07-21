@@ -36,17 +36,12 @@ class ReplayBufferDataset(Dataset):
     def __init__(self, buffer: deque, state_model: nn.Module):
         self.buffer_list = list(buffer)
         self.state_model = state_model
-        # The state model has its own env reference, which we will use.
-        # This assumes that this dataset is used in a single-threaded way
-        # (num_workers=0 in DataLoader), so we can mutate the state_model's env.
 
     def __len__(self):
         return len(self.buffer_list)
 
     def __getitem__(self, idx):
         state_dict, policy_target, value_target = self.buffer_list[idx]
-
-        # Set environment in the state model to the state from the replay buffer
         self.state_model.env.set_state(state_dict)
         src, src_key_padding_mask = self.state_model.create_input_tensors_from_state()
 
@@ -72,27 +67,9 @@ class AlphaZeroEvaluation(EvaluationStrategy):
 
     def evaluate(self, node: "MCTSNode", env: BaseEnvironment) -> float:
         if env.state.done:
-            winner = env.get_winning_player()
-            if winner is None:
-                return 0.0  # Draw
+            return env.state.rewards.get(env.state.players.current_index, 0.0)
 
-            # Value is from the perspective of the player whose turn it is in the state.
-            player_at_leaf = env.get_current_player()
-            if winner == player_at_leaf:
-                return 1.0
-            else:
-                return -1.0
-
-        key = node.state_with_key.key
-        cached_result = self.network.cache.get(key)
-
-        if cached_result:
-            _, value = cached_result
-        else:
-            self.network.eval()
-            with torch.no_grad():
-                policy_np, value = self.network.predict(node.state_with_key)
-            self.network.cache[key] = (policy_np, value)
+        _, value = get_policy_value(network=self.network, node=node)
 
         return float(value)
 
@@ -105,15 +82,7 @@ class AlphaZeroExpansion(ExpansionStrategy):
         if node.is_expanded or env.state.done:
             return
 
-        key = node.state_with_key.key
-        cached_result = self.network.cache.get(key)
-        if cached_result:
-            policy_np, _ = cached_result
-        else:
-            self.network.eval()
-            with torch.no_grad():
-                policy_np, value = self.network.predict(node.state_with_key)
-            self.network.cache[key] = (policy_np, value)
+        policy_np, _ = get_policy_value(network=self.network, node=node)
 
         legal_actions = env.get_legal_actions()
         for action in legal_actions:
@@ -342,17 +311,14 @@ class AlphaZeroAgent(Agent):
 
         for i, (state_at_step, action_taken, policy_target) in enumerate(game_history):
             # Determine the value target from the perspective of the player at that state
-            player_at_step = state_at_step.get("current_player", -1)
+            player_at_step = state_at_step["players"].current_index
 
             if player_at_step == 0:
                 value_target = final_outcome
             elif player_at_step == 1:
                 value_target = -final_outcome  # Flip outcome for opponent
             else:
-                logger.warning(
-                    f"Unknown player {player_at_step} at step {i}. Assigning value target 0.0."
-                )
-                value_target = 0.0
+                assert False
 
             # The state dictionary is stored as-is. `env.set_state()` will reconstruct it.
             buffer_state = state_at_step.copy()
@@ -449,11 +415,11 @@ class AlphaZeroAgent(Agent):
             return None
 
         min_buffer_for_training = self.config.training_batch_size * 5
-        if len(self.train_replay_buffer) < min_buffer_for_training:
-            logger.info(
-                f"Skipping learn step: Train buffer size {len(self.train_replay_buffer)} < Min size {min_buffer_for_training}"
-            )
-            return None
+        # if len(self.train_replay_buffer) < min_buffer_for_training:
+        #     logger.info(
+        #         f"Skipping learn step: Train buffer size {len(self.train_replay_buffer)} < Min size {min_buffer_for_training}"
+        #     )
+        #     return None
         if not self.val_replay_buffer:
             logger.info("Skipping learn step: Validation buffer is empty.")
             return None
@@ -770,3 +736,17 @@ def make_pure_az(
         config=config,
         training_config=training_config,
     )
+
+
+def get_policy_value(network: nn.Module, node: "MCTSNode"):
+    key = node.state_with_key.key
+    cached_result = network.cache.get(key)
+
+    if cached_result:
+        policy_np, value = cached_result
+    else:
+        network.eval()
+        with torch.no_grad():
+            policy_np, value = network.predict(node.state_with_key)
+        network.cache[key] = (policy_np, value)
+    return policy_np, value
