@@ -467,8 +467,11 @@ class AlphaZeroAgent(BaseMCTSAgent):
         using early stopping based on a validation set.
         Returns a dictionary of losses and metrics from the best epoch.
         """
-
-        train_loader, val_loader = self._get_train_val_loaders()
+        try:
+            train_loader, val_loader = self._get_train_val_loaders()
+        except ValueError as e:
+            logger.warning(e)
+            return None
 
         max_epochs = 100
         early_stopping_patience = 10
@@ -529,8 +532,11 @@ class AlphaZeroAgent(BaseMCTSAgent):
     def _get_train_val_loaders(self) -> Tuple[DataLoader, DataLoader]:
         if not self.network or not self.optimizer:
             raise ValueError("Cannot learn: Network or optimizer not initialized.")
-        if not self.train_replay_buffer:
-            raise ValueError("Skipping learn step: Training buffer is empty.")
+        if len(self.train_replay_buffer) < self.config.training_batch_size:
+            raise ValueError(
+                f"Skipping learn step: Not enough training data for one batch. "
+                f"Have {len(self.train_replay_buffer)}, need {self.config.training_batch_size}."
+            )
         if not self.val_replay_buffer:
             raise ValueError("Skipping learn step: Validation buffer is empty.")
 

@@ -8,7 +8,6 @@ from loguru import logger
 
 import wandb
 from agents.mcts_agent import make_pure_mcts
-from core.agent_interface import Agent
 from core.config import AppConfig, WANDB_KEY
 from core.serialization import LOG_DIR, save_game_log
 from environments.base import BaseEnvironment
@@ -126,9 +125,9 @@ def run_training(config: AppConfig, env_name_override: str = None):
         logger.info("Running learning step...")
         metrics = agent.learn()  # Agent learns using its local network
         if metrics:
-            total_losses.append(metrics["train_loss"])
-            value_losses.append(metrics["train_value_loss"])
-            policy_losses.append(metrics["train_policy_loss"])
+            total_losses.append(metrics.train.loss)
+            value_losses.append(metrics.train.value_loss)
+            policy_losses.append(metrics.train.policy_loss)
         else:
             logger.info("Learning Time: Skipped (buffer too small)")
 
@@ -150,10 +149,10 @@ def run_training(config: AppConfig, env_name_override: str = None):
         )
         if metrics:
             logger.info(
-                f"  Latest Losses: Train Total={metrics['train_loss']:.4f}, Val Total={metrics['val_loss']:.4f}"
+                f"  Latest Losses: Train Total={metrics.train.loss:.4f}, Val Total={metrics.val.loss:.4f}"
             )
             logger.info(
-                f"  Latest Accs:   Train Policy={metrics['train_acc']:.4f}, Val Policy={metrics['val_acc']:.4f}"
+                f"  Latest Accs:   Train Policy={metrics.train.acc:.4f}, Val Policy={metrics.val.acc:.4f}"
             )
 
         if config.wandb.enabled:  # and (iteration + 1) % config.wandb.log_freq == 0:
@@ -165,8 +164,13 @@ def run_training(config: AppConfig, env_name_override: str = None):
                 "wall_clock_time_s": time.time() - start_time,
             }
             if metrics:
-                # wandb doesn't like nested dicts, so we flatten the metric names
-                wandb_metrics = {f"learn/{k}": v for k, v in metrics.items()}
+                # Flatten the BestEpochMetrics dataclass for wandb logging
+                wandb_metrics = {
+                    f"learn/train_{k}": v for k, v in metrics.train.__dict__.items()
+                }
+                wandb_metrics.update(
+                    {f"learn/val_{k}": v for k, v in metrics.val.__dict__.items()}
+                )
                 log_data.update(wandb_metrics)
             try:
                 wandb.log(log_data)
@@ -238,8 +242,8 @@ def run_self_play(agent: AlphaZeroAgent, env: BaseEnvironment, config: AppConfig
     num_games_total = config.training.num_games_per_iteration
     all_experiences_iteration = []
 
-    # for _ in tqdm(range(num_games_total), desc="Self-Play Games"):
-    for _ in tqdm(range(2), desc="Self-Play Games"):
+    for _ in tqdm(range(num_games_total), desc="Self-Play Games"):
+    # for _ in tqdm(range(2), desc="Self-Play Games"):
         game_env = env.copy()
         state_with_key = game_env.reset()
         game_history = []
