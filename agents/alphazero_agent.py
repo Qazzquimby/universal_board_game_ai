@@ -13,8 +13,8 @@ import torch.nn.functional as F
 import numpy as np
 from loguru import logger
 
-from core.agent_interface import Agent
-from environments.base import BaseEnvironment, StateType, ActionType, StateWithKey
+from agents.mcts_agent import BaseMCTSAgent
+from environments.base import BaseEnvironment, StateType, ActionType
 from algorithms.mcts import (
     DummyAlphaZeroNet,
     MCTSNode,
@@ -23,8 +23,6 @@ from algorithms.mcts import (
     EvaluationStrategy,
     StandardBackpropagation,
     Edge,
-    MCTSNodeCache,
-    EARLY_STOP_IF_CHANGE_IMPOSSIBLE_CHECK_FREQUENCY,
     BackpropagationStrategy,
     SelectionStrategy,
 )
@@ -94,7 +92,7 @@ class AlphaZeroExpansion(ExpansionStrategy):
         node.is_expanded = True
 
 
-class AlphaZeroAgent(Agent):
+class AlphaZeroAgent(BaseMCTSAgent):
     """Agent implementing the AlphaZero algorithm."""
 
     def __init__(
@@ -109,17 +107,13 @@ class AlphaZeroAgent(Agent):
         config: AlphaZeroConfig,
         training_config: TrainingConfig,
     ):
-        if config.num_simulations <= 0:
-            raise ValueError("Number of simulations must be positive.")
-
-        self.selection_strategy = selection_strategy
-        self.expansion_strategy = expansion_strategy
-        self.evaluation_strategy = evaluation_strategy
-        self.backpropagation_strategy = backpropagation_strategy
-
-        self.root: MCTSNode = None
-        self.node_cache = MCTSNodeCache()
-
+        super().__init__(
+            num_simulations=config.num_simulations,
+            selection_strategy=selection_strategy,
+            expansion_strategy=expansion_strategy,
+            evaluation_strategy=evaluation_strategy,
+            backpropagation_strategy=backpropagation_strategy,
+        )
         self.network = network
         self.optimizer = optimizer
         self.env = env
@@ -137,16 +131,6 @@ class AlphaZeroAgent(Agent):
         self.train_replay_buffer = deque(maxlen=train_buffer_size)
         self.val_replay_buffer = deque(maxlen=val_buffer_size)
 
-    def _ensure_state_is_root(self, state_with_key: StateWithKey):
-        if self.root and self.root.state_with_key.key == state_with_key.key:
-            return  # already root
-
-        matching_node = self.node_cache.get_matching_node(key=state_with_key.key)
-        if matching_node:
-            self.root = matching_node
-        else:
-            self.root = MCTSNode(state_with_key=state_with_key)
-            self.node_cache.cache_node(key=state_with_key.key, node=self.root)
 
     def act(self, env: BaseEnvironment, train: bool = False) -> ActionType:
         self.search(env=env, train=train)
@@ -210,6 +194,17 @@ class AlphaZeroAgent(Agent):
                     policy_vector[action_idx] = visit_count / visit_sum
         return policy_vector
 
+    def _expand_leaf(self, leaf_node: MCTSNode, leaf_env: BaseEnvironment, train: bool):
+        if not leaf_node.is_expanded and not leaf_env.state.done:
+            self.expansion_strategy.expand(leaf_node, leaf_env)
+
+            if (
+                leaf_node == self.root
+                and train
+                and self.config.dirichlet_epsilon > 0
+            ):
+                self._apply_dirichlet_noise(self.root)
+
     def _apply_dirichlet_noise(self, node: MCTSNode):
         if not node.edges:
             return
@@ -221,68 +216,6 @@ class AlphaZeroAgent(Agent):
                 node.edges[action].prior * (1 - eps) + noise[i] * eps
             )
 
-    def search(self, env: BaseEnvironment, train: bool = False) -> MCTSNode:
-        """
-        Run the MCTS search for a specified number of simulations.
-        """
-        self._ensure_state_is_root(
-            state_with_key=env.get_state_with_key()
-        )  # remove in prod
-
-        for sim_idx in range(self.config.num_simulations):
-            # TODO remove duplication with MCTSAgent
-            if (
-                sim_idx
-                and EARLY_STOP_IF_CHANGE_IMPOSSIBLE_CHECK_FREQUENCY
-                and sim_idx % EARLY_STOP_IF_CHANGE_IMPOSSIBLE_CHECK_FREQUENCY == 0
-            ):
-                visit_counts = sorted(
-                    [edge.num_visits for edge in self.root.edges.values()]
-                )
-                if len(visit_counts) < 2:
-                    break
-                max_visits = visit_counts[-1]
-                second_most_visits = visit_counts[-2]
-                sims_needed_to_change_mind = max_visits - second_most_visits
-                remaining_sims = self.config.num_simulations - sim_idx
-                if remaining_sims < sims_needed_to_change_mind:
-                    break
-
-            sim_env = env.copy()
-
-            # 1. Selection
-            selection_result = self.selection_strategy.select(
-                node=self.root, sim_env=sim_env, cache=self.node_cache
-            )
-            path = selection_result.path
-            leaf_node = selection_result.leaf_node
-            leaf_env = selection_result.leaf_env
-
-            # 2. Expansion & Evaluation
-            player_at_leaf = leaf_env.get_current_player()
-            if not leaf_node.is_expanded and not leaf_env.state.done:
-                self.expansion_strategy.expand(leaf_node, leaf_env)
-
-                if (
-                    leaf_node == self.root
-                    and train
-                    and self.config.dirichlet_epsilon > 0
-                ):
-                    self._apply_dirichlet_noise(self.root)
-
-            value = self.evaluation_strategy.evaluate(leaf_node, leaf_env)
-            player_to_value = {}
-            for player in range(len(env.state.players)):
-                if player == player_at_leaf:
-                    player_to_value[player] = value
-                else:
-                    player_to_value[player] = -value
-
-            # 3. Backpropagation
-            self.backpropagation_strategy.backpropagate(
-                path=path, player_to_value=player_to_value
-            )
-        return self.root
 
     def process_finished_episode(
         self,
@@ -403,28 +336,202 @@ class AlphaZeroAgent(Agent):
 
         return total_loss, value_loss, policy_loss, policy_acc, value_mse
 
-    # Conforms to Agent interface (no arguments)
+    def _train_epoch(
+        self, train_loader: DataLoader, epoch: int, max_epochs: int
+    ) -> Dict[str, float]:
+        """Runs one epoch of training and returns metrics."""
+        self.network.train()
+        total_train_loss, total_train_policy_loss, total_train_value_loss = 0, 0, 0
+        total_train_policy_acc, total_train_value_mse = 0, 0
+        train_batches = 0
+
+        train_iterator = (
+            tqdm(
+                train_loader,
+                desc=f"Epoch {epoch+1}/{max_epochs} (Train)",
+                leave=False,
+            )
+            if not self.config.debug_mode
+            else train_loader
+        )
+        for batch_data in train_iterator:
+            (
+                src_batch,
+                mask_batch,
+                policy_targets_batch,
+                value_targets_batch,
+            ) = batch_data
+            src_batch = src_batch.to(self.device)
+            mask_batch = mask_batch.to(self.device)
+            policy_targets_batch = policy_targets_batch.to(self.device)
+            value_targets_batch = value_targets_batch.to(self.device)
+
+            self.optimizer.zero_grad()
+            policy_logits, value_preds = self.network(src_batch, mask_batch)
+            (
+                total_loss,
+                value_loss,
+                policy_loss,
+                policy_acc,
+                value_mse,
+            ) = self._calculate_loss(
+                policy_logits,
+                value_preds,
+                policy_targets_batch,
+                value_targets_batch,
+            )
+            total_loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.network.parameters(), max_norm=1.0)
+            self.optimizer.step()
+
+            total_train_loss += total_loss.item()
+            total_train_value_loss += value_loss.item()
+            total_train_policy_loss += policy_loss.item()
+            total_train_policy_acc += policy_acc
+            total_train_value_mse += value_mse
+            train_batches += 1
+
+        return {
+            "loss": total_train_loss / train_batches,
+            "policy_loss": total_train_policy_loss / train_batches,
+            "value_loss": total_train_value_loss / train_batches,
+            "acc": total_train_policy_acc / len(train_loader.dataset),
+            "mse": total_train_value_mse / train_batches,
+        }
+
+    def _validate_epoch(self, val_loader: DataLoader) -> Optional[Dict[str, float]]:
+        """Runs one epoch of validation and returns metrics."""
+        self.network.eval()
+        total_val_loss, total_val_policy_loss, total_val_value_loss = 0, 0, 0
+        total_val_policy_acc, total_val_value_mse = 0, 0
+        val_batches = 0
+        with torch.no_grad():
+            for batch_data in val_loader:
+                (
+                    src_batch,
+                    mask_batch,
+                    policy_targets_batch,
+                    value_targets_batch,
+                ) = batch_data
+                src_batch = src_batch.to(self.device)
+                mask_batch = mask_batch.to(self.device)
+                policy_targets_batch = policy_targets_batch.to(self.device)
+                value_targets_batch = value_targets_batch.to(self.device)
+                policy_logits, value_preds = self.network(src_batch, mask_batch)
+                (
+                    total_loss,
+                    value_loss,
+                    policy_loss,
+                    policy_acc,
+                    value_mse,
+                ) = self._calculate_loss(
+                    policy_logits,
+                    value_preds,
+                    policy_targets_batch,
+                    value_targets_batch,
+                )
+                total_val_loss += total_loss.item()
+                total_val_value_loss += value_loss.item()
+                total_val_policy_loss += policy_loss.item()
+                total_val_policy_acc += policy_acc
+                total_val_value_mse += value_mse
+                val_batches += 1
+
+        if val_batches == 0:
+            return None
+
+        return {
+            "loss": total_val_loss / val_batches,
+            "policy_loss": total_val_policy_loss / val_batches,
+            "value_loss": total_val_value_loss / val_batches,
+            "acc": total_val_policy_acc / len(val_loader.dataset),
+            "mse": total_val_value_mse / val_batches,
+        }
+
     def learn(self) -> Optional[Dict[str, float]]:
         """
         Update the neural network by training for multiple epochs over the replay buffer,
         using early stopping based on a validation set.
         Returns a dictionary of losses and metrics from the best epoch.
         """
+
+        train_loader, val_loader = self._get_train_val_loaders()
+
+        max_epochs = 100
+        early_stopping_patience = 10
+        best_val_loss = float("inf")
+        epochs_without_improvement = 0
+        best_model_state = None
+        best_epoch_metrics = None
+
+        for epoch in range(max_epochs):
+            train_metrics = self._train_epoch(train_loader, epoch, max_epochs)
+            val_metrics = self._validate_epoch(val_loader)
+
+            if val_metrics is None:
+                continue
+
+            logger.info(
+                f"Epoch {epoch+1}/{max_epochs}: "
+                f"Train Loss={train_metrics['loss']:.4f}, Val Loss={val_metrics['loss']:.4f} | "
+                f"Train Acc={train_metrics['acc']:.4f}, Val Acc={val_metrics['acc']:.4f}"
+            )
+
+            if val_metrics["loss"] < best_val_loss:
+                best_val_loss = val_metrics["loss"]
+                epochs_without_improvement = 0
+                best_model_state = copy.deepcopy(self.network.state_dict())
+
+                # TODO replace gross dict with dataclass
+                best_epoch_metrics = {
+                    "train_loss": train_metrics["loss"],
+                    "train_policy_loss": train_metrics["policy_loss"],
+                    "train_value_loss": train_metrics["value_loss"],
+                    "train_acc": train_metrics["acc"],
+                    "train_mse": train_metrics["mse"],
+                    "val_loss": val_metrics["loss"],
+                    "val_policy_loss": val_metrics["policy_loss"],
+                    "val_value_loss": val_metrics["value_loss"],
+                    "val_acc": val_metrics["acc"],
+                    "val_mse": val_metrics["mse"],
+                }
+                logger.info(
+                    f"  New best validation loss: {best_val_loss:.4f}. Saving model state."
+                )
+            else:
+                epochs_without_improvement += 1
+                if epochs_without_improvement >= early_stopping_patience:
+                    logger.info(f"Early stopping triggered after {epoch + 1} epochs.")
+                    break
+
+        if best_model_state:
+            logger.info(
+                f"Restoring best model from epoch with validation loss: {best_val_loss:.4f}"
+            )
+            self.network.load_state_dict(best_model_state)
+
+        self.network.eval()
+
+        if best_epoch_metrics:
+            logger.info(
+                f"Learn Step Summary (best epoch): "
+                f"Total Loss={best_epoch_metrics['train_loss']:.4f}, "
+                f"Value Loss={best_epoch_metrics['train_value_loss']:.4f}, "
+                f"Policy Loss={best_epoch_metrics['train_policy_loss']:.4f}"
+            )
+            return best_epoch_metrics
+        else:
+            logger.warning("No learning occurred or no improvement found.")
+            return None
+
+    def _get_train_val_loaders(self) -> Tuple[DataLoader, DataLoader]:
         if not self.network or not self.optimizer:
-            logger.warning("Cannot learn: Network or optimizer not initialized.")
-            return None
-
-        min_buffer_for_training = self.config.training_batch_size * 5
-        # if len(self.train_replay_buffer) < min_buffer_for_training:
-        #     logger.info(
-        #         f"Skipping learn step: Train buffer size {len(self.train_replay_buffer)} < Min size {min_buffer_for_training}"
-        #     )
-        #     return None
+            raise ValueError("Cannot learn: Network or optimizer not initialized.")
+        if not self.train_replay_buffer:
+            raise ValueError("Skipping learn step: Training buffer is empty.")
         if not self.val_replay_buffer:
-            logger.info("Skipping learn step: Validation buffer is empty.")
-            return None
+            raise ValueError("Skipping learn step: Validation buffer is empty.")
 
-        # --- Create Datasets and DataLoaders from pre-split buffers ---
         train_dataset = ReplayBufferDataset(
             self.train_replay_buffer, self.network.state_model
         )
@@ -442,187 +549,14 @@ class AlphaZeroAgent(Agent):
         val_loader = DataLoader(
             val_dataset,
             batch_size=self.config.training_batch_size,
-            shuffle=False,  # No need to shuffle validation data
+            shuffle=False,
             num_workers=0,
-            drop_last=False,  # Use all validation data
+            drop_last=False,
         )
         logger.info(
             f"Training with {len(train_dataset)} samples, validating with {len(val_dataset)} samples."
         )
-
-        # --- Early Stopping and Training Loop Setup ---
-        max_epochs = 100  # As per original TODO
-        patience = 10  # Stop after 10 epochs with no improvement
-        best_val_loss = float("inf")
-        epochs_without_improvement = 0
-        best_model_state = None
-        best_epoch_metrics = None
-
-        for epoch in range(max_epochs):
-            # --- Training Phase ---
-            self.network.train()
-            total_train_loss, total_train_policy_loss, total_train_value_loss = 0, 0, 0
-            total_train_policy_acc, total_train_value_mse = 0, 0
-            train_batches = 0
-
-            train_iterator = (
-                tqdm(
-                    train_loader,
-                    desc=f"Epoch {epoch+1}/{max_epochs} (Train)",
-                    leave=False,
-                )
-                if not self.config.debug_mode
-                else train_loader
-            )
-            for batch_data in train_iterator:
-                (
-                    src_batch,
-                    mask_batch,
-                    policy_targets_batch,
-                    value_targets_batch,
-                ) = batch_data
-                src_batch = src_batch.to(self.device)
-                mask_batch = mask_batch.to(self.device)
-                policy_targets_batch = policy_targets_batch.to(self.device)
-                value_targets_batch = value_targets_batch.to(self.device)
-
-                self.optimizer.zero_grad()
-                policy_logits, value_preds = self.network(src_batch, mask_batch)
-                (
-                    total_loss,
-                    value_loss,
-                    policy_loss,
-                    policy_acc,
-                    value_mse,
-                ) = self._calculate_loss(
-                    policy_logits,
-                    value_preds,
-                    policy_targets_batch,
-                    value_targets_batch,
-                )
-                total_loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.network.parameters(), max_norm=1.0)
-                self.optimizer.step()
-
-                total_train_loss += total_loss.item()
-                total_train_value_loss += value_loss.item()
-                total_train_policy_loss += policy_loss.item()
-                total_train_policy_acc += policy_acc
-                total_train_value_mse += value_mse
-                train_batches += 1
-
-            # --- Validation Phase ---
-            self.network.eval()
-            total_val_loss, total_val_policy_loss, total_val_value_loss = 0, 0, 0
-            total_val_policy_acc, total_val_value_mse = 0, 0
-            val_batches = 0
-            with torch.no_grad():
-                for batch_data in val_loader:
-                    (
-                        src_batch,
-                        mask_batch,
-                        policy_targets_batch,
-                        value_targets_batch,
-                    ) = batch_data
-                    src_batch = src_batch.to(self.device)
-                    mask_batch = mask_batch.to(self.device)
-                    policy_targets_batch = policy_targets_batch.to(self.device)
-                    value_targets_batch = value_targets_batch.to(self.device)
-                    policy_logits, value_preds = self.network(src_batch, mask_batch)
-                    (
-                        total_loss,
-                        value_loss,
-                        policy_loss,
-                        policy_acc,
-                        value_mse,
-                    ) = self._calculate_loss(
-                        policy_logits,
-                        value_preds,
-                        policy_targets_batch,
-                        value_targets_batch,
-                    )
-                    total_val_loss += total_loss.item()
-                    total_val_value_loss += value_loss.item()
-                    total_val_policy_loss += policy_loss.item()
-                    total_val_policy_acc += policy_acc
-                    total_val_value_mse += value_mse
-                    val_batches += 1
-
-            # --- Calculate and Log Epoch Metrics ---
-            avg_train_loss = total_train_loss / train_batches
-            avg_train_policy_loss = total_train_policy_loss / train_batches
-            avg_train_value_loss = total_train_value_loss / train_batches
-            avg_train_acc = total_train_policy_acc / len(train_dataset)
-            avg_train_mse = total_train_value_mse / train_batches
-
-            avg_val_loss = total_val_loss / val_batches if val_batches > 0 else 0
-            avg_val_policy_loss = (
-                total_val_policy_loss / val_batches if val_batches > 0 else 0
-            )
-            avg_val_value_loss = (
-                total_val_value_loss / val_batches if val_batches > 0 else 0
-            )
-            avg_val_acc = (
-                total_val_policy_acc / len(val_dataset) if len(val_dataset) > 0 else 0
-            )
-            avg_val_mse = total_val_value_mse / val_batches if val_batches > 0 else 0
-
-            logger.info(
-                f"Epoch {epoch+1}/{max_epochs}: "
-                f"Train Loss={avg_train_loss:.4f}, Val Loss={avg_val_loss:.4f} | "
-                f"Train Acc={avg_train_acc:.4f}, Val Acc={avg_val_acc:.4f}"
-            )
-
-            # --- Early Stopping Check ---
-            if avg_val_loss < best_val_loss:
-                best_val_loss = avg_val_loss
-                epochs_without_improvement = 0
-                best_model_state = copy.deepcopy(self.network.state_dict())
-                best_epoch_metrics = {
-                    "train_loss": avg_train_loss,
-                    "train_policy_loss": avg_train_policy_loss,
-                    "train_value_loss": avg_train_value_loss,
-                    "train_acc": avg_train_acc,
-                    "train_mse": avg_train_mse,
-                    "val_loss": avg_val_loss,
-                    "val_policy_loss": avg_val_policy_loss,
-                    "val_value_loss": avg_val_value_loss,
-                    "val_acc": avg_val_acc,
-                    "val_mse": avg_val_mse,
-                }
-                logger.info(
-                    f"  New best validation loss: {best_val_loss:.4f}. Saving model state."
-                )
-            else:
-                epochs_without_improvement += 1
-                if epochs_without_improvement >= patience:
-                    logger.info(f"Early stopping triggered after {epoch + 1} epochs.")
-                    break
-
-        # --- Restore Best Model and Finalize ---
-        if best_model_state:
-            logger.info(
-                f"Restoring best model from epoch with validation loss: {best_val_loss:.4f}"
-            )
-            self.network.load_state_dict(best_model_state)
-        else:
-            logger.warning(
-                "No best model state was saved. Training might not have improved."
-            )
-
-        self.network.eval()
-
-        if best_epoch_metrics:
-            logger.info(
-                f"Learn Step Summary (best epoch): "
-                f"Total Loss={best_epoch_metrics['train_loss']:.4f}, "
-                f"Value Loss={best_epoch_metrics['train_value_loss']:.4f}, "
-                f"Policy Loss={best_epoch_metrics['train_policy_loss']:.4f}"
-            )
-            return best_epoch_metrics
-        else:
-            logger.warning("No learning occurred or no improvement found.")
-            return None
+        return train_loader, val_loader
 
     def _get_save_path(self) -> Path:
         """Constructs the save file path for the network weights."""

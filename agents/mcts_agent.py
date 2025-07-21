@@ -20,7 +20,7 @@ from core.agent_interface import Agent
 from environments.base import BaseEnvironment, ActionType, StateWithKey
 
 
-class MCTSAgent(Agent):
+class BaseMCTSAgent(Agent):
     def __init__(
         self,
         num_simulations: int,
@@ -28,7 +28,6 @@ class MCTSAgent(Agent):
         expansion_strategy: ExpansionStrategy,
         evaluation_strategy: EvaluationStrategy,
         backpropagation_strategy: BackpropagationStrategy,
-        temperature=0,
     ):
         if num_simulations <= 0:
             raise ValueError("Number of simulations must be positive.")
@@ -39,7 +38,6 @@ class MCTSAgent(Agent):
         self.backpropagation_strategy = backpropagation_strategy
 
         self.num_simulations = num_simulations
-        self.temperature = temperature
 
         self.root: MCTSNode = None
         self.node_cache = MCTSNodeCache()
@@ -55,73 +53,99 @@ class MCTSAgent(Agent):
             self.root = MCTSNode(state_with_key=state_with_key)
             self.node_cache.cache_node(key=state_with_key.key, node=self.root)
 
-    def act(self, env: BaseEnvironment) -> Optional[ActionType]:
-        self.set_root_to_state(state_with_key=env.get_state_with_key())
-        self.search(env=env)
-        policy_result = self.get_policy()
-        return policy_result.chosen_action
+    def _should_stop_early(self, sim_idx: int) -> bool:
+        """Checks if the search can be stopped early."""
+        if not (
+            sim_idx
+            and EARLY_STOP_IF_CHANGE_IMPOSSIBLE_CHECK_FREQUENCY
+            and sim_idx % EARLY_STOP_IF_CHANGE_IMPOSSIBLE_CHECK_FREQUENCY == 0
+        ):
+            return False
 
-    def search(self, env: BaseEnvironment) -> MCTSNode:
+        visit_counts = sorted([edge.num_visits for edge in self.root.edges.values()])
+        if len(visit_counts) < 2:
+            return True  # Stop if only one action, or no actions explored
+        max_visits = visit_counts[-1]
+        second_most_visits = visit_counts[-2]
+        sims_needed_to_change_mind = max_visits - second_most_visits
+        remaining_sims = self.num_simulations - sim_idx
+        return remaining_sims < sims_needed_to_change_mind
+
+    def _expand_leaf(self, leaf_node: MCTSNode, leaf_env: BaseEnvironment, train: bool):
+        """Default expansion logic. Can be overridden."""
+        if not leaf_node.is_expanded:
+            self.expansion_strategy.expand(leaf_node, leaf_env)
+
+    def _run_simulation(self, env: BaseEnvironment, train: bool):
+        """Runs a single simulation from selection to backpropagation."""
+        sim_env = env.copy()
+
+        # 1. Selection
+        selection_result = self.selection_strategy.select(
+            node=self.root, sim_env=sim_env, cache=self.node_cache
+        )
+        path = selection_result.path
+        leaf_node = selection_result.leaf_node
+        leaf_env = selection_result.leaf_env
+
+        # 2. Expansion
+        self._expand_leaf(leaf_node, leaf_env, train)
+
+        # 3. Evaluation
+        player_at_leaf = leaf_env.get_current_player()
+        value = float(self.evaluation_strategy.evaluate(leaf_node, leaf_env))
+        player_to_value = {}
+        for player in range(len(env.state.players)):
+            if player == player_at_leaf:
+                player_to_value[player] = value
+            else:
+                player_to_value[player] = -value
+
+        # 4. Backpropagation
+        self.backpropagation_strategy.backpropagate(
+            path=path, player_to_value=player_to_value
+        )
+
+    def search(self, env: BaseEnvironment, train: bool = False) -> MCTSNode:
         """
         Run the MCTS search for a specified number of simulations.
-
-        Args:
-            env: The current environment instance.
-
-        Returns:
-            The root node of the search tree after simulations.
         """
-        self.set_root_to_state(
-            state_with_key=env.get_state_with_key()
-        )  # remove in prod
+        self.set_root_to_state(state_with_key=env.get_state_with_key())
 
         for sim_idx in range(self.num_simulations):
-            if (
-                sim_idx
-                and EARLY_STOP_IF_CHANGE_IMPOSSIBLE_CHECK_FREQUENCY
-                and sim_idx % EARLY_STOP_IF_CHANGE_IMPOSSIBLE_CHECK_FREQUENCY == 0
-            ):
-                visit_counts = sorted(
-                    [edge.num_visits for edge in self.root.edges.values()]
-                )
-                if len(visit_counts) < 2:
-                    break
-                max_visits = visit_counts[-1]
-                second_most_visits = visit_counts[-2]
-                sims_needed_to_change_mind = max_visits - second_most_visits
-                remaining_sims = self.num_simulations - sim_idx
-                if remaining_sims < sims_needed_to_change_mind:
-                    break
+            if self._should_stop_early(sim_idx):
+                break
 
-            sim_env = env.copy()
-
-            # 1. Selection: Find a leaf node using the selection strategy.
-            #    The strategy modifies sim_env to match the leaf node's state.
-            selection_result = self.selection_strategy.select(
-                node=self.root, sim_env=sim_env, cache=self.node_cache
-            )
-            path = selection_result.path
-            leaf_node = selection_result.leaf_node
-            leaf_env = selection_result.leaf_env
-
-            # 2. Expansion & Evaluation
-            player_at_leaf = leaf_env.get_current_player()
-            if not leaf_node.is_expanded:
-                self.expansion_strategy.expand(leaf_node, leaf_env)
-            value = float(self.evaluation_strategy.evaluate(leaf_node, leaf_env))
-            player_to_value = {}
-            for player in range(len(env.state.players)):
-                if player == player_at_leaf:
-                    player_to_value[player] = value
-                else:
-                    player_to_value[player] = -value
-
-            # 3. Backpropagation
-            # The value should be from the perspective of the player whose turn it was at the leaf node.
-            self.backpropagation_strategy.backpropagate(
-                path=path, player_to_value=player_to_value
-            )
+            self._run_simulation(env, train)
         return self.root
+
+    def act(self, env: BaseEnvironment, train: bool = False) -> Optional[ActionType]:
+        raise NotImplementedError
+
+
+class MCTSAgent(BaseMCTSAgent):
+    def __init__(
+        self,
+        num_simulations: int,
+        selection_strategy: SelectionStrategy,
+        expansion_strategy: ExpansionStrategy,
+        evaluation_strategy: EvaluationStrategy,
+        backpropagation_strategy: BackpropagationStrategy,
+        temperature=0,
+    ):
+        super().__init__(
+            num_simulations=num_simulations,
+            selection_strategy=selection_strategy,
+            expansion_strategy=expansion_strategy,
+            evaluation_strategy=evaluation_strategy,
+            backpropagation_strategy=backpropagation_strategy,
+        )
+        self.temperature = temperature
+
+    def act(self, env: BaseEnvironment, train: bool = False) -> Optional[ActionType]:
+        self.search(env=env, train=train)
+        policy_result = self.get_policy()
+        return policy_result.chosen_action
 
     def get_policy(self) -> PolicyResult:
         """
