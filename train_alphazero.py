@@ -114,13 +114,13 @@ def run_training(config: AppConfig, env_name_override: str = None):
             f"\n--- Iteration {iteration + 1}/{config.training.num_iterations} ---"
         )
 
-        all_experiences_iteration = run_self_play(agent=agent, env=env, config=config)
-        add_results_to_buffer(
-            iteration=iteration,
-            all_experiences_iteration=all_experiences_iteration,
-            agent=agent,
-            config=config,
-        )
+        # all_experiences_iteration = run_self_play(agent=agent, env=env, config=config)
+        # add_results_to_buffer(
+        #     iteration=iteration,
+        #     all_experiences_iteration=all_experiences_iteration,
+        #     agent=agent,
+        #     config=config,
+        # )
 
         logger.info("Running learning step...")
         metrics = agent.learn()  # Agent learns using its local network

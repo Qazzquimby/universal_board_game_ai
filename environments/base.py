@@ -17,7 +17,7 @@ from typing import (
     Iterable,
 )
 
-from pydantic import BaseModel, model_validator, ConfigDict, PrivateAttr
+from pydantic import BaseModel, model_validator, ConfigDict, PrivateAttr, Field
 
 ActionType = TypeVar("ActionType")
 StateType = Dict[str, Any]
@@ -219,25 +219,32 @@ class Player(GameEntity):
         return {"id": self.id}
 
 
-class Players(Iterable):
-    def __init__(
-        self,
-        num_players: Optional[int] = None,
-        player_labels: Optional[List[str]] = None,
-    ):
-        if player_labels is None:
-            if num_players is None:
+class Players(BaseModel, Iterable):
+    players: List[Player] = Field(default_factory=list)
+    current_index: int = 0
+
+    # Constructed in post init
+    num_players: Optional[int] = None
+    player_labels: Optional[List[str]] = None
+
+    def __post_init__(self):
+        if not self.players:
+            self._init_players()
+
+    def _init_players(self):
+        if self.player_labels is None:
+            if self.num_players is None:
                 raise ValueError("Either num_players or player_labels must be provided")
-            player_labels = [f"Player {i}" for i in range(num_players)]
+            self.player_labels = [f"Player {i}" for i in range(self.num_players)]
 
-        if num_players is None:
-            num_players = len(player_labels)
+        if self.num_players is None:
+            self.num_players = len(self.player_labels)
 
-        if len(player_labels) != num_players:
+        if len(self.player_labels) != self.num_players:
             raise ValueError("Number of player labels must match num_players.")
 
-        self.players = [Player(id=i, name=player_labels[i]) for i in range(num_players)]
-        self.current_index = 0
+        self.players = [Player(id=i, name=self.player_labels[i]) for i in
+                        range(self.num_players)]
 
     @property
     def current_player(self):

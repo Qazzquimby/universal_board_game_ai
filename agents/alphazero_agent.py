@@ -27,7 +27,7 @@ from algorithms.mcts import (
     SelectionStrategy,
 )
 from models.networks import AutoGraphNet
-from core.config import AlphaZeroConfig, DATA_DIR, TrainingConfig
+from core.config import AlphaZeroConfig, DATA_DIR, TrainingConfig, USE_CUDA
 
 
 class ReplayBufferDataset(Dataset):
@@ -136,7 +136,7 @@ class AlphaZeroAgent(BaseMCTSAgent):
         self.network = network
         self.optimizer = optimizer
         self.env = env
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device("cuda" if torch.cuda.is_available() and USE_CUDA else "cpu")
         if self.network:
             self.network.to(self.device)
 

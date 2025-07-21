@@ -5,6 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 
+from core.config import USE_CUDA
 from environments.base import BaseEnvironment, StateWithKey
 
 
@@ -26,7 +27,7 @@ class AutoGraphNet(nn.Module):
         self.cache = {}
 
         self.env = env
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device("cuda" if torch.cuda.is_available() and USE_CUDA else "cpu")
 
         # The StateModel needs to know the embedding_dim for the PolicyModel to match
         if "embedding_dim" not in state_model_params:
@@ -112,15 +113,9 @@ class _StateModel(nn.Module):
     ):
         super().__init__()
         self.env = env
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device("cuda" if torch.cuda.is_available() and USE_CUDA else "cpu")
 
         self.network_config = self.env.get_network_config()
-        if self.network_config is None:
-            raise TypeError(
-                f"Could not automatically configure network for environment '{type(self.env).__name__}'. "
-                "The default implementation of `get_network_config` requires a `Grid` in the state. "
-                "For non-grid environments, you may need to override this method."
-            )
 
         self.embedding_layers = nn.ModuleDict()
         self.embedding_dim = embedding_dim
@@ -128,7 +123,7 @@ class _StateModel(nn.Module):
             self.embedding_layers[pos_dim] = nn.Embedding(size, embedding_dim)
         for feat, info in self.network_config["features"].items():
             self.embedding_layers[feat] = nn.Embedding(
-                info["cardinality"], embedding_dim
+                info["cardinality"]+1, embedding_dim
             )
 
         encoder_layer = nn.TransformerEncoderLayer(
