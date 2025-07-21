@@ -59,6 +59,25 @@ class EpisodeResult:
     logged_history: List[Tuple[StateType, ActionType, np.ndarray, float]]
 
 
+@dataclass
+class EpochMetrics:
+    """Metrics for a single training/validation epoch."""
+
+    loss: float
+    policy_loss: float
+    value_loss: float
+    acc: float
+    mse: float
+
+
+@dataclass
+class BestEpochMetrics:
+    """Metrics from the best validation epoch during training."""
+
+    train: EpochMetrics
+    val: EpochMetrics
+
+
 class AlphaZeroEvaluation(EvaluationStrategy):
     def __init__(self, network: nn.Module):
         self.network = network
@@ -332,11 +351,11 @@ class AlphaZeroAgent(BaseMCTSAgent):
 
     def _train_epoch(
         self, train_loader: DataLoader, epoch: int, max_epochs: int
-    ) -> Dict[str, float]:
+    ) -> EpochMetrics:
         """Runs one epoch of training and returns metrics."""
         self.network.train()
-        total_train_loss, total_train_policy_loss, total_train_value_loss = 0, 0, 0
-        total_train_policy_acc, total_train_value_mse = 0, 0
+        total_loss, total_policy_loss, total_value_loss = 0.0, 0.0, 0.0
+        total_policy_acc, total_value_mse = 0.0, 0.0
         train_batches = 0
 
         train_iterator = (
@@ -363,7 +382,7 @@ class AlphaZeroAgent(BaseMCTSAgent):
             self.optimizer.zero_grad()
             policy_logits, value_preds = self.network(src_batch, mask_batch)
             (
-                total_loss,
+                batch_loss,
                 value_loss,
                 policy_loss,
                 policy_acc,
@@ -374,30 +393,30 @@ class AlphaZeroAgent(BaseMCTSAgent):
                 policy_targets_batch,
                 value_targets_batch,
             )
-            total_loss.backward()
+            batch_loss.backward()
             torch.nn.utils.clip_grad_norm_(self.network.parameters(), max_norm=1.0)
             self.optimizer.step()
 
-            total_train_loss += total_loss.item()
-            total_train_value_loss += value_loss.item()
-            total_train_policy_loss += policy_loss.item()
-            total_train_policy_acc += policy_acc
-            total_train_value_mse += value_mse
+            total_loss += batch_loss.item()
+            total_value_loss += value_loss.item()
+            total_policy_loss += policy_loss.item()
+            total_policy_acc += policy_acc
+            total_value_mse += value_mse
             train_batches += 1
 
-        return {
-            "loss": total_train_loss / train_batches,
-            "policy_loss": total_train_policy_loss / train_batches,
-            "value_loss": total_train_value_loss / train_batches,
-            "acc": total_train_policy_acc / len(train_loader.dataset),
-            "mse": total_train_value_mse / train_batches,
-        }
+        return EpochMetrics(
+            loss=total_loss / train_batches,
+            policy_loss=total_policy_loss / train_batches,
+            value_loss=total_value_loss / train_batches,
+            acc=total_policy_acc / len(train_loader.dataset),
+            mse=total_value_mse / train_batches,
+        )
 
-    def _validate_epoch(self, val_loader: DataLoader) -> Optional[Dict[str, float]]:
+    def _validate_epoch(self, val_loader: DataLoader) -> Optional[EpochMetrics]:
         """Runs one epoch of validation and returns metrics."""
         self.network.eval()
-        total_val_loss, total_val_policy_loss, total_val_value_loss = 0, 0, 0
-        total_val_policy_acc, total_val_value_mse = 0, 0
+        total_loss, total_policy_loss, total_value_loss = 0.0, 0.0, 0.0
+        total_policy_acc, total_value_mse = 0.0, 0.0
         val_batches = 0
         with torch.no_grad():
             for batch_data in val_loader:
@@ -413,7 +432,7 @@ class AlphaZeroAgent(BaseMCTSAgent):
                 value_targets_batch = value_targets_batch.to(self.device)
                 policy_logits, value_preds = self.network(src_batch, mask_batch)
                 (
-                    total_loss,
+                    batch_loss,
                     value_loss,
                     policy_loss,
                     policy_acc,
@@ -424,25 +443,25 @@ class AlphaZeroAgent(BaseMCTSAgent):
                     policy_targets_batch,
                     value_targets_batch,
                 )
-                total_val_loss += total_loss.item()
-                total_val_value_loss += value_loss.item()
-                total_val_policy_loss += policy_loss.item()
-                total_val_policy_acc += policy_acc
-                total_val_value_mse += value_mse
+                total_loss += batch_loss.item()
+                total_value_loss += value_loss.item()
+                total_policy_loss += policy_loss.item()
+                total_policy_acc += policy_acc
+                total_value_mse += value_mse
                 val_batches += 1
 
         if val_batches == 0:
             return None
 
-        return {
-            "loss": total_val_loss / val_batches,
-            "policy_loss": total_val_policy_loss / val_batches,
-            "value_loss": total_val_value_loss / val_batches,
-            "acc": total_val_policy_acc / len(val_loader.dataset),
-            "mse": total_val_value_mse / val_batches,
-        }
+        return EpochMetrics(
+            loss=total_loss / val_batches,
+            policy_loss=total_policy_loss / val_batches,
+            value_loss=total_value_loss / val_batches,
+            acc=total_policy_acc / len(val_loader.dataset),
+            mse=total_value_mse / val_batches,
+        )
 
-    def learn(self) -> Optional[Dict[str, float]]:
+    def learn(self) -> Optional[BestEpochMetrics]:
         """
         Update the neural network by training for multiple epochs over the replay buffer,
         using early stopping based on a validation set.
@@ -456,7 +475,7 @@ class AlphaZeroAgent(BaseMCTSAgent):
         best_val_loss = float("inf")
         epochs_without_improvement = 0
         best_model_state = None
-        best_epoch_metrics = None
+        best_epoch_metrics: Optional[BestEpochMetrics] = None
 
         for epoch in range(max_epochs):
             train_metrics = self._train_epoch(train_loader, epoch, max_epochs)
@@ -467,28 +486,17 @@ class AlphaZeroAgent(BaseMCTSAgent):
 
             logger.info(
                 f"Epoch {epoch+1}/{max_epochs}: "
-                f"Train Loss={train_metrics['loss']:.4f}, Val Loss={val_metrics['loss']:.4f} | "
-                f"Train Acc={train_metrics['acc']:.4f}, Val Acc={val_metrics['acc']:.4f}"
+                f"Train Loss={train_metrics.loss:.4f}, Val Loss={val_metrics.loss:.4f} | "
+                f"Train Acc={train_metrics.acc:.4f}, Val Acc={val_metrics.acc:.4f}"
             )
 
-            if val_metrics["loss"] < best_val_loss:
-                best_val_loss = val_metrics["loss"]
+            if val_metrics.loss < best_val_loss:
+                best_val_loss = val_metrics.loss
                 epochs_without_improvement = 0
                 best_model_state = copy.deepcopy(self.network.state_dict())
-
-                # TODO replace gross dict with dataclass
-                best_epoch_metrics = {
-                    "train_loss": train_metrics["loss"],
-                    "train_policy_loss": train_metrics["policy_loss"],
-                    "train_value_loss": train_metrics["value_loss"],
-                    "train_acc": train_metrics["acc"],
-                    "train_mse": train_metrics["mse"],
-                    "val_loss": val_metrics["loss"],
-                    "val_policy_loss": val_metrics["policy_loss"],
-                    "val_value_loss": val_metrics["value_loss"],
-                    "val_acc": val_metrics["acc"],
-                    "val_mse": val_metrics["mse"],
-                }
+                best_epoch_metrics = BestEpochMetrics(
+                    train=train_metrics, val=val_metrics
+                )
                 logger.info(
                     f"  New best validation loss: {best_val_loss:.4f}. Saving model state."
                 )
@@ -509,9 +517,9 @@ class AlphaZeroAgent(BaseMCTSAgent):
         if best_epoch_metrics:
             logger.info(
                 f"Learn Step Summary (best epoch): "
-                f"Total Loss={best_epoch_metrics['train_loss']:.4f}, "
-                f"Value Loss={best_epoch_metrics['train_value_loss']:.4f}, "
-                f"Policy Loss={best_epoch_metrics['train_policy_loss']:.4f}"
+                f"Total Loss={best_epoch_metrics.train.loss:.4f}, "
+                f"Value Loss={best_epoch_metrics.train.value_loss:.4f}, "
+                f"Policy Loss={best_epoch_metrics.train.policy_loss:.4f}"
             )
             return best_epoch_metrics
         else:
