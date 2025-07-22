@@ -238,7 +238,7 @@ def run_eval_against_benchmark(
     logger.info(f"\n--- Running Periodic Evaluation (Iteration {iteration + 1}) ---")
     agent.network.eval()
     benchmark_agent = make_pure_mcts(num_simulations=config.mcts.num_simulations)
-    benchmark_agent_name = f"MCTS_{config.evaluation.benchmark_mcts_simulations}"
+    benchmark_agent_name = f"MCTS_{config.mcts.num_simulations}"
 
     eval_results = evaluation.run_test_games(
         env=env,
