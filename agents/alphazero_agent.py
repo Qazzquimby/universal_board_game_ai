@@ -257,7 +257,7 @@ class AlphaZeroAgent(BaseMCTSAgent):
 
         for i, (state_at_step, action_taken, policy_target) in enumerate(game_history):
             # Determine the value target from the perspective of the player at that state
-            player_at_step = state_at_step["players"].current_index
+            player_at_step = dict(state_at_step["players"])['current_index']
 
             if player_at_step == 0:
                 value_target = final_outcome

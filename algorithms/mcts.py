@@ -417,9 +417,9 @@ class StandardBackpropagation(BackpropagationStrategy):
                 steps_from_end=i
             )
             state = node.state_with_key.state
-            current_player_index = state["players"].current_index
+            current_player_index = dict(state["players"])['current_index']
             node.num_visits += 1
-            node.total_value += player_to_value.get(current_player_index)
+            node.total_value += player_to_value.get(current_player_index, 0.0)
 
             if parent_of_node and action_to_node is not None:
                 # not start of path
@@ -431,9 +431,12 @@ class StandardBackpropagation(BackpropagationStrategy):
 
                 edge_to_update = parent_of_node.edges[action_key]
                 edge_to_update.num_visits += 1
-                edge_to_update.total_value += player_to_value.get(
-                    parent_of_node.state_with_key.state["players"].current_index
-                )
+
+                player_index = dict(
+                        parent_of_node.state_with_key.state["players"]
+                         )['current_index']
+                value = player_to_value.get(player_index)
+                edge_to_update.total_value += value
 
 
 @dataclass
