@@ -228,19 +228,23 @@ class Players(BaseModel, Iterable):
     player_labels: Optional[List[str]] = None
 
     def model_post_init(self, context: Any):
-        if self.player_labels is None:
-            if self.num_players is None:
-                raise ValueError("Either num_players or player_labels must be provided")
-            self.player_labels = [f"Player {i}" for i in range(self.num_players)]
+        if self.players:
+            self.num_players = len(self.players)
+            self.player_labels = [p.name for p in self.players]
+        else:
+            if self.player_labels is None:
+                if self.num_players is None:
+                    raise ValueError("Either num_players or player_labels must be provided")
+                self.player_labels = [f"Player {i}" for i in range(self.num_players)]
 
-        if self.num_players is None:
-            self.num_players = len(self.player_labels)
+            if self.num_players is None:
+                self.num_players = len(self.player_labels)
+
+            self.players = [Player(id=i, name=self.player_labels[i]) for i in
+                            range(self.num_players)]
 
         if len(self.player_labels) != self.num_players:
             raise ValueError("Number of player labels must match num_players.")
-
-        self.players = [Player(id=i, name=self.player_labels[i]) for i in
-                        range(self.num_players)]
         assert self.players
 
     @property
