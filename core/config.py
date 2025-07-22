@@ -96,7 +96,7 @@ class MuZeroConfig:
 class TrainingConfig:
     # Specific to AlphaZero/MuZero training loops
     num_iterations: int = 1000  # Total training iterations
-    num_games_per_iteration: int = 2 #128
+    num_games_per_iteration: int = 32 #128
     # # Number of epochs (passes over replay buffer) per learning phase
     # num_epochs_per_iteration: int = 4
     # How often (in iterations) to run sanity checks (0=only at end, 1=every iteration)
@@ -128,7 +128,7 @@ class EvaluationConfig:
     benchmark_mcts_simulations: int = 400
     run_periodic_evaluation: bool = True
     periodic_eval_frequency: int = 4
-    periodic_eval_num_games: int = 30
+    periodic_eval_num_games: int = 20
 
 
 # --- Main Application Configuration ---

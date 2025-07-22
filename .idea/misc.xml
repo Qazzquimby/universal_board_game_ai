@@ -5,7 +5,7 @@
     <option name="enabledOnSave" value="true" />
     <option name="executionMode" value="BINARY" />
     <option name="pathToExecutable" value="C:\Python310\Scripts\black.exe" />
-    <option name="sdkName" value="/home/qazzquimby/anaconda3" />
+    <option name="sdkName" value="Python 3.11 (rl_experiments)" />
   </component>
   <component name="BlackConnectSettings" triggerOnEachSave="true" triggerOnReformat="true" />
   <component name="ProjectRootManager" version="2" project-jdk-name="Python 3.11 (rl_experiments)" project-jdk-type="Python SDK" />

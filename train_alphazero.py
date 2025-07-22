@@ -134,7 +134,6 @@ def run_training(config: AppConfig, env_name_override: str = None):
             logger.info(
                 f"\n--- Running Periodic Evaluation (Iteration {iteration + 1}) ---"
             )
-
             agent.network.eval()
             benchmark_agent = make_pure_mcts(
                 num_simulations=config.mcts.num_simulations
@@ -153,7 +152,9 @@ def run_training(config: AppConfig, env_name_override: str = None):
                 num_games=config.evaluation.periodic_eval_num_games,
             )
             reporter.log_evaluation_results(
-                eval_results=eval_results, benchmark_agent_name=benchmark_agent_name, iteration=iteration
+                eval_results=eval_results,
+                benchmark_agent_name=benchmark_agent_name,
+                iteration=iteration,
             )
             # Note: agent.learn() will put the network back in train mode if needed
 
@@ -176,7 +177,7 @@ def run_self_play(agent: AlphaZeroAgent, env: BaseEnvironment, config: AppConfig
     all_experiences_iteration = []
 
     for _ in tqdm(range(num_games_total), desc="Self-Play Games"):
-    # for _ in tqdm(range(2), desc="Self-Play Games"):
+        # for _ in tqdm(range(2), desc="Self-Play Games"):
         game_env = env.copy()
         state_with_key = game_env.reset()
         game_history = []
