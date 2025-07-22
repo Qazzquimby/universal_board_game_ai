@@ -26,12 +26,12 @@ class EnvConfig:
 class MCTSConfig:
     exploration_constant: float = 1.41
     discount_factor: float = 1.0  # Discount within the search tree
-    num_simulations: int = 400
+    num_simulations: int = 200
 
 
 @dataclass
 class AlphaZeroConfig:
-    num_simulations: int = 400  # MCTS simulations per move
+    num_simulations: int = 200  # MCTS simulations per move
     cpuct: float = 1.0  # Exploration constant in PUCT formula
     learning_rate: float = 0.01
     weight_decay: float = 0.0001
@@ -96,7 +96,7 @@ class MuZeroConfig:
 class TrainingConfig:
     # Specific to AlphaZero/MuZero training loops
     num_iterations: int = 1000  # Total training iterations
-    num_games_per_iteration: int = 32 #128
+    num_games_per_iteration: int = 32  # 128
     # # Number of epochs (passes over replay buffer) per learning phase
     # num_epochs_per_iteration: int = 4
     # How often (in iterations) to run sanity checks (0=only at end, 1=every iteration)

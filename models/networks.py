@@ -27,7 +27,9 @@ class AutoGraphNet(nn.Module):
         self.cache = {}
 
         self.env = env
-        self.device = torch.device("cuda" if torch.cuda.is_available() and USE_CUDA else "cpu")
+        self.device = torch.device(
+            "cuda" if torch.cuda.is_available() and USE_CUDA else "cpu"
+        )
 
         # The StateModel needs to know the embedding_dim for the PolicyModel to match
         if "embedding_dim" not in state_model_params:
@@ -40,6 +42,24 @@ class AutoGraphNet(nn.Module):
         )
 
         self.to(self.device)
+
+    def init_zero(self):
+        """
+        Initializes the weights of the policy and value heads to zero.
+        This results in a uniform policy and a value of 0 for all states,
+        which is useful for a clean baseline when comparing to vanilla MCTS.
+        """
+        # Initialize value head's final layer to zero
+        final_value_layer = self.state_model.value_head[0]
+        if isinstance(final_value_layer, nn.Linear):
+            nn.init.constant_(final_value_layer.weight, 0)
+            nn.init.constant_(final_value_layer.bias, 0)
+
+        # Initialize policy head's final layer to zero
+        final_policy_layer = self.policy_model.policy_head[-1]
+        if isinstance(final_policy_layer, nn.Linear):
+            nn.init.constant_(final_policy_layer.weight, 0)
+            nn.init.constant_(final_policy_layer.bias, 0)
 
     def predict(self, state_with_key: StateWithKey) -> Tuple[np.ndarray, float]:
         self.eval()
@@ -113,7 +133,9 @@ class _StateModel(nn.Module):
     ):
         super().__init__()
         self.env = env
-        self.device = torch.device("cuda" if torch.cuda.is_available() and USE_CUDA else "cpu")
+        self.device = torch.device(
+            "cuda" if torch.cuda.is_available() and USE_CUDA else "cpu"
+        )
 
         self.network_config = self.env.get_network_config()
 
@@ -123,7 +145,7 @@ class _StateModel(nn.Module):
             self.embedding_layers[pos_dim] = nn.Embedding(size, embedding_dim)
         for feat, info in self.network_config["features"].items():
             self.embedding_layers[feat] = nn.Embedding(
-                info["cardinality"]+1, embedding_dim
+                info["cardinality"] + 1, embedding_dim
             )
 
         encoder_layer = nn.TransformerEncoderLayer(

@@ -613,3 +613,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# todo try legal moves being a type of token (basically the same as column tokens but would link by column embedding rather than graph I think)

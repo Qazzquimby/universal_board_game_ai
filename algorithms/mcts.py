@@ -390,9 +390,9 @@ class RandomRolloutEvaluation(EvaluationStrategy):
             # print("next player", sim_env.state.players.current_player)
             current_step += 1
         if current_step >= self.max_rollout_depth:
-            logger.warning(
-                f"MCTS Rollout: Reached max depth ({self.max_rollout_depth}). Treating as draw."
-            )
+            # logger.warning(
+            #     f"MCTS Rollout: Reached max depth ({self.max_rollout_depth}). Treating as draw."
+            # )
             # legal_actions = sim_env.get_legal_actions()
             # action = random.choice(legal_actions)
             # sim_env.step(action)
@@ -417,7 +417,7 @@ class StandardBackpropagation(BackpropagationStrategy):
                 steps_from_end=i
             )
             state = node.state_with_key.state
-            current_player_index = dict(state["players"])['current_index']
+            current_player_index = dict(state["players"])["current_index"]
             node.num_visits += 1
             node.total_value += player_to_value.get(current_player_index, 0.0)
 
@@ -432,9 +432,9 @@ class StandardBackpropagation(BackpropagationStrategy):
                 edge_to_update = parent_of_node.edges[action_key]
                 edge_to_update.num_visits += 1
 
-                player_index = dict(
-                        parent_of_node.state_with_key.state["players"]
-                         )['current_index']
+                player_index = dict(parent_of_node.state_with_key.state["players"])[
+                    "current_index"
+                ]
                 value = player_to_value.get(player_index)
                 edge_to_update.total_value += value
 

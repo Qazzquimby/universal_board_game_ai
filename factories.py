@@ -46,6 +46,7 @@ def get_agents(env: BaseEnvironment, config: AppConfig) -> Dict[str, Agent]:
         state_model_params=az_config.state_model_params,
         policy_model_params=az_config.policy_model_params,
     )
+    network.init_zero()
     optimizer = optim.AdamW(network.parameters(), lr=training_config.learning_rate)
 
     az_agent_name = f"AZ_{config.mcts.num_simulations}"

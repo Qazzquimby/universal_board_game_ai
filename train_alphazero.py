@@ -140,9 +140,6 @@ def run_training(config: AppConfig, env_name_override: str = None):
             config.evaluation.run_periodic_evaluation
             and (iteration + 1) % config.evaluation.periodic_eval_frequency == 0
         ):
-            logger.info(
-                f"\n--- Running Periodic Evaluation (Iteration {iteration + 1}) ---"
-            )
             run_eval_against_benchmark(
                 iteration=iteration,
                 reporter=reporter,

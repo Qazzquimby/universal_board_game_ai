@@ -91,26 +91,29 @@ def run_test_games(
 
     config.init_wandb()
 
-    for i in tqdm(range(num_games), desc=f"{agent0_name} (P0) vs {agent1_name} (P1)"):
-        game_env = env.copy()
-        game_env.reset()
-        if i % 2 == 0:
-            winner = _play_one_game(game_env, agent0, agent1, profiler=profiler)
+    with tqdm(total=num_games, desc=f"{agent0_name} vs {agent1_name}") as pbar:
+        for i in range(num_games):
+            game_env = env.copy()
+            game_env.reset()
+            if i % 2 == 0:
+                winner = _play_one_game(game_env, agent0, agent1, profiler=profiler)
 
-            if winner == 0:
-                results[agent0_name] += 1
-            elif winner == 1:
-                results[agent1_name] += 1
+                if winner == 0:
+                    results[agent0_name] += 1
+                elif winner == 1:
+                    results[agent1_name] += 1
+                else:
+                    results["draws"] += 1
             else:
-                results["draws"] += 1
-        else:
-            winner = _play_one_game(game_env, agent1, agent0, profiler=profiler)
-            if winner == 0:
-                results[agent1_name] += 1
-            elif winner == 1:
-                results[agent0_name] += 1
-            else:
-                results["draws"] += 1
+                winner = _play_one_game(game_env, agent1, agent0, profiler=profiler)
+                if winner == 0:
+                    results[agent1_name] += 1
+                elif winner == 1:
+                    results[agent0_name] += 1
+                else:
+                    results["draws"] += 1
+            pbar.set_postfix(results)
+            pbar.update(1)
 
     log_results = {
         f"{agent0_name} total wins": results[agent0_name],
