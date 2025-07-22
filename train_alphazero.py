@@ -101,6 +101,15 @@ def run_training(config: AppConfig, env_name_override: str = None):
     start_time = time.time()
     reporter = TrainingReporter(config, agent, start_time)
 
+    logger.info(f"\n--- Running Initial Evaluation ---")
+    run_eval_against_benchmark(
+        iteration=-1,
+        reporter=reporter,
+        agent=agent,
+        config=config,
+        env=env,
+    )
+
     for iteration in outer_loop_iterator:
         reporter.log_iteration_start(iteration)
 
@@ -134,29 +143,13 @@ def run_training(config: AppConfig, env_name_override: str = None):
             logger.info(
                 f"\n--- Running Periodic Evaluation (Iteration {iteration + 1}) ---"
             )
-            agent.network.eval()
-            benchmark_agent = make_pure_mcts(
-                num_simulations=config.mcts.num_simulations
-            )
-            benchmark_agent_name = (
-                f"MCTS_{config.evaluation.benchmark_mcts_simulations}"
-            )
-
-            eval_results = evaluation.run_test_games(
-                env=env,
-                agent0_name="AlphaZero",
-                agent0=agent,
-                agent1_name=benchmark_agent_name,
-                agent1=benchmark_agent,
-                config=config,
-                num_games=config.evaluation.periodic_eval_num_games,
-            )
-            reporter.log_evaluation_results(
-                eval_results=eval_results,
-                benchmark_agent_name=benchmark_agent_name,
+            run_eval_against_benchmark(
                 iteration=iteration,
+                reporter=reporter,
+                agent=agent,
+                config=config,
+                env=env,
             )
-            # Note: agent.learn() will put the network back in train mode if needed
 
     logger.info("\nTraining complete. Saving final agent state.")
     agent.save()
@@ -236,6 +229,35 @@ def add_results_to_buffer(
     logger.info(
         f"Processed {total_games_processed} games, adding {total_experiences_added} experiences to replay buffer."
     )
+
+
+def run_eval_against_benchmark(
+    iteration: int,
+    reporter: TrainingReporter,
+    agent: AlphaZeroAgent,
+    config: AppConfig,
+    env: BaseEnvironment,
+):
+    logger.info(f"\n--- Running Periodic Evaluation (Iteration {iteration + 1}) ---")
+    agent.network.eval()
+    benchmark_agent = make_pure_mcts(num_simulations=config.mcts.num_simulations)
+    benchmark_agent_name = f"MCTS_{config.evaluation.benchmark_mcts_simulations}"
+
+    eval_results = evaluation.run_test_games(
+        env=env,
+        agent0_name="AlphaZero",
+        agent0=agent,
+        agent1_name=benchmark_agent_name,
+        agent1=benchmark_agent,
+        config=config,
+        num_games=config.evaluation.periodic_eval_num_games,
+    )
+    reporter.log_evaluation_results(
+        eval_results=eval_results,
+        benchmark_agent_name=benchmark_agent_name,
+        iteration=iteration,
+    )
+    # Note: agent.learn() will put the network back in train mode if needed
 
 
 def run_sanity_checks(env: BaseEnvironment, agent: AlphaZeroAgent):
