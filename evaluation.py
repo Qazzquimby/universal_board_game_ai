@@ -162,17 +162,23 @@ def run_evaluation(env: BaseEnvironment, agents: Dict[str, Agent], config: AppCo
     print("\n--- Starting Agent Evaluation ---")
     agent_names = list(agents.keys())
 
-    agent0_name = agent_names[0]
-    agent1_name = agent_names[1]
-    agent0 = agents[agent0_name]
-    agent1 = agents[agent1_name]
+    if len(agent_names) < 2:
+        print("Need at least two agents for evaluation.")
+        return
 
-    run_test_games(
-        env=env,
-        agent0_name=agent0_name,
-        agent0=agent0,
-        agent1_name=agent1_name,
-        agent1=agent1,
-        num_games=config.evaluation.full_eval_num_games,
-        config=config,
-    )
+    for i in range(len(agent_names)):
+        for j in range(i + 1, len(agent_names)):
+            agent0_name = agent_names[i]
+            agent1_name = agent_names[j]
+            agent0 = agents[agent0_name]
+            agent1 = agents[agent1_name]
+
+            run_test_games(
+                env=env,
+                agent0_name=agent0_name,
+                agent0=agent0,
+                agent1_name=agent1_name,
+                agent1=agent1,
+                num_games=config.evaluation.full_eval_num_games,
+                config=config,
+            )
