@@ -1,16 +1,18 @@
 import sys
 import json
 import time
+from typing import Union, List, Tuple
+import copy
 
 import numpy as np
 from tqdm import tqdm
 from loguru import logger
 
-from agents.mcts_agent import make_pure_mcts
-from core.config import AppConfig
+from agents.mcts_agent import MCTSAgent, make_pure_mcts
+from core.config import AppConfig, DATA_DIR
 from core.serialization import LOG_DIR, save_game_log
-from environments.base import BaseEnvironment
-from agents.alphazero_agent import AlphaZeroAgent
+from environments.base import BaseEnvironment, ActionType, StateType
+from agents.alphazero_agent import AlphaZeroAgent, make_pure_az
 from factories import (
     get_environment,
     get_agents,
@@ -77,13 +79,19 @@ def run_training(config: AppConfig, env_name_override: str = None):
 
     env = get_environment(config.env)
     agents = get_agents(env, config)
-    agent = next(
+    current_agent = next(
         agent for agent in agents.values() if isinstance(agent, AlphaZeroAgent)
     )
-    assert isinstance(agent, AlphaZeroAgent)
+    assert isinstance(current_agent, AlphaZeroAgent)
+
+    logger.info("Initializing with pure MCTS as the starting 'best' agent.")
+    best_agent = make_pure_mcts(num_simulations=config.mcts.num_simulations)
+    best_agent.temperature = 1.0  # Use temperature for exploration during self-play
+    self_play_agent = best_agent
+    best_agent_name = f"MCTS_{config.mcts.num_simulations}"
 
     load_game_logs_into_buffer(
-        agent, config.env.name, config.alpha_zero.replay_buffer_size
+        current_agent, config.env.name, config.alpha_zero.replay_buffer_size
     )
 
     logger.info(
@@ -91,40 +99,28 @@ def run_training(config: AppConfig, env_name_override: str = None):
         f"({config.training.num_games_per_iteration} self-play games per iteration)"
     )
 
-    if not agent.network:
-        logger.warning("No agent network found. Self-play will use DummyNet.")
-
-    # Lists to store losses for plotting
-    total_losses = []
-    value_losses = []
-    policy_losses = []
+    total_losses, value_losses, policy_losses = [], [], []
 
     outer_loop_iterator = range(config.training.num_iterations)
     start_time = time.time()
-    reporter = TrainingReporter(config, agent, start_time)
-
-    logger.info(f"\n--- Running Initial Evaluation ---")
-    run_eval_against_benchmark(
-        iteration=-1,
-        reporter=reporter,
-        agent=agent,
-        config=config,
-        env=env,
-    )
+    reporter = TrainingReporter(config, current_agent, start_time)
 
     for iteration in outer_loop_iterator:
         reporter.log_iteration_start(iteration)
 
-        all_experiences_iteration = run_self_play(agent=agent, env=env, config=config)
+        logger.info(f"Running self-play with '{best_agent_name}'...")
+        all_experiences_iteration = run_self_play(
+            agent=self_play_agent, env=env, config=config
+        )
         add_results_to_buffer(
             iteration=iteration,
             all_experiences_iteration=all_experiences_iteration,
-            agent=agent,
+            agent=current_agent,
             config=config,
         )
 
         logger.info("Running learning step...")
-        metrics = agent.learn()  # Agent learns using its local network
+        metrics = current_agent.learn()
         if metrics:
             total_losses.append(metrics.train.loss)
             value_losses.append(metrics.train.value_loss)
@@ -132,26 +128,74 @@ def run_training(config: AppConfig, env_name_override: str = None):
             reporter.log_iteration_end(iteration=iteration, metrics=metrics)
 
         if (
-            config.training.save_checkpoint_frequency > 0
-            and (iteration + 1) % config.training.save_checkpoint_frequency == 0
-        ):
-            logger.info(f"Saving agent checkpoint (Iteration {iteration + 1})...")
-            agent.save()
-
-        if (
             config.evaluation.run_periodic_evaluation
             and (iteration + 1) % config.evaluation.periodic_eval_frequency == 0
         ):
-            run_eval_against_benchmark(
+            eval_results, tournament_experiences = run_eval_against_benchmark(
                 iteration=iteration,
                 reporter=reporter,
-                agent=agent,
+                current_agent=current_agent,
+                best_agent=best_agent,
+                best_agent_name=best_agent_name,
                 config=config,
                 env=env,
             )
+            # Add tournament games to buffer
+            if tournament_experiences:
+                logger.info(
+                    f"Adding {len(tournament_experiences)} experiences from tournament games to replay buffer."
+                )
+                current_agent.add_experiences_to_buffer(tournament_experiences)
+
+            # Check for new best agent
+            win_rate = (
+                eval_results["wins"]["AlphaZero"] / eval_results["total_games"]
+                if eval_results["total_games"] > 0
+                else 0
+            )
+            win_rate_threshold = 0.55  # TODO: Move to config
+
+            if win_rate > win_rate_threshold:
+                logger.info(
+                    f"New best agent found! Win rate: {win_rate:.2f} > {win_rate_threshold:.2f}"
+                )
+                best_agent_name = f"AlphaZero_iter{iteration + 1}"
+
+                if not isinstance(best_agent, AlphaZeroAgent):
+                    best_agent = make_pure_az(
+                        env,
+                        config.alpha_zero,
+                        config.training,
+                        should_use_network=True,
+                    )
+
+                best_agent.network.load_state_dict(current_agent.network.state_dict())
+                if best_agent.optimizer and current_agent.optimizer:
+                    best_agent.optimizer.load_state_dict(
+                        current_agent.optimizer.state_dict()
+                    )
+                self_play_agent = best_agent
+
+                checkpoint_path = (
+                    DATA_DIR
+                    / f"alphazero_net_{config.env.name}_best_iter_{iteration + 1}.pth"
+                )
+                current_agent.save(checkpoint_path)
+                logger.info(f"Saved new best model to {checkpoint_path}")
+            else:
+                logger.info(
+                    f"Current agent failed to beat best. Win rate: {win_rate:.2f} <= {win_rate_threshold:.2f}"
+                )
+                if isinstance(best_agent, AlphaZeroAgent):
+                    logger.info(
+                        "Resetting current agent's weights to best agent's weights."
+                    )
+                    current_agent.network.load_state_dict(
+                        best_agent.network.state_dict()
+                    )
 
     logger.info("\nTraining complete. Saving final agent state.")
-    agent.save()
+    current_agent.save()
 
     plot_losses(total_losses, value_losses, policy_losses)
 
@@ -160,16 +204,17 @@ def run_training(config: AppConfig, env_name_override: str = None):
     reporter.finish()
 
 
-def run_self_play(agent: AlphaZeroAgent, env: BaseEnvironment, config: AppConfig):
+def run_self_play(
+    agent: Union[AlphaZeroAgent, MCTSAgent], env: BaseEnvironment, config: AppConfig
+):
     logger.info("Running self play")
-    if agent.network:
+    if hasattr(agent, "network") and agent.network:
         agent.network.eval()
 
     num_games_total = config.training.num_games_per_iteration
     all_experiences_iteration = []
 
     for _ in tqdm(range(num_games_total), desc="Self-Play Games"):
-        # for _ in tqdm(range(2), desc="Self-Play Games"):
         game_env = env.copy()
         state_with_key = game_env.reset()
         game_history = []
@@ -177,7 +222,26 @@ def run_self_play(agent: AlphaZeroAgent, env: BaseEnvironment, config: AppConfig
         while not game_env.state.done:
             state = state_with_key.state
             action = agent.act(game_env, train=True)
-            policy_target = agent.get_policy_target()
+
+            policy_target = np.zeros(game_env.num_action_types, dtype=np.float32)
+            if isinstance(agent, AlphaZeroAgent):
+                policy_target = agent.get_policy_target()
+            elif isinstance(agent, MCTSAgent):
+                if not agent.root:
+                    raise RuntimeError("MCTSAgent has no root after act()")
+                action_visits = {
+                    edge_action: edge.num_visits
+                    for edge_action, edge in agent.root.edges.items()
+                }
+                total_visits = sum(action_visits.values())
+                if total_visits > 0:
+                    for act_key, visits in action_visits.items():
+                        action_idx = game_env.map_action_to_policy_index(act_key)
+                        if action_idx is not None:
+                            policy_target[action_idx] = visits / total_visits
+            else:
+                raise TypeError(f"Unsupported agent type for self-play: {type(agent)}")
+
             game_history.append((state, action, policy_target))
             action_result = game_env.step(action)
             state_with_key = action_result.next_state_with_key
@@ -233,30 +297,86 @@ def add_results_to_buffer(
 def run_eval_against_benchmark(
     iteration: int,
     reporter: TrainingReporter,
-    agent: AlphaZeroAgent,
+    current_agent: AlphaZeroAgent,
+    best_agent: Union[AlphaZeroAgent, MCTSAgent],
+    best_agent_name: str,
     config: AppConfig,
     env: BaseEnvironment,
-):
-    logger.info(f"\n--- Running Periodic Evaluation (Iteration {iteration + 1}) ---")
-    agent.network.eval()
-    benchmark_agent = make_pure_mcts(num_simulations=config.mcts.num_simulations)
-    benchmark_agent_name = f"MCTS_{config.mcts.num_simulations}"
+) -> Tuple[dict, List[Tuple[StateType, np.ndarray, float]]]:
+    logger.info(
+        f"\n--- Running Evaluation vs '{best_agent_name}' (Iteration {iteration + 1}) ---"
+    )
+    current_agent.network.eval()
+    if hasattr(best_agent, "network") and best_agent.network:
+        best_agent.network.eval()
 
-    eval_results = evaluation.run_test_games(
-        env=env,
-        agent0_name="AlphaZero",
-        agent0=agent,
-        agent1_name=benchmark_agent_name,
-        agent1=benchmark_agent,
-        config=config,
-        num_games=config.evaluation.periodic_eval_num_games,
-    )
-    reporter.log_evaluation_results(
-        eval_results=eval_results,
-        benchmark_agent_name=benchmark_agent_name,
-        iteration=iteration,
-    )
-    # Note: agent.learn() will put the network back in train mode if needed
+    num_games = config.evaluation.periodic_eval_num_games
+    wins = {"AlphaZero": 0, best_agent_name: 0, "draw": 0}
+    all_tournament_experiences = []
+
+    for game_num in tqdm(range(num_games), desc=f"Eval vs {best_agent_name}"):
+        game_env = env.copy()
+        state_with_key = game_env.reset()
+        game_history = []
+
+        # Alternate who goes first
+        agents = {0: current_agent, 1: best_agent}
+        if game_num % 2 == 1:
+            agents = {0: best_agent, 1: current_agent}
+
+        while not game_env.state.done:
+            player = game_env.get_current_player()
+            agent_for_turn = agents[player]
+
+            state = state_with_key.state
+            action = agent_for_turn.act(game_env, train=False)
+
+            policy_target = np.zeros(game_env.num_action_types, dtype=np.float32)
+            if isinstance(agent_for_turn, AlphaZeroAgent):
+                policy_target = agent_for_turn.get_policy_target()
+            elif isinstance(agent_for_turn, MCTSAgent):
+                if agent_for_turn.root:
+                    action_visits = {
+                        k: v.num_visits for k, v in agent_for_turn.root.edges.items()
+                    }
+                    total_visits = sum(action_visits.values())
+                    if total_visits > 0:
+                        for act_key, visits in action_visits.items():
+                            idx = game_env.map_action_to_policy_index(act_key)
+                            if idx is not None:
+                                policy_target[idx] = visits / total_visits
+
+            game_history.append((state, action, policy_target))
+            action_result = game_env.step(action)
+            state_with_key = action_result.next_state_with_key
+
+        outcome = game_env.state.get_reward_for_player(0)
+        episode_result = current_agent.process_finished_episode(game_history, outcome)
+        all_tournament_experiences.extend(episode_result.buffer_experiences)
+
+        winner = game_env.get_winning_player()
+        if winner is None:
+            wins["draw"] += 1
+        else:
+            winner_agent = agents[winner]
+            if winner_agent == current_agent:
+                wins["AlphaZero"] += 1
+            else:
+                wins[best_agent_name] += 1
+
+    eval_results = {
+        "wins": wins,
+        "total_games": num_games,
+        "win_rate": wins["AlphaZero"] / num_games if num_games > 0 else 0,
+    }
+
+    if iteration > -1:  # Don't log for initial evaluation
+        reporter.log_evaluation_results(
+            eval_results=eval_results,
+            benchmark_agent_name=best_agent_name,
+            iteration=iteration,
+        )
+    return eval_results, all_tournament_experiences
 
 
 def run_sanity_checks(env: BaseEnvironment, agent: AlphaZeroAgent):

@@ -184,7 +184,13 @@ class AlphaZeroAgent(BaseMCTSAgent):
             best_action_index = np.argmax(visits)
             chosen_action = actions[best_action_index]
         else:
-            visit_probs = visits / np.sum(visits)
+            # More numerically stable temperature scaling
+            log_visits = np.log(visits + 1e-10)
+            scaled_log_visits = log_visits / temperature
+            scaled_log_visits -= np.max(scaled_log_visits)
+            exp_scaled_log_visits = np.exp(scaled_log_visits)
+            visit_probs = exp_scaled_log_visits / np.sum(exp_scaled_log_visits)
+
             chosen_action_index = np.random.choice(len(actions), p=visit_probs)
             chosen_action = actions[chosen_action_index]
 
@@ -543,47 +549,58 @@ class AlphaZeroAgent(BaseMCTSAgent):
         filename = f"alphazero_optimizer_{env_type_name}.pth"
         return DATA_DIR / filename
 
-    def save(self) -> None:
+    def save(self, filepath: Optional[Path] = None) -> None:
         """Save the neural network weights and optimizer state."""
         if not self.network or not self.optimizer:
             logger.warning("Cannot save: Network or optimizer not initialized.")
             return
-        filepath = self._get_save_path()
+
+        if filepath is None:
+            filepath = self._get_save_path()
+            optimizer_filepath = self._get_optimizer_save_path()
+        else:
+            optimizer_filepath = filepath.with_name(
+                f"{filepath.stem.replace('_net', '_optimizer')}{filepath.suffix}"
+            )
+
         try:
-            DATA_DIR.mkdir(parents=True, exist_ok=True)
+            filepath.parent.mkdir(parents=True, exist_ok=True)
             torch.save(self.network.state_dict(), filepath)
             logger.info(f"AlphaZero network saved to {filepath}")
 
             # Save optimizer state
-            optimizer_filepath = self._get_optimizer_save_path()
             torch.save(self.optimizer.state_dict(), optimizer_filepath)
             logger.info(f"AlphaZero optimizer state saved to {optimizer_filepath}")
 
         except Exception as e:
             logger.error(f"Error saving AlphaZero network or optimizer: {e}")
 
-    def load(self) -> bool:
+    def load(self, filepath: Optional[Path] = None) -> bool:
         """Load the neural network weights and optimizer state."""
         if not self.network or not self.optimizer:
             logger.warning("Cannot load: Network or optimizer not initialized.")
             return False
-        filepath = self._get_save_path()
+
+        if filepath is None:
+            filepath = self._get_save_path()
+            optimizer_filepath = self._get_optimizer_save_path()
+        else:
+            optimizer_filepath = filepath.with_name(
+                f"{filepath.stem.replace('_net', '_optimizer')}{filepath.suffix}"
+            )
+
         try:
             if filepath.exists():
-                # Load state dict using the agent's device
                 map_location = self.device
                 self.network.load_state_dict(
                     torch.load(filepath, map_location=map_location)
                 )
-                # Ensure model is on the correct device after loading (should be redundant if map_location works)
                 self.network.to(self.device)
                 self.network.eval()
                 logger.info(
                     f"AlphaZero network loaded from {filepath} to {self.device}"
                 )
 
-                # Load optimizer state
-                optimizer_filepath = self._get_optimizer_save_path()
                 if optimizer_filepath.exists():
                     try:
                         self.optimizer.load_state_dict(
@@ -596,13 +613,11 @@ class AlphaZeroAgent(BaseMCTSAgent):
                         logger.error(
                             f"Error loading AlphaZero optimizer state from {optimizer_filepath}: {opt_e}"
                         )
-                        # Decide if failure to load optimizer should prevent network load (currently doesn't)
                 else:
                     logger.info(
                         f"Optimizer state file not found: {optimizer_filepath}. Optimizer not loaded."
                     )
-
-                return True  # Network loaded successfully, even if optimizer didn't
+                return True
             else:
                 logger.info(f"Network weights file not found: {filepath}")
                 return False
