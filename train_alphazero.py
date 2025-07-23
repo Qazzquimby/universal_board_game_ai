@@ -77,7 +77,9 @@ def run_training(config: AppConfig, env_name_override: str = None):
 
     env = get_environment(config.env)
     agents = get_agents(env, config)
-    agent = agents["AZ_400"]
+    agent = next(
+        agent for agent in agents.values() if isinstance(agent, AlphaZeroAgent)
+    )
     assert isinstance(agent, AlphaZeroAgent)
 
     load_game_logs_into_buffer(

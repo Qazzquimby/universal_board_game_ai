@@ -26,8 +26,13 @@ from algorithms.mcts import (
     BackpropagationStrategy,
     SelectionStrategy,
 )
+from experiments.architectures.shared import INFERENCE_DEVICE, TRAINING_DEVICE
 from models.networks import AutoGraphNet
-from core.config import AlphaZeroConfig, DATA_DIR, TrainingConfig, USE_CUDA
+from core.config import (
+    AlphaZeroConfig,
+    DATA_DIR,
+    TrainingConfig,
+)
 
 
 class ReplayBufferDataset(Dataset):
@@ -136,9 +141,7 @@ class AlphaZeroAgent(BaseMCTSAgent):
         self.network = network
         self.optimizer = optimizer
         self.env = env
-        self.device = torch.device(
-            "cuda" if torch.cuda.is_available() and USE_CUDA else "cpu"
-        )
+        self.device = INFERENCE_DEVICE
         if self.network:
             self.network.to(self.device)
 
@@ -429,6 +432,8 @@ class AlphaZeroAgent(BaseMCTSAgent):
         using early stopping based on a validation set.
         Returns a dictionary of losses and metrics from the best epoch.
         """
+        self.device = TRAINING_DEVICE
+        self.network.to(self.device)
         try:
             train_loader, val_loader = self._get_train_val_loaders()
         except ValueError as e:
@@ -476,8 +481,6 @@ class AlphaZeroAgent(BaseMCTSAgent):
                 f"Restoring best model from epoch with validation loss: {best_val_loss:.4f}"
             )
             self.network.load_state_dict(best_model_state)
-
-        self.network.eval()
 
         if best_epoch_metrics:
             logger.info(

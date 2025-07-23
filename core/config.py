@@ -4,7 +4,7 @@ from typing import List, Dict, Any
 
 import wandb
 
-USE_CUDA = False
+USE_CUDA_FOR_INFERENCE = False
 
 
 # --- Environment Configuration ---

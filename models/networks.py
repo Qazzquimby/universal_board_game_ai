@@ -5,7 +5,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 
-from core.config import USE_CUDA
 from environments.base import BaseEnvironment, StateWithKey
 
 
@@ -27,9 +26,6 @@ class AutoGraphNet(nn.Module):
         self.cache = {}
 
         self.env = env
-        self.device = torch.device(
-            "cuda" if torch.cuda.is_available() and USE_CUDA else "cpu"
-        )
 
         # The StateModel needs to know the embedding_dim for the PolicyModel to match
         if "embedding_dim" not in state_model_params:
@@ -40,8 +36,6 @@ class AutoGraphNet(nn.Module):
         self.policy_model = _PolicyModel(
             env, state_embedding_dim=state_embedding_dim, **policy_model_params
         )
-
-        self.to(self.device)
 
     def init_zero(self):
         """
@@ -82,8 +76,9 @@ class AutoGraphNet(nn.Module):
             scores_tensor = torch.cat(scores)
 
             # 3. Construct the full policy vector, masking illegal actions
+            device = next(self.parameters()).device
             policy_logits = torch.full(
-                (self.env.num_action_types,), -torch.inf, device=self.device
+                (self.env.num_action_types,), -torch.inf, device=device
             )
             legal_action_indices = [
                 self.env.map_action_to_policy_index(a) for a in legal_actions
@@ -133,9 +128,6 @@ class _StateModel(nn.Module):
     ):
         super().__init__()
         self.env = env
-        self.device = torch.device(
-            "cuda" if torch.cuda.is_available() and USE_CUDA else "cpu"
-        )
 
         self.network_config = self.env.get_network_config()
 
@@ -165,6 +157,7 @@ class _StateModel(nn.Module):
         """
         from environments.base import Networkable
 
+        device = next(self.parameters()).device
         features = self.network_config["features"]
         entity_type = self.network_config["entity_type"]
         all_entities = self.env.get_all_networkable_entities()
@@ -174,7 +167,7 @@ class _StateModel(nn.Module):
             # Create position part of token by summing position dimension embeddings
             token = 0
             for pos_dim_name, pos_dim_val in pos_data.items():
-                pos_idx = torch.tensor([pos_dim_val], device=self.device)
+                pos_idx = torch.tensor([pos_dim_val], device=device)
                 token += self.embedding_layers[pos_dim_name](pos_idx)
 
             # Create feature part of token by summing feature embeddings
@@ -196,18 +189,18 @@ class _StateModel(nn.Module):
                 else:
                     feat_idx_val = feature_values[feat_name]
 
-                feat_idx = torch.tensor([feat_idx_val], device=self.device)
+                feat_idx = torch.tensor([feat_idx_val], device=device)
                 token += self.embedding_layers[feat_name](feat_idx)
             entity_tokens.append(token)
 
         if not entity_tokens:
             # Handle case with no entities (e.g., empty board)
             # Create a zero tensor with the correct embedding dimension
-            zero_token = torch.zeros(1, self.embedding_dim, device=self.device)
+            zero_token = torch.zeros(1, self.embedding_dim, device=device)
             entity_tokens.append(zero_token)
 
         sequence = torch.cat(entity_tokens, dim=0).unsqueeze(0)
-        mask = torch.zeros(1, sequence.shape[1], dtype=torch.bool, device=self.device)
+        mask = torch.zeros(1, sequence.shape[1], dtype=torch.bool, device=device)
         return sequence, mask
 
     def forward(self, *args) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -229,7 +222,7 @@ class _StateModel(nn.Module):
         game_tokens = self.game_token.expand(batch_size, -1, -1)
         sequences = torch.cat([game_tokens, src], dim=1)
         game_token_mask = torch.zeros(
-            batch_size, 1, dtype=torch.bool, device=self.device
+            batch_size, 1, dtype=torch.bool, device=src.device
         )
         full_mask = torch.cat([game_token_mask, src_key_padding_mask], dim=1)
 

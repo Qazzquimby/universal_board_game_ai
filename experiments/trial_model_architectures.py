@@ -32,7 +32,8 @@ from experiments.architectures.shared import (
     LEARNING_RATE,
     BATCH_SIZE,
     EARLY_STOPPING_PATIENCE,
-    DEVICE,
+    INFERENCE_DEVICE,
+    TRAINING_DEVICE,
 )
 from experiments.architectures.transformers import (
     create_transformer_input,
@@ -75,7 +76,7 @@ def train_and_evaluate(
 ):
     if process_batch_fn is None:
         process_batch_fn = _process_batch
-    print(f"\n--- Training {model_name} on {DEVICE} ---")
+    print(f"\n--- Training {model_name} on {TRAINING_DEVICE} ---")
     start_time = time.time()
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     policy_criterion = nn.CrossEntropyLoss()
@@ -94,7 +95,7 @@ def train_and_evaluate(
         for data_batch in train_loader:
             optimizer.zero_grad()
             loss, loss_p_item, loss_v_item, policy_acc, value_mse = process_batch_fn(
-                model, data_batch, DEVICE, policy_criterion, value_criterion
+                model, data_batch, TRAINING_DEVICE, policy_criterion, value_criterion
             )
             loss.backward()
             optimizer.step()
@@ -117,7 +118,11 @@ def train_and_evaluate(
                     policy_acc,
                     value_mse,
                 ) = process_batch_fn(
-                    model, data_batch, DEVICE, policy_criterion, value_criterion
+                    model,
+                    data_batch,
+                    TRAINING_DEVICE,
+                    policy_criterion,
+                    value_criterion,
                 )
                 total_test_loss += loss.item()
                 total_test_policy_loss += loss_p_item
@@ -334,7 +339,7 @@ def run_experiments(
 
         assert train_loader and test_loader
 
-        model = experiment["model_class"](**params).to(DEVICE)
+        model = experiment["model_class"](**params).to(TRAINING_DEVICE)
         _run_and_log_experiment(
             exp=experiment,
             model=model,
