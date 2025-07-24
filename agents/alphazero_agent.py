@@ -438,8 +438,6 @@ class AlphaZeroAgent(BaseMCTSAgent):
         using early stopping based on a validation set.
         Returns a dictionary of losses and metrics from the best epoch.
         """
-        self.device = TRAINING_DEVICE
-        self.network.to(self.device)
         try:
             train_loader, val_loader = self._get_train_val_loaders()
         except ValueError as e:
@@ -454,6 +452,13 @@ class AlphaZeroAgent(BaseMCTSAgent):
         best_epoch_metrics: Optional[BestEpochMetrics] = None
 
         for epoch in range(max_epochs):
+            self.device = TRAINING_DEVICE
+            self.network.to(self.device)
+            if self.optimizer:
+                for state in self.optimizer.state.values():
+                    for k, v in state.items():
+                        if isinstance(v, torch.Tensor):
+                            state[k] = v.to(self.device)
             train_metrics = self._train_epoch(train_loader, epoch, max_epochs)
             val_metrics = self._validate_epoch(val_loader)
 

@@ -76,9 +76,8 @@ class AutoGraphNet(nn.Module):
             scores_tensor = torch.cat(scores)
 
             # 3. Construct the full policy vector, masking illegal actions
-            device = next(self.parameters()).device
             policy_logits = torch.full(
-                (self.env.num_action_types,), -torch.inf, device=device
+                (self.env.num_action_types,), -torch.inf, device=self.get_device()
             )
             legal_action_indices = [
                 self.env.map_action_to_policy_index(a) for a in legal_actions
@@ -95,7 +94,9 @@ class AutoGraphNet(nn.Module):
 
         game_token_embedding = state_tokens[:, 0, :]  # (batch, state_embedding_dim)
 
-        action_indices = torch.arange(self.env.num_action_types, device=self.device)
+        action_indices = torch.arange(
+            self.env.num_action_types, device=self.get_device()
+        )
         action_embs = self.policy_model.action_embedding(action_indices)
 
         batch_size = game_token_embedding.shape[0]
@@ -113,6 +114,9 @@ class AutoGraphNet(nn.Module):
         policy_logits = policy_logits_flat.view(batch_size, num_actions)
 
         return policy_logits, value_preds
+
+    def get_device(self):
+        return next(self.parameters()).device
 
 
 class _StateModel(nn.Module):
