@@ -144,6 +144,7 @@ class AlphaZeroAgent(BaseMCTSAgent):
         self.device = INFERENCE_DEVICE
         if self.network:
             self.network.to(self.device)
+            self.network.eval()
 
         self.config = config
         self.training_config = training_config
@@ -324,7 +325,6 @@ class AlphaZeroAgent(BaseMCTSAgent):
         self, train_loader: DataLoader, epoch: int, max_epochs: int
     ) -> EpochMetrics:
         """Runs one epoch of training and returns metrics."""
-        self.network.train()
         total_loss, total_policy_loss, total_value_loss = 0.0, 0.0, 0.0
         total_policy_acc, total_value_mse = 0.0, 0.0
         train_batches = 0
@@ -385,7 +385,6 @@ class AlphaZeroAgent(BaseMCTSAgent):
 
     def _validate_epoch(self, val_loader: DataLoader) -> Optional[EpochMetrics]:
         """Runs one epoch of validation and returns metrics."""
-        self.network.eval()
         total_loss, total_policy_loss, total_value_loss = 0.0, 0.0, 0.0
         total_policy_acc, total_value_mse = 0.0, 0.0
         val_batches = 0
@@ -432,6 +431,24 @@ class AlphaZeroAgent(BaseMCTSAgent):
             mse=total_value_mse / val_batches,
         )
 
+    def _set_device_and_mode(self, training: bool):
+        """Sets the device and mode (train/eval) for the network and optimizer."""
+        if training:
+            self.device = TRAINING_DEVICE
+            self.network.train()
+        else:
+            self.device = INFERENCE_DEVICE
+            self.network.eval()
+
+        self.network.to(self.device)
+
+        if training and self.optimizer:
+            # Move optimizer state to the correct device
+            for state in self.optimizer.state.values():
+                for k, v in state.items():
+                    if isinstance(v, torch.Tensor):
+                        state[k] = v.to(self.device)
+
     def learn(self) -> Optional[BestEpochMetrics]:
         """
         Update the neural network by training for multiple epochs over the replay buffer,
@@ -451,15 +468,12 @@ class AlphaZeroAgent(BaseMCTSAgent):
         best_model_state = None
         best_epoch_metrics: Optional[BestEpochMetrics] = None
 
+        self._set_device_and_mode(training=True)
         for epoch in range(max_epochs):
-            self.device = TRAINING_DEVICE
-            self.network.to(self.device)
-            if self.optimizer:
-                for state in self.optimizer.state.values():
-                    for k, v in state.items():
-                        if isinstance(v, torch.Tensor):
-                            state[k] = v.to(self.device)
+            self.network.train()
             train_metrics = self._train_epoch(train_loader, epoch, max_epochs)
+
+            self.network.eval()
             val_metrics = self._validate_epoch(val_loader)
 
             if val_metrics is None:
@@ -492,6 +506,9 @@ class AlphaZeroAgent(BaseMCTSAgent):
                 f"Restoring best model from epoch with validation loss: {best_val_loss:.4f}"
             )
             self.network.load_state_dict(best_model_state)
+
+        self._set_device_and_mode(training=False)
+        logger.info(f"Network set to {self.device} and eval mode.")
 
         if best_epoch_metrics:
             logger.info(
