@@ -4,13 +4,12 @@ from tqdm import tqdm
 
 from environments.connect4 import Connect4
 from experiments.architectures.shared import (
-    BOARD_HEIGHT,
     BOARD_WIDTH,
     DATA_PATH,
 )
 
 
-def _process_raw_item(item, env):
+def _process_raw_item(item, env: Connect4):
     action_history_str = item.get("action_history", "")
     if not action_history_str:
         return None
@@ -26,7 +25,14 @@ def _process_raw_item(item, env):
     current_player_piece = current_player_idx + 1
     opponent_player_piece = opponent_player_idx + 1
 
-    board_state = np.array(env.board)
+    id_board = []
+    for row in env.state.board.cells:
+        id_row = []
+        for cell in row:
+            cell_id = cell.id + 1 if cell is not None else 0
+            id_row.append(cell_id)
+        id_board.append(id_row)
+    board_state = np.array(id_board)
     p1_board = (board_state == current_player_piece).astype(np.float32)
     p2_board = (board_state == opponent_player_piece).astype(np.float32)
     input_tensor = np.stack([p1_board, p2_board])
@@ -87,7 +93,7 @@ def load_and_process_data(tiny_run=False):
     policy_labels = []
     value_labels = []
 
-    env = Connect4(width=BOARD_WIDTH, height=BOARD_HEIGHT)
+    env = Connect4()
 
     for item in tqdm(raw_data):
         processed_item = _process_raw_item(item, env)

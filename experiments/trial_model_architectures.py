@@ -12,7 +12,10 @@ from tqdm import tqdm
 import pandas as pd
 
 import wandb
-from experiments.architectures.detached import DetachedPolicyNet
+from experiments.architectures.detached import (
+    DetachedPolicyNet,
+    ActionsAreTokensNet,
+)
 from experiments.architectures.graph_transformers import (
     CellGraphTransformer,
     CellColumnGraphTransformer,
@@ -27,7 +30,13 @@ from experiments.architectures.graph_transformers import (
     PieceColumnGraphTransformer,
 )
 from experiments.data_utils import load_and_process_data
-from experiments.architectures.basic import AZDataset, AZGraphDataset, CNNNet, MLPNet
+from experiments.architectures.basic import (
+    AZDataset,
+    AZGraphDataset,
+    CNNNet,
+    MLPNet,
+    ResNet,
+)
 from experiments.architectures.shared import (
     LEARNING_RATE,
     BATCH_SIZE,
@@ -87,6 +96,7 @@ def train_and_evaluate(
     epochs_no_improve = 0
     epoch = 0
 
+    pbar = tqdm(train_loader, desc=f"{model_name}")
     while time.time() - start_time < MAX_TRAINING_TIME_SECONDS:
         model.train()
         total_train_loss, total_train_policy_acc, total_train_value_mse = 0, 0, 0
@@ -175,6 +185,7 @@ def train_and_evaluate(
             break
 
         epoch += 1
+        pbar.update(1)
 
     if time.time() - start_time >= MAX_TRAINING_TIME_SECONDS:
         print(f"Max training time of {MAX_TRAINING_TIME_SECONDS} seconds reached.")
@@ -279,8 +290,8 @@ def get_dataloaders(
         train_inputs = data.X_train
         test_inputs = data.X_test
 
-    train_dataset = AZGraphDataset(train_inputs, data.policy_train, data.value_train)
-    test_dataset = AZGraphDataset(test_inputs, data.policy_test, data.value_test)
+    train_dataset = dataset_class(train_inputs, data.policy_train, data.value_train)
+    test_dataset = dataset_class(test_inputs, data.policy_test, data.value_test)
 
     train_loader = DataLoader(
         train_dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=collate_function
@@ -354,9 +365,9 @@ def run_experiments(
 
 def run_basic_experiments(all_results: dict, data: TestData):
     experiments = [
-        # {"name": "MLP", "model_class": MLPNet, "params": {}},
-        # {"name": "CNN", "model_class": CNNNet, "params": {}},
-        # {"name": "ResNet", "model_class": ResNet, "params": {}},
+        {"name": "MLP", "model_class": MLPNet, "params": {}},
+        {"name": "CNN", "model_class": CNNNet, "params": {}},
+        {"name": "ResNet", "model_class": ResNet, "params": {}},
     ]
     run_experiments(
         all_results=all_results,
@@ -547,11 +558,11 @@ def run_piece_transformer_experiments(all_results: dict, data: TestData):
 
 def run_graph_transformer_experiments(all_results: dict, data: TestData):
     experiments = [
-        # {
-        #     "name": "CellGraphTransformer",
-        #     "model_class": CellGraphTransformer,
-        #     "input_creator": create_cell_graph,
-        # },
+        {
+            "name": "CellGraphTransformer",
+            "model_class": CellGraphTransformer,
+            "input_creator": create_cell_graph,
+        },
         {  # very strong
             "name": "CellColumnGraphTransformer",
             "model_class": CellColumnGraphTransformer,
@@ -580,6 +591,122 @@ def run_graph_transformer_experiments(all_results: dict, data: TestData):
     )
 
 
+def create_actions_are_tokens_input(board_tensor):
+    h, w = board_tensor.shape[1], board_tensor.shape[2]
+    p1_pieces = torch.nonzero(board_tensor[0])
+    p2_pieces = torch.nonzero(board_tensor[1])
+    num_p1 = p1_pieces.shape[0]
+    num_p2 = p2_pieces.shape[0]
+
+    if num_p1 + num_p2 == 0:
+        coords = torch.empty(0, 2, dtype=torch.long)
+        owner = torch.empty(0, 2, dtype=torch.float)
+    else:
+        coords = torch.cat([p1_pieces, p2_pieces], dim=0)
+        owner_p1 = torch.tensor([[1.0, 0.0]]).repeat(num_p1, 1)
+        owner_p2 = torch.tensor([[0.0, 1.0]]).repeat(num_p2, 1)
+        owner = torch.cat([owner_p1, owner_p2], dim=0)
+
+    legal_moves = [c for c in range(w) if board_tensor[:, 0, c].sum() == 0]
+    return owner, coords, torch.tensor(legal_moves, dtype=torch.long)
+
+
+def legal_decoder_collate_fn(batch):
+    inputs, policy_labels, value_labels = zip(*batch)
+    owners, coords, legal_moves_list = zip(*inputs)
+
+    padded_owners = nn.utils.rnn.pad_sequence(owners, batch_first=True, padding_value=0)
+    padded_coords = nn.utils.rnn.pad_sequence(coords, batch_first=True, padding_value=0)
+
+    lengths = torch.tensor([len(c) for c in coords])
+    src_key_padding_mask = (
+        torch.arange(padded_owners.size(1))[None, :] >= lengths[:, None]
+    )
+
+    padded_legal_moves = nn.utils.rnn.pad_sequence(
+        [lm for lm in legal_moves_list], batch_first=True, padding_value=-1
+    )
+    legal_moves_mask = padded_legal_moves == -1
+    padded_legal_moves[legal_moves_mask] = 0
+
+    batched_policies = torch.stack(list(policy_labels))
+    batched_values = torch.stack(list(value_labels))
+
+    return (
+        padded_owners,
+        padded_coords,
+        src_key_padding_mask,
+        padded_legal_moves,
+        legal_moves_mask,
+        batched_policies,
+        batched_values,
+    )
+
+
+def _process_batch_legal_decoder(
+    model, data_batch, device, policy_criterion, value_criterion
+):
+    (
+        owners,
+        coords,
+        src_key_padding_mask,
+        legal_moves,
+        legal_moves_mask,
+        policy_labels,
+        value_labels,
+    ) = data_batch
+
+    owners = owners.to(device)
+    coords = coords.to(device)
+    src_key_padding_mask = src_key_padding_mask.to(device)
+    legal_moves = legal_moves.to(device)
+    legal_moves_mask = legal_moves_mask.to(device)
+    policy_labels = policy_labels.to(device)
+    value_labels = value_labels.to(device)
+
+    policy_logits, value_preds = model(
+        owners, coords, src_key_padding_mask, legal_moves, legal_moves_mask
+    )
+
+    loss_p = policy_criterion(policy_logits, policy_labels)
+    loss_v = value_criterion(value_preds.squeeze(), value_labels)
+    loss = loss_p + loss_v
+
+    _, predicted_policies = torch.max(policy_logits, 1)
+    policy_acc = (predicted_policies == policy_labels).int().sum().item()
+    value_mse = F.mse_loss(value_preds.squeeze(), value_labels).item()
+
+    return loss, loss_p.item(), loss_v.item(), policy_acc, value_mse
+
+
+def run_legal_action_decoder_experiments(all_results: dict, data: TestData):
+    experiments = [
+        {
+            "name": "ActionsAreTokensNet_v1",
+            "model_class": ActionsAreTokensNet,
+            "params": {
+                "state_model_params": {
+                    "embedding_dim": 128,
+                    "num_heads": 8,
+                    "num_encoder_layers": 4,
+                    "dropout": 0.1,
+                },
+                "policy_model_params": {},  # Not used, but for API compatibility
+            },
+        },
+    ]
+
+    run_experiments(
+        all_results=all_results,
+        data=data,
+        name="Legal Action Decoder",
+        input_creator=create_actions_are_tokens_input,
+        experiments=experiments,
+        collate_function=legal_decoder_collate_fn,
+        process_batch_fn=_process_batch_legal_decoder,
+    )
+
+
 def main():
     inputs, policy_labels, value_labels = load_and_process_data(TINY_RUN)
     _X_train, _X_test, _p_train, _p_test, _v_train, _v_test = train_test_split(
@@ -599,6 +726,8 @@ def main():
     run_piece_transformer_experiments(all_results=all_results, data=data)
 
     run_graph_transformer_experiments(all_results=all_results, data=data)
+
+    run_legal_action_decoder_experiments(all_results=all_results, data=data)
 
     print("\n--- Final Results Summary ---")
     for name, results in all_results.items():

@@ -2,8 +2,6 @@ import math
 from enum import IntEnum
 
 import torch
-import torch_geometric.nn as pyg_nn
-from einops import rearrange
 from torch import nn as nn, Tensor
 from torch.nn import functional as F
 from torch_geometric.data import Batch, Data, HeteroData
@@ -208,12 +206,8 @@ class EdgeUpdateGate(nn.Module):
         src, dst = edge_index
         batch_indices = batch_vec[src]
 
-        src_in_graph = (
-            src - graph_node_offsets[batch_indices] + num_special_tokens
-        )
-        dst_in_graph = (
-            dst - graph_node_offsets[batch_indices] + num_special_tokens
-        )
+        src_in_graph = src - graph_node_offsets[batch_indices] + num_special_tokens
+        dst_in_graph = dst - graph_node_offsets[batch_indices] + num_special_tokens
 
         # attn_val is for attn(dst, src) -> attn(i, j)
         attn_val = avg_attention_weights[batch_indices, dst_in_graph, src_in_graph]
