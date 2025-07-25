@@ -19,9 +19,9 @@ class AZDataset(Dataset):
         return self.inputs[idx], self.policy_labels[idx], self.value_labels[idx]
 
 
-class AZGraphDataset(Dataset):
+class AZIrregularInputsDataset(Dataset):
     def __init__(self, inputs, policy_labels, value_labels):
-        self.inputs = inputs  # pyg graphs
+        self.inputs = inputs
         self.policy_labels = torch.from_numpy(policy_labels).long()
         self.value_labels = torch.from_numpy(value_labels)
 

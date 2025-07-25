@@ -32,7 +32,7 @@ from experiments.architectures.graph_transformers import (
 from experiments.data_utils import load_and_process_data
 from experiments.architectures.basic import (
     AZDataset,
-    AZGraphDataset,
+    AZIrregularInputsDataset,
     CNNNet,
     MLPNet,
     ResNet,
@@ -309,6 +309,7 @@ def run_experiments(
     experiments: list[dict],
     process_batch_fn: callable,
     input_creator: callable = None,
+    dataset_class: type = AZDataset,
     collate_function: callable = None,
 ):
     """
@@ -329,6 +330,7 @@ def run_experiments(
             name=name,
             input_creator=input_creator,
             collate_function=collate_function,
+            dataset_class=dataset_class,
         )
         data_processing_time = time.time() - start_time
 
@@ -344,7 +346,7 @@ def run_experiments(
                 name=name,
                 input_creator=input_creator_func,
                 collate_function=collate_function,
-                dataset_class=AZGraphDataset,
+                dataset_class=AZIrregularInputsDataset,
             )
             current_data_proc_time = time.time() - start_time
 
@@ -365,9 +367,9 @@ def run_experiments(
 
 def run_basic_experiments(all_results: dict, data: TestData):
     experiments = [
-        {"name": "MLP", "model_class": MLPNet, "params": {}},
-        {"name": "CNN", "model_class": CNNNet, "params": {}},
-        {"name": "ResNet", "model_class": ResNet, "params": {}},
+        # {"name": "MLP", "model_class": MLPNet, "params": {}},
+        # {"name": "CNN", "model_class": CNNNet, "params": {}},
+        # {"name": "ResNet", "model_class": ResNet, "params": {}},
     ]
     run_experiments(
         all_results=all_results,
@@ -550,6 +552,7 @@ def run_piece_transformer_experiments(all_results: dict, data: TestData):
         data=data,
         name="Piece Transformer",
         input_creator=create_transformer_input,
+        dataset_class=AZIrregularInputsDataset,
         experiments=experiments,
         collate_function=transformer_collate_fn,
         process_batch_fn=_process_batch_transformer,
