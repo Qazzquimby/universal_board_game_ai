@@ -2,7 +2,6 @@ import sys
 import json
 import time
 from typing import Union, List, Tuple
-import copy
 
 import numpy as np
 from tqdm import tqdm
@@ -11,7 +10,7 @@ from loguru import logger
 from agents.mcts_agent import MCTSAgent, make_pure_mcts
 from core.config import AppConfig, DATA_DIR
 from core.serialization import LOG_DIR, save_game_log
-from environments.base import BaseEnvironment, ActionType, StateType
+from environments.base import BaseEnvironment, StateType
 from agents.alphazero_agent import AlphaZeroAgent, make_pure_az
 from factories import (
     get_environment,
@@ -19,7 +18,6 @@ from factories import (
 )
 from utils.plotting import plot_losses
 from utils.training_reporter import TrainingReporter
-import evaluation
 
 
 def load_game_logs_into_buffer(agent: AlphaZeroAgent, env_name: str, buffer_limit: int):
