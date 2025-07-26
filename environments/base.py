@@ -114,20 +114,22 @@ def mutator(method):
 
 PlayerId = int
 
-# todo second dict is always cardinality: int? Make basemodel?
-NetworkableFeatures = Dict[str, Dict[str, Any]]
+
+class FeatureSpec(BaseModel):
+    cardinality: int
+
+
+NetworkableFeatures = Dict[str, FeatureSpec]
 
 
 class Networkable(abc.ABC):
     @classmethod
-    @abc.abstractmethod
     def get_feature_schema(cls, env: "BaseEnvironment") -> NetworkableFeatures:
         """
         Returns a schema for the entity's features for network configuration.
-        Example: {"feature_name": {"cardinality": 10}}
+        Example: {"feature_name": FeatureSpec(cardinality=10)}
         """
-        # todo, should be automated away from scripter's responsibility
-        pass
+        return {}
 
     def get_feature_values(self) -> Dict[str, int]:
         """
@@ -135,7 +137,7 @@ class Networkable(abc.ABC):
         Example: {"feature_name": 3}
         """
         # todo take the dict of the subclass. Remove private attrs.
-        pass
+        raise NotImplementedError
 
 
 TargetFilter = Union[Selector, Type, Any]
@@ -146,6 +148,17 @@ class GameEntity(BaseModel, Networkable, abc.ABC):
     _env: Optional["BaseEnvironment"] = PrivateAttr(default=None)
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    def get_feature_values(self) -> Dict[str, int]:
+        """
+        Returns the concrete feature values for this entity instance by dumping
+        the model and filtering private attributes.
+        Example: {"feature_name": 3}
+        """
+        all_attrs = self.model_dump()
+        return {
+            key: value for key, value in all_attrs.items() if not key.startswith("_")
+        }
 
     def bind(self, env: "BaseEnvironment"):
         """Binds the entity to a live environment."""
@@ -216,7 +229,7 @@ class Player(GameEntity):
     def get_feature_schema(cls, env: "BaseEnvironment") -> NetworkableFeatures:
         # todo, automate.
         #  for attribute on this (or subclass), get its cardinality
-        return {"id": {"cardinality": len(env.state.players) + 1}}
+        return {"id": FeatureSpec(cardinality=len(env.state.players) + 1)}
 
 
 class Players(BaseModel, Iterable):
@@ -298,6 +311,39 @@ class Grid(BaseModel, Generic[Cell_T]):
 
     def get_row(self, y: int) -> list[Optional[Cell_T]]:
         return self.cells[y]
+
+    def get_network_config(self, env: "BaseEnvironment") -> "NetworkConfig":
+        """
+        Derives the network configuration from this grid.
+        It inspects the cell entity type to build the feature schema.
+        """
+        from typing import get_args, get_origin
+
+        # Introspect the generic type of the grid's cells
+        cells_annotation = self.model_fields["cells"].rebuild_annotation()
+        # This is digging through List[List[Optional[Cell_T]]]
+        list_of_optional_entity = get_args(cells_annotation)
+        optional_entity = get_args(list_of_optional_entity[0])
+        entity_type_arg = optional_entity[0]
+
+        origin = get_origin(entity_type_arg)
+        if origin is Union:
+            # Handle Optional[Entity] -> get Entity
+            non_none_args = [
+                arg for arg in get_args(entity_type_arg) if arg is not type(None)
+            ]
+            entity_type = non_none_args[0] if non_none_args else None
+        else:
+            entity_type = entity_type_arg
+
+        if not entity_type or not issubclass(entity_type, Networkable):
+            raise TypeError("Grid cells must be a Networkable entity type.")
+
+        features = entity_type.get_feature_schema(env)
+        features["y"] = FeatureSpec(cardinality=self.height)
+        features["x"] = FeatureSpec(cardinality=self.width)
+
+        return NetworkConfig(features=features, entity_type=entity_type)
 
     def _is_in_bounds(self, x: int, y: int) -> bool:
         return 0 <= x < self.width and 0 <= y < self.height
@@ -551,11 +597,9 @@ class BaseEnvironment(abc.ABC):
         Provides the network configuration by inspecting the environment's state.
 
         The default implementation looks for a `Grid` instance in the state and
-        derives the configuration from it. Environments with different state
-        structures should override this method.
+        delegates to its `get_network_config` method. Environments with
+        different state structures should override this method.
         """
-        from typing import get_args, get_origin
-
         # temp: find the first Grid in the state.
         grid_instance = None
         if self.state:
@@ -563,38 +607,13 @@ class BaseEnvironment(abc.ABC):
                 if isinstance(value, Grid):
                     grid_instance = value
                     break
-        assert grid_instance
 
-        cells_annotation = (
-            type(grid_instance).model_fields["cells"].rebuild_annotation()
-        )
-        list_of_optional_entity = get_args(cells_annotation)
-        optional_entity = get_args(list_of_optional_entity[0])
-        entity_type_arg = optional_entity[0]
+        if not grid_instance:
+            raise NotImplementedError(
+                "Default get_network_config requires a Grid in the state."
+            )
 
-        origin = get_origin(entity_type_arg)
-        if origin is Union:
-            non_none_args = [
-                arg for arg in get_args(entity_type_arg) if arg is not type(None)
-            ]
-            entity_type = non_none_args[0] if non_none_args else None
-        else:
-            entity_type = entity_type_arg
-
-        if (
-            not entity_type
-            or not issubclass(entity_type, BaseModel)
-            or not issubclass(entity_type, Networkable)
-        ):
-            assert False
-
-        features = entity_type.get_feature_schema(self)
-        # todo this belongs on grid. Needs to get cardinality from grid size.
-        features.update({"y": grid_instance.height, "x": grid_instance.width})
-
-        assert features
-
-        return NetworkConfig(features=features, entity_type=entity_type)
+        return grid_instance.get_network_config(self)
 
     def get_all_networkable_entities(
         self,
