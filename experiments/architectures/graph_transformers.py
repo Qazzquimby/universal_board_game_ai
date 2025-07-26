@@ -293,7 +293,7 @@ class CellGraphTransformer(nn.Module):
                     num_heads=num_heads,
                     num_edge_types=num_edge_types,
                     dropout=dropout,
-                    use_edge_info=(i == 0),
+                    use_edge_info=True,  # (i == 0),
                 )
                 for i in range(num_encoder_layers)
             ]
@@ -314,31 +314,33 @@ class CellGraphTransformer(nn.Module):
                 0, 1, device=device
             )
 
-        node_features_list = [data.x[data.batch == i] for i in range(batch_size)]
-        padded_features = nn.utils.rnn.pad_sequence(
-            node_features_list, batch_first=True, padding_value=self.pad_idx
+        # Probably bad that this is being done with lists every forward call.
+        cell_contents = [data.x[data.batch == i] for i in range(batch_size)]
+        # padding not actually needed since num cells is static.
+        padded_cell_content = nn.utils.rnn.pad_sequence(
+            cell_contents, batch_first=True, padding_value=self.pad_idx
         )
         lengths = torch.tensor(
-            [len(x) for x in node_features_list], device=padded_features.device
+            [len(x) for x in cell_contents], device=padded_cell_content.device
         )
         key_padding_mask = (
-            torch.arange(padded_features.size(1), device=padded_features.device)[
-                None, :
-            ]
+            torch.arange(
+                padded_cell_content.size(1), device=padded_cell_content.device
+            )[None, :]
             >= lengths[:, None]
         )
 
-        x_embedded = self.patch_embedding(padded_features)
+        cell_content_tokens = self.patch_embedding(padded_cell_content)
         special_tokens = self.special_tokens.expand(batch_size, -1, -1)
-        x = torch.cat((special_tokens, x_embedded), dim=1)
-        x = self.dropout(x)
+        tokens = torch.cat((special_tokens, cell_content_tokens), dim=1)
+        tokens = self.dropout(tokens)
 
-        max_len = x.shape[1]
+        max_len = tokens.shape[1]
         max_nodes = max_len - self.num_special_tokens
 
-        # Adjust padding mask for game token
+        # Adjust padding mask for special tokens
         game_token_mask = torch.zeros(
-            batch_size, self.num_special_tokens, device=x.device, dtype=torch.bool
+            batch_size, self.num_special_tokens, device=tokens.device, dtype=torch.bool
         )
         final_key_padding_mask = torch.cat((game_token_mask, key_padding_mask), dim=1)
 
@@ -368,8 +370,8 @@ class CellGraphTransformer(nn.Module):
         }
         for layer in self.layers:
             props = sparse_edge_props if layer.use_edge_info else None
-            x = layer(x, edge_bias, props, final_key_padding_mask)
-        transformer_output = x
+            tokens = layer(tokens, edge_bias, props, final_key_padding_mask)
+        transformer_output = tokens
 
         game_token_out = transformer_output[
             :, self.game_special_token_idx, :
