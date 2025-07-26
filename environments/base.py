@@ -114,11 +114,12 @@ def mutator(method):
 
 PlayerId = int
 
+NetworkableFeatures = Dict[str, Dict[str, Any]]
 
 class Networkable(abc.ABC):
     @classmethod
     @abc.abstractmethod
-    def get_feature_schema(cls, env: "BaseEnvironment") -> Dict[str, Dict[str, Any]]:
+    def get_feature_schema(cls, env: "BaseEnvironment") -> NetworkableFeatures:
         """
         Returns a schema for the entity's features for network configuration.
         Example: {"feature_name": {"cardinality": 10}}
@@ -234,14 +235,18 @@ class Players(BaseModel, Iterable):
         else:
             if self.player_labels is None:
                 if self.num_players is None:
-                    raise ValueError("Either num_players or player_labels must be provided")
+                    raise ValueError(
+                        "Either num_players or player_labels must be provided"
+                    )
                 self.player_labels = [f"Player {i}" for i in range(self.num_players)]
 
             if self.num_players is None:
                 self.num_players = len(self.player_labels)
 
-            self.players = [Player(id=i, name=self.player_labels[i]) for i in
-                            range(self.num_players)]
+            self.players = [
+                Player(id=i, name=self.player_labels[i])
+                for i in range(self.num_players)
+            ]
 
         if len(self.player_labels) != self.num_players:
             raise ValueError("Number of player labels must match num_players.")
@@ -309,9 +314,9 @@ class Grid(BaseModel, Generic[Cell_T]):
     def get_entities_with_position(
         self,
     ) -> Iterable[Tuple[Optional[Cell_T], Dict[str, int]]]:
-        for r in range(self.height):
-            for c in range(self.width):
-                yield self.cells[r][c], {"y": r, "x": c}
+        for row in range(self.height):
+            for column in range(self.width):
+                yield self.cells[row][column], {"y": row, "x": column}
 
 
 class BaseState(BaseModel):
@@ -324,6 +329,12 @@ class BaseState(BaseModel):
 
     def get_reward_for_player(self, player_index):
         return self.rewards.get(player_index, 0)
+
+
+class NetworkConfig(BaseModel):
+    position_dims: Dict[str, int]
+    features: NetworkableFeatures
+    entity_type: Type[Networkable]
 
 
 class BaseEnvironment(abc.ABC):
@@ -537,7 +548,7 @@ class BaseEnvironment(abc.ABC):
         """
         return self.state.players.current_index
 
-    def get_network_config(self) -> Optional[Dict[str, Any]]:
+    def get_network_config(self) -> NetworkConfig:
         """
         Provides the network configuration by inspecting the environment's state.
 
@@ -547,7 +558,7 @@ class BaseEnvironment(abc.ABC):
         """
         from typing import get_args, get_origin
 
-        # Default implementation: find the first Grid in the state.
+        # temp: find the first Grid in the state.
         grid_instance = None
         if self.state:
             for _key, value in self.state:
@@ -584,11 +595,9 @@ class BaseEnvironment(abc.ABC):
 
         assert features
 
-        return {
-            "position_dims": position_dims,
-            "features": features,
-            "entity_type": entity_type,
-        }
+        return NetworkConfig(
+            position_dims=position_dims, features=features, entity_type=entity_type
+        )
 
     def get_all_networkable_entities(
         self,
@@ -599,7 +608,7 @@ class BaseEnvironment(abc.ABC):
         The default implementation looks for a `Grid` and returns its entities.
         Environments with different state structures should override this method.
         """
-        # Default implementation: find the first Grid in the state.
+        # temp: find the first Grid in the state.
         grid_instance = None
         if self.state:
             for _key, value in self.state:

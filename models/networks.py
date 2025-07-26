@@ -137,9 +137,10 @@ class _StateModel(nn.Module):
 
         self.embedding_layers = nn.ModuleDict()
         self.embedding_dim = embedding_dim
-        for pos_dim, size in self.network_config["position_dims"].items():
+        # todo currently assumes grid.
+        for pos_dim, size in self.network_config.position_dims.items():
             self.embedding_layers[pos_dim] = nn.Embedding(size, embedding_dim)
-        for feat, info in self.network_config["features"].items():
+        for feat, info in self.network_config.features.items():
             self.embedding_layers[feat] = nn.Embedding(
                 info["cardinality"] + 1, embedding_dim
             )
