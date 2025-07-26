@@ -14,7 +14,6 @@ import pandas as pd
 import wandb
 from experiments.architectures.detached import (
     DetachedPolicyNet,
-    ActionsAreTokensNet,
 )
 from experiments.architectures.graph_transformers import (
     CellGraphTransformer,
@@ -383,25 +382,25 @@ def run_basic_experiments(all_results: dict, data: TestData):
 
 def run_piece_transformer_experiments(all_results: dict, data: TestData):
     experiments = [
-        {
-            "name": "DetachedPolicy_v1",
-            "model_class": DetachedPolicyNet,
-            "params": {
-                "state_model_params": {
-                    "embedding_dim": 128,
-                    "num_heads": 8,
-                    "num_encoder_layers": 4,
-                    "dropout": 0.1,
-                },
-                "policy_model_params": {
-                    "embedding_dim": 128,
-                },
-            },
-        },
-        {
-            "name": "PieceTransformer_v2",
-            "model_class": PieceTransformerNet,
-        },
+        # {
+        #     "name": "DetachedPolicy_v1",
+        #     "model_class": DetachedPolicyNet,
+        #     "params": {
+        #         "state_model_params": {
+        #             "embedding_dim": 128,
+        #             "num_heads": 8,
+        #             "num_encoder_layers": 4,
+        #             "dropout": 0.1,
+        #         },
+        #         "policy_model_params": {
+        #             "embedding_dim": 128,
+        #         },
+        #     },
+        # },
+        # {
+        #     "name": "PieceTransformer_v2",
+        #     "model_class": PieceTransformerNet,
+        # },
         # {
         #     "name": "PieceTransformer_Sinusoidal",
         #     "model_class": PieceTransformerNet_Sinusoidal,
@@ -566,11 +565,11 @@ def run_graph_transformer_experiments(all_results: dict, data: TestData):
             "model_class": CellGraphTransformer,
             "input_creator": create_cell_graph,
         },
-        {  # very strong
-            "name": "CellColumnGraphTransformer",
-            "model_class": CellColumnGraphTransformer,
-            "input_creator": create_cell_column_graph,
-        },
+        # {  # very strong
+        #     "name": "CellColumnGraphTransformer",
+        #     "model_class": CellColumnGraphTransformer,
+        #     "input_creator": create_cell_column_graph,
+        # },
         # {
         #     "name": "CellColumnPieceGraphTransformer",
         #     "model_class": CellColumnPieceGraphTransformer,
@@ -684,19 +683,18 @@ def _process_batch_legal_decoder(
 
 def run_legal_action_decoder_experiments(all_results: dict, data: TestData):
     experiments = [
-        {
-            "name": "ActionsAreTokensNet_v1",
-            "model_class": ActionsAreTokensNet,
-            "params": {
-                "state_model_params": {
-                    "embedding_dim": 128,
-                    "num_heads": 8,
-                    "num_encoder_layers": 4,
-                    "dropout": 0.1,
-                },
-                "policy_model_params": {},  # Not used, but for API compatibility
-            },
-        },
+        # {
+        #     "name": "ActionsAreTokensNet_v1",
+        #     "model_class": ActionsAreTokensNet,
+        #     "params": {
+        #         "state_model_params": {
+        #             "embedding_dim": 128,
+        #             "num_heads": 8,
+        #             "num_encoder_layers": 4,
+        #             "dropout": 0.1,
+        #         },
+        #     },
+        # },
     ]
 
     run_experiments(
@@ -704,6 +702,7 @@ def run_legal_action_decoder_experiments(all_results: dict, data: TestData):
         data=data,
         name="Legal Action Decoder",
         input_creator=create_actions_are_tokens_input,
+        dataset_class=AZIrregularInputsDataset,
         experiments=experiments,
         collate_function=legal_decoder_collate_fn,
         process_batch_fn=_process_batch_legal_decoder,
