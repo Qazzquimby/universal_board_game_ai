@@ -137,7 +137,7 @@ class _StateModel(nn.Module):
 
         self.embedding_layers = nn.ModuleDict()
         self.embedding_dim = embedding_dim
-        # todo currently assumes grid.
+        # todo uses old position_dims features
         for pos_dim, size in self.network_config.position_dims.items():
             self.embedding_layers[pos_dim] = nn.Embedding(size, embedding_dim)
         for feat, info in self.network_config.features.items():

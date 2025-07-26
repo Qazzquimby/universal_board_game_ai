@@ -114,7 +114,9 @@ def mutator(method):
 
 PlayerId = int
 
+# todo second dict is always cardinality: int? Make basemodel?
 NetworkableFeatures = Dict[str, Dict[str, Any]]
+
 
 class Networkable(abc.ABC):
     @classmethod
@@ -124,14 +126,15 @@ class Networkable(abc.ABC):
         Returns a schema for the entity's features for network configuration.
         Example: {"feature_name": {"cardinality": 10}}
         """
+        # todo, should be automated away from scripter's responsibility
         pass
 
-    @abc.abstractmethod
     def get_feature_values(self) -> Dict[str, int]:
         """
         Returns the concrete feature values for this entity instance.
         Example: {"feature_name": 3}
         """
+        # todo take the dict of the subclass. Remove private attrs.
         pass
 
 
@@ -210,14 +213,10 @@ class Player(GameEntity):
     id: PlayerId
 
     @classmethod
-    def get_feature_schema(cls, env: "BaseEnvironment") -> Dict[str, Dict[str, Any]]:
-        if hasattr(env, "state") and env.state and hasattr(env.state, "players"):
-            # +1 for empty/None cell
-            return {"id": {"cardinality": len(env.state.players) + 1}}
-        return {"id": {"cardinality": 3}}  # Fallback for P1, P2, None
-
-    def get_feature_values(self) -> Dict[str, int]:
-        return {"id": self.id}
+    def get_feature_schema(cls, env: "BaseEnvironment") -> NetworkableFeatures:
+        # todo, automate.
+        #  for attribute on this (or subclass), get its cardinality
+        return {"id": {"cardinality": len(env.state.players) + 1}}
 
 
 class Players(BaseModel, Iterable):
@@ -332,7 +331,6 @@ class BaseState(BaseModel):
 
 
 class NetworkConfig(BaseModel):
-    position_dims: Dict[str, int]
     features: NetworkableFeatures
     entity_type: Type[Networkable]
 
@@ -590,14 +588,13 @@ class BaseEnvironment(abc.ABC):
         ):
             assert False
 
-        position_dims = {"y": grid_instance.height, "x": grid_instance.width}
         features = entity_type.get_feature_schema(self)
+        # todo this belongs on grid. Needs to get cardinality from grid size.
+        features.update({"y": grid_instance.height, "x": grid_instance.width})
 
         assert features
 
-        return NetworkConfig(
-            position_dims=position_dims, features=features, entity_type=entity_type
-        )
+        return NetworkConfig(features=features, entity_type=entity_type)
 
     def get_all_networkable_entities(
         self,
