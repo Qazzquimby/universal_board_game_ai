@@ -11,16 +11,42 @@ import abc
 from dataclasses import dataclass, field
 
 import torch
+import polars as pl
 from cachetools import LRUCache
 from loguru import logger
 import torch.nn as nn
 import numpy as np
 
-from environments.base import ActionType, BaseEnvironment, StateWithKey
+from environments.base import ActionType, BaseEnvironment, StateWithKey, StateType
 
 DEBUG = True
 
 EARLY_STOP_IF_CHANGE_IMPOSSIBLE_CHECK_FREQUENCY = 50
+
+
+def _is_env_done(env: BaseEnvironment) -> bool:
+    """Checks if an environment is in a terminal state, accommodating both old and new env styles."""
+    # New Polars-based env has a method, old has a state attribute.
+    if hasattr(env, "_is_done"):
+        return env._is_done()
+    if hasattr(env, "state") and hasattr(env.state, "done"):
+        return env.state.done
+    raise NotImplementedError(
+        f"Cannot determine 'done' status for environment of type {type(env)}"
+    )
+
+
+def _get_current_player_from_state(state: StateType) -> int:
+    """Gets the current player from a state dictionary, accommodating both old and new env styles."""
+    # Old Pydantic-based state
+    if "players" in state and isinstance(state.get("players"), dict):
+        return state["players"]["current_index"]
+    # New Polars-based state
+    if "game" in state and isinstance(state.get("game"), pl.DataFrame):
+        return state["game"]["current_player"][0]
+    raise ValueError(
+        "Could not determine current player from the provided state representation."
+    )
 
 
 @dataclass
@@ -314,7 +340,7 @@ class UCB1Selection(SelectionStrategy):
         path = SearchPath(initial_node=node)
         current_node: MCTSNode = node
 
-        while not sim_env.state.done:
+        while not _is_env_done(sim_env):
             if not current_node.is_expanded:
                 return SelectionResult(path=path, leaf_env=sim_env)
 
@@ -350,7 +376,7 @@ class UniformExpansion(ExpansionStrategy):
     """Expands a node by creating children for all legal actions with uniform priors."""
 
     def expand(self, node: MCTSNode, env_at_node: BaseEnvironment) -> None:
-        if node.is_expanded or env_at_node.state.done:
+        if node.is_expanded or _is_env_done(env_at_node):
             return
 
         legal_actions = env_at_node.get_legal_actions()
@@ -373,33 +399,30 @@ class RandomRolloutEvaluation(EvaluationStrategy):
         """Simulate game from the given environment state using random policy."""
         player_at_start = env.get_current_player()
 
-        if env.state.done:
-            return env.state.get_reward_for_player(player_at_start)
+        if _is_env_done(env):
+            winner = env.get_winning_player()
+            if winner is None:
+                return 0.0
+            return 1.0 if winner == player_at_start else -1.0
 
         sim_env = env.copy()
         current_step = 0
 
-        while not sim_env.state.done and current_step < self.max_rollout_depth:
+        while not _is_env_done(sim_env) and current_step < self.max_rollout_depth:
             legal_actions = sim_env.get_legal_actions()
+            if not legal_actions:
+                break
             action = random.choice(legal_actions)
             sim_env.step(action)
-            # print()
-            # print("step", current_step)
-            # print("action", action)
-            # print(sim_env.state.board)
-            # print("next player", sim_env.state.players.current_player)
             current_step += 1
+
         if current_step >= self.max_rollout_depth:
-            # logger.warning(
-            #     f"MCTS Rollout: Reached max depth ({self.max_rollout_depth}). Treating as draw."
-            # )
-            # legal_actions = sim_env.get_legal_actions()
-            # action = random.choice(legal_actions)
-            # sim_env.step(action)
             return 0.0
 
         winner = sim_env.get_winning_player()
-        value = sim_env.state.get_reward_for_player(player_at_start)
+        value = 0.0
+        if winner is not None:
+            value = 1.0 if winner == player_at_start else -1.0
 
         value *= self.discount_factor**current_step
 
@@ -417,7 +440,7 @@ class StandardBackpropagation(BackpropagationStrategy):
                 steps_from_end=i
             )
             state = node.state_with_key.state
-            current_player_index = dict(state["players"])["current_index"]
+            current_player_index = _get_current_player_from_state(state)
             node.num_visits += 1
             node.total_value += player_to_value.get(current_player_index, 0.0)
 
@@ -432,9 +455,9 @@ class StandardBackpropagation(BackpropagationStrategy):
                 edge_to_update = parent_of_node.edges[action_key]
                 edge_to_update.num_visits += 1
 
-                player_index = dict(parent_of_node.state_with_key.state["players"])[
-                    "current_index"
-                ]
+                parent_state = parent_of_node.state_with_key.state
+                player_index = _get_current_player_from_state(parent_state)
+
                 value = player_to_value.get(player_index)
                 edge_to_update.total_value += value
 
