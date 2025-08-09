@@ -1,5 +1,4 @@
 import abc
-import pickle
 from dataclasses import dataclass
 from typing import Dict, List, Optional, TypeVar
 
@@ -9,7 +8,6 @@ ActionType = TypeVar("ActionType")
 StateType = Dict[str, pl.DataFrame]
 
 
-# TODO use frame.equals() for equality rather than dumps hash
 @dataclass
 class StateWithKey:
     state: StateType
@@ -22,8 +20,8 @@ class StateWithKey:
 
     @staticmethod
     def _get_key_for_state(state: StateType) -> int:
-        serialized = pickle.dumps(state, protocol=pickle.HIGHEST_PROTOCOL)
-        return hash(serialized)
+        hashed = sum([v.hash_rows().sum() for v in state.values()])
+        return hashed
 
 
 @dataclass
