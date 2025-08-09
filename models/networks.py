@@ -8,34 +8,22 @@ import numpy as np
 from environments.base import BaseEnvironment, StateWithKey
 
 
-class AutoGraphNet(nn.Module):
-    """
-    A network architecture that is automatically configured based on the game
-    environment's schema. It uses a transformer-based StateModel to process
-    a graph-like representation of the game state and a detached PolicyModel
-    to score potential actions.
-    """
+# TODO this was written for the environments in base.py. The conversion is too complex. Dropped to move onto writing game specific models for time being.
 
+# Temporarily dropping graph support because many simple games dont need it.
+# On efficient graph handling https://aistudio.google.com/prompts/1p0TCZT14bMLZwEKU2EKocLvB3u-RQIAV
+
+
+class AutoGraphNet(nn.Module):
     def __init__(
         self,
         env: BaseEnvironment,
-        state_model_params: dict,
-        policy_model_params: dict,
     ):
         super().__init__()
         self.cache = {}
 
         self.env = env
-
-        # The StateModel needs to know the embedding_dim for the PolicyModel to match
-        if "embedding_dim" not in state_model_params:
-            raise ValueError("state_model_params must include 'embedding_dim'")
-        state_embedding_dim = state_model_params["embedding_dim"]
-
-        self.state_model = _StateModel(env, **state_model_params)
-        self.policy_model = _PolicyModel(
-            env, state_embedding_dim=state_embedding_dim, **policy_model_params
-        )
+        self.network_config = self.env.get_network_config()
 
     def init_zero(self):
         """
@@ -142,7 +130,7 @@ class _StateModel(nn.Module):
             self.embedding_layers[pos_dim] = nn.Embedding(size, embedding_dim)
         for feat, info in self.network_config.features.items():
             self.embedding_layers[feat] = nn.Embedding(
-                info["cardinality"] + 1, embedding_dim
+                info.cardinality + 1, embedding_dim
             )
 
         encoder_layer = nn.TransformerEncoderLayer(
@@ -163,8 +151,8 @@ class _StateModel(nn.Module):
         from environments.base import Networkable
 
         device = next(self.parameters()).device
-        features = self.network_config["features"]
-        entity_type = self.network_config["entity_type"]
+        features = self.network_config.features
+        entity_type = self.network_config.entity_type
         all_entities = self.env.get_all_networkable_entities()
 
         entity_tokens = []

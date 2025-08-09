@@ -50,9 +50,13 @@ from experiments.architectures.transformers import (
     PieceTransformer_EncoderSum_SimpleOut_ParamGameToken,
     PieceTransformerNet,
 )
+from models.networks import AutoGraphNet
 
-TINY_RUN = False
+TINY_RUN = True
 MAX_TRAINING_TIME_SECONDS = 2 * 3600  # 2h
+
+if TINY_RUN:
+    MAX_TRAINING_TIME_SECONDS = 20
 
 
 def _process_batch(model, data_batch, device, policy_criterion, value_criterion):
@@ -561,10 +565,15 @@ def run_piece_transformer_experiments(all_results: dict, data: TestData):
 def run_graph_transformer_experiments(all_results: dict, data: TestData):
     experiments = [
         {
-            "name": "CellGraphTransformer",
-            "model_class": CellGraphTransformer,
-            "input_creator": create_cell_graph,
-        },
+            "name": "Auto_V1",
+            "model_class": AutoGraphNet,
+            "input_creator": make_state_with_key,
+        }
+        # {
+        #     "name": "CellGraphTransformer",
+        #     "model_class": CellGraphTransformer,
+        #     "input_creator": create_cell_graph,
+        # },
         # {  # very strong
         #     "name": "CellColumnGraphTransformer",
         #     "model_class": CellColumnGraphTransformer,
@@ -752,3 +761,8 @@ if __name__ == "__main__":
 
 
 # todo try legal moves being a type of token (basically the same as column tokens but would link by column embedding rather than graph I think)
+# TODO dear future me
+# networks.py is pretty disgusting and needs to be rewritten carefully.
+# The forward method takes a state_with_key but doesnt even use it.
+# the main way to test a model is using this file, but the data intake is totally different and neither is simple
+# good luck friend.

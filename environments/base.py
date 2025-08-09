@@ -19,6 +19,8 @@ from typing import (
 
 from pydantic import BaseModel, model_validator, ConfigDict, PrivateAttr, Field
 
+# TODO this was designed for automatic model generation, which is being tabled for now.
+
 ActionType = TypeVar("ActionType")
 StateType = Dict[str, Any]
 
@@ -227,9 +229,7 @@ class Player(GameEntity):
 
     @classmethod
     def get_feature_schema(cls, env: "BaseEnvironment") -> NetworkableFeatures:
-        # todo, automate.
-        #  for attribute on this (or subclass), get its cardinality
-        return {"id": FeatureSpec(cardinality=len(env.state.players) + 1)}
+        return {"id": FeatureSpec(cardinality=len(env.state.players))}
 
 
 class Players(BaseModel, Iterable):
@@ -339,6 +339,7 @@ class Grid(BaseModel, Generic[Cell_T]):
         if not entity_type or not issubclass(entity_type, Networkable):
             raise TypeError("Grid cells must be a Networkable entity type.")
 
+        # todo set cardinality of cell content to +1 to handle empty
         features = entity_type.get_feature_schema(env)
         features["y"] = FeatureSpec(cardinality=self.height)
         features["x"] = FeatureSpec(cardinality=self.width)
