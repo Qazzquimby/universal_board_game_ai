@@ -71,9 +71,6 @@ class Connect4(BaseEnvironment):
             )
 
         col = action
-        assert self._is_valid_action(
-            col
-        ), f"Connect4.step received illegal action {action}."
 
         current_player = self.get_current_player()
 
@@ -119,7 +116,9 @@ class Connect4(BaseEnvironment):
         if not (0 <= col < self.width):
             return False
         # A column is full if it has `height` pieces.
-        num_pieces_in_col = self.state["pieces"].filter(pl.col("col") == col).height
+        if self.state["pieces"].is_empty():
+            return True
+        num_pieces_in_col = (self.state["pieces"]["col"] == col).sum()
         if num_pieces_in_col >= self.height:
             return False
         return True
@@ -127,23 +126,21 @@ class Connect4(BaseEnvironment):
     def _check_win(self, row: int, col: int) -> bool:
         """Check if the player who just moved to (row, col) has won."""
         player_id = self.get_current_player()
-        pieces = self.state["pieces"]
         win_condition = 4
+
+        # For fast lookups, get a set of all coordinates for the current player
+        player_coords = set(
+            self.state["pieces"]
+            .filter(pl.col("player_id") == player_id)
+            .select(["row", "col"])
+            .rows()
+        )
 
         def count_contiguous(dx: int, dy: int) -> int:
             count = 0
             for i in range(1, win_condition):
                 r, c = row + i * dy, col + i * dx
-                if not (0 <= r < self.height and 0 <= c < self.width):
-                    break
-                if (
-                    pieces.filter(
-                        (pl.col("row") == r)
-                        & (pl.col("col") == c)
-                        & (pl.col("player_id") == player_id)
-                    ).height
-                    > 0
-                ):
+                if (r, c) in player_coords:
                     count += 1
                 else:
                     break
@@ -189,10 +186,16 @@ class Connect4(BaseEnvironment):
     def get_legal_actions(self) -> List[ColumnActionType]:
         if self._is_done():
             return []
-        pieces_per_col = self.state["pieces"].group_by("col").agg(pl.count())
-        full_cols = pieces_per_col.filter(pl.col("count") >= self.height)
-        legal_cols = set(range(self.width)) - set(full_cols["col"].to_list())
-        return sorted(list(legal_cols))
+
+        # Get counts of pieces in each column
+        col_counts = self.state["pieces"]["col"].value_counts()
+
+        # Get list of columns that are full
+        full_cols = col_counts.filter(pl.col("count") >= self.height)["col"].to_list()
+
+        # A column is legal if it's not in the list of full columns.
+        # This returns a sorted list because we iterate over range(self.width).
+        return [c for c in range(self.width) if c not in full_cols]
 
     def get_current_player(self) -> int:
         return self.state["game"]["current_player"][0]
@@ -248,12 +251,19 @@ class Connect4(BaseEnvironment):
         env3 = Connect4()
         env3.state["pieces"] = pl.DataFrame(
             [
-                (5, 0, 0), (4, 2, 0), (5, 2, 0), (3, 2, 0),
-                (4, 0, 1), (3, 0, 1), (2, 0, 1),
+                (5, 0, 0),
+                (4, 2, 0),
+                (5, 2, 0),
+                (3, 2, 0),
+                (4, 0, 1),
+                (3, 0, 1),
+                (2, 0, 1),
             ],
             schema={"row": pl.Int8, "col": pl.Int8, "player_id": pl.Int8},
         )
-        env3.state["game"] = env3.state["game"].with_columns(pl.lit(1).alias("current_player"))
+        env3.state["game"] = env3.state["game"].with_columns(
+            pl.lit(1).alias("current_player")
+        )
         states.append(
             SanityCheckState(
                 description="Player 1 can win vertically (col 0)",
@@ -267,8 +277,13 @@ class Connect4(BaseEnvironment):
         env4 = Connect4()
         env4.state["pieces"] = pl.DataFrame(
             [
-                (5, 0, 0), (4, 0, 0), (5, 1, 0), (4, 1, 0),
-                (5, 6, 1), (4, 6, 1), (3, 6, 1),
+                (5, 0, 0),
+                (4, 0, 0),
+                (5, 1, 0),
+                (4, 1, 0),
+                (5, 6, 1),
+                (4, 6, 1),
+                (3, 6, 1),
             ],
             schema={"row": pl.Int8, "col": pl.Int8, "player_id": pl.Int8},
         )
