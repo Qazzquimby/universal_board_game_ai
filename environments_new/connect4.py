@@ -89,23 +89,31 @@ class Connect4(BaseEnvironment):
         winner = None
         reward = 0.0
 
-        if self._check_win(row, col):
+        player_id = self.get_current_player()
+        player_coords = set(
+            self.state["pieces"]
+            .filter(pl.col("player_id") == player_id)
+            .select(["row", "col"])
+            .rows()
+        )
+
+        if self._check_win(player_coords, row=row, col=col):
             done = True
             winner = current_player
             reward = 1.0
         elif self.state["pieces"].height == self.width * self.height:
             done = True  # Draw
 
-        self.state["game"] = self.state["game"].with_columns(
+        game_updates = [
             pl.lit(done).alias("done"),
             pl.lit(winner, dtype=pl.Int8).alias("winner"),
-        )
+        ]
 
         if not done:
             next_player = (current_player + 1) % self.num_players
-            self.state["game"] = self.state["game"].with_columns(
-                pl.lit(next_player).alias("current_player")
-            )
+            game_updates.append(pl.lit(next_player).alias("current_player"))
+
+        self.state["game"] = self.state["game"].with_columns(game_updates)
 
         return ActionResult(
             next_state_with_key=self.get_state_with_key(), reward=reward, done=done
@@ -123,18 +131,9 @@ class Connect4(BaseEnvironment):
             return False
         return True
 
-    def _check_win(self, row: int, col: int) -> bool:
+    def _check_win(self, player_coords, row: int, col: int) -> bool:
         """Check if the player who just moved to (row, col) has won."""
-        player_id = self.get_current_player()
         win_condition = 4
-
-        # For fast lookups, get a set of all coordinates for the current player
-        player_coords = set(
-            self.state["pieces"]
-            .filter(pl.col("player_id") == player_id)
-            .select(["row", "col"])
-            .rows()
-        )
 
         def count_contiguous(dx: int, dy: int) -> int:
             count = 0
@@ -187,14 +186,9 @@ class Connect4(BaseEnvironment):
         if self._is_done():
             return []
 
-        # Get counts of pieces in each column
-        col_counts = self.state["pieces"]["col"].value_counts()
-
-        # Get list of columns that are full
-        full_cols = col_counts.filter(pl.col("count") >= self.height)["col"].to_list()
-
-        # A column is legal if it's not in the list of full columns.
-        # This returns a sorted list because we iterate over range(self.width).
+        full_cols = set(
+            self.state["pieces"].filter(pl.col("row") == 0)["col"].to_list()
+        )
         return [c for c in range(self.width) if c not in full_cols]
 
     def get_current_player(self) -> int:
@@ -210,7 +204,9 @@ class Connect4(BaseEnvironment):
         return new_env
 
     def set_state(self, state: StateType) -> None:
-        self.state = {k: v.clone() for k, v in state.items()}
+        self.state = {
+            k: v for k, v in state.items()
+        }  # not v.clone() because all changes make new object
 
     def get_sanity_check_states(self) -> List[SanityCheckState]:
         states = []

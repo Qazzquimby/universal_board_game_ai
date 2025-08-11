@@ -103,7 +103,7 @@ def run_benchmark(agent_class, env_class, num_simulations, test_name):
 
 
 if __name__ == "__main__":
-    sim_count = 100
+    sim_count = 1000
 
     # Benchmark the old environment
     # run_benchmark(
