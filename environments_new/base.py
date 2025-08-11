@@ -2,10 +2,99 @@ import abc
 from dataclasses import dataclass
 from typing import Dict, List, Optional, TypeVar
 
-import polars as pl
-
 ActionType = TypeVar("ActionType")
-StateType = Dict[str, pl.DataFrame]
+
+
+class DataFrame:
+    def __init__(self, data=None, columns=None, schema=None):
+        if columns is not None:
+            self.columns = columns
+        elif schema is not None:
+            self.columns = list(schema.keys())
+        else:
+            self.columns = []
+
+        self._col_to_idx = {name: i for i, name in enumerate(self.columns)}
+        self._data = []
+
+        if data:
+            if isinstance(data, list):
+                if not data:  # empty list
+                    pass
+                elif isinstance(data[0], dict):
+                    if not self.columns:  # infer columns from first dict
+                        self.columns = list(data[0].keys())
+                        self._col_to_idx = {
+                            name: i for i, name in enumerate(self.columns)
+                        }
+                    for row_dict in data:
+                        self._data.append([row_dict.get(c) for c in self.columns])
+                elif isinstance(data[0], (list, tuple)):
+                    self._data = [list(row) for row in data]
+
+    @property
+    def height(self):
+        return len(self._data)
+
+    def is_empty(self):
+        return self.height == 0
+
+    def hash(self):
+        return sum(hash(tuple(row)) for row in self._data)
+
+    def filter(self, condition):
+        col_name, value = condition
+        col_idx = self._col_to_idx[col_name]
+        new_data = [row for row in self._data if row[col_idx] == value]
+        return DataFrame(data=new_data, columns=self.columns)
+
+    def select(self, columns):
+        indices = [self._col_to_idx[col] for col in columns]
+        new_data = [[row[i] for i in indices] for row in self._data]
+        return DataFrame(data=new_data, columns=columns)
+
+    def rows(self):
+        return [tuple(row) for row in self._data]
+
+    def concat(self, other_df):
+        if self.columns != other_df.columns:
+            raise ValueError("DataFrames have different columns")
+        new_data = self._data + other_df._data
+        return DataFrame(data=new_data, columns=self.columns)
+
+    def with_columns(self, updates_dict):
+        # This is a simplified version for single-row dataframe, as used in Connect4
+        if self.height > 1:
+            raise NotImplementedError(
+                "with_columns is simplified for single-row DataFrames"
+            )
+
+        if self.is_empty():
+            new_row_dict = {c: None for c in self.columns}
+            new_row_dict.update(updates_dict)
+            new_row = [new_row_dict[c] for c in self.columns]
+        else:
+            new_row = list(self._data[0])
+            for col_name, value in updates_dict.items():
+                if col_name not in self._col_to_idx:
+                    raise ValueError(f"Column {col_name} not in DataFrame")
+                col_idx = self._col_to_idx[col_name]
+                new_row[col_idx] = value
+
+        return DataFrame(data=[new_row], columns=self.columns)
+
+    def __getitem__(self, key):
+        if isinstance(key, str):
+            col_idx = self._col_to_idx[key]
+            return [row[col_idx] for row in self._data]
+        raise TypeError(f"Unsupported key type for DataFrame getitem: {type(key)}")
+
+    def clone(self):
+        new_data = [list(row) for row in self._data]
+        return DataFrame(data=new_data, columns=list(self.columns))
+
+
+StateType = Dict[str, DataFrame]
 
 
 @dataclass
@@ -20,7 +109,7 @@ class StateWithKey:
 
     @staticmethod
     def _get_key_for_state(state: StateType) -> int:
-        hashed = sum([v.hash_rows().sum() for v in state.values()])
+        hashed = sum([v.hash() for v in state.values()])
         return hashed
 
 

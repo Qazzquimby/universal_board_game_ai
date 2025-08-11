@@ -106,12 +106,12 @@ if __name__ == "__main__":
     sim_count = 1000
 
     # Benchmark the old environment
-    # run_benchmark(
-    #     agent_class=GenericBaseMCTSAgent,
-    #     env_class=OldConnect4,
-    #     num_simulations=sim_count,
-    #     test_name="Old Connect4 (Pydantic State)",
-    # )
+    run_benchmark(
+        agent_class=GenericBaseMCTSAgent,
+        env_class=OldConnect4,
+        num_simulations=sim_count,
+        test_name="Old Connect4 (Pydantic State)",
+    )
 
     # Benchmark the new environment
     run_benchmark(

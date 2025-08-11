@@ -1,10 +1,9 @@
 from typing import List, Optional
 
-import polars as pl
-
 from environments_new.base import (
     ActionResult,
     BaseEnvironment,
+    DataFrame,
     SanityCheckState,
     StateType,
     StateWithKey,
@@ -34,17 +33,10 @@ class Connect4(BaseEnvironment):
 
     def _reset(self) -> StateWithKey:
         self.state = {
-            "pieces": pl.DataFrame(
-                {"row": [], "col": [], "player_id": []},
-                schema={"row": pl.Int8, "col": pl.Int8, "player_id": pl.Int8},
-            ),
-            "game": pl.DataFrame(
-                {"current_player": [0], "done": [False], "winner": [None]},
-                schema={
-                    "current_player": pl.Int8,
-                    "done": pl.Boolean,
-                    "winner": pl.Int8,
-                },
+            "pieces": DataFrame(columns=["row", "col", "player_id"]),
+            "game": DataFrame(
+                data=[[0, False, None]],
+                columns=["current_player", "done", "winner"],
             ),
         }
         return self.get_state_with_key()
@@ -75,15 +67,15 @@ class Connect4(BaseEnvironment):
         current_player = self.get_current_player()
 
         # Find the lowest available row in the chosen column
-        pieces_in_col = self.state["pieces"].filter(pl.col("col") == col)
+        pieces_in_col = self.state["pieces"].filter(("col", col))
         row = self.height - 1 - pieces_in_col.height
 
         # Add piece
-        new_piece = pl.DataFrame(
+        new_piece = DataFrame(
             [{"row": row, "col": col, "player_id": current_player}],
-            schema=self.state["pieces"].schema,
+            columns=self.state["pieces"].columns,
         )
-        self.state["pieces"] = pl.concat([self.state["pieces"], new_piece])
+        self.state["pieces"] = self.state["pieces"].concat(new_piece)
 
         done = False
         winner = None
@@ -92,7 +84,7 @@ class Connect4(BaseEnvironment):
         player_id = self.get_current_player()
         player_coords = set(
             self.state["pieces"]
-            .filter(pl.col("player_id") == player_id)
+            .filter(("player_id", player_id))
             .select(["row", "col"])
             .rows()
         )
@@ -104,14 +96,11 @@ class Connect4(BaseEnvironment):
         elif self.state["pieces"].height == self.width * self.height:
             done = True  # Draw
 
-        game_updates = [
-            pl.lit(done).alias("done"),
-            pl.lit(winner, dtype=pl.Int8).alias("winner"),
-        ]
+        game_updates = {"done": done, "winner": winner}
 
         if not done:
             next_player = (current_player + 1) % self.num_players
-            game_updates.append(pl.lit(next_player).alias("current_player"))
+            game_updates["current_player"] = next_player
 
         self.state["game"] = self.state["game"].with_columns(game_updates)
 
@@ -126,7 +115,7 @@ class Connect4(BaseEnvironment):
         # A column is full if it has `height` pieces.
         if self.state["pieces"].is_empty():
             return True
-        num_pieces_in_col = (self.state["pieces"]["col"] == col).sum()
+        num_pieces_in_col = sum(v == col for v in self.state["pieces"]["col"])
         if num_pieces_in_col >= self.height:
             return False
         return True
@@ -186,9 +175,7 @@ class Connect4(BaseEnvironment):
         if self._is_done():
             return []
 
-        full_cols = set(
-            self.state["pieces"].filter(pl.col("row") == 0)["col"].to_list()
-        )
+        full_cols = set(self.state["pieces"].filter(("row", 0))["col"])
         return [c for c in range(self.width) if c not in full_cols]
 
     def get_current_player(self) -> int:
@@ -204,9 +191,7 @@ class Connect4(BaseEnvironment):
         return new_env
 
     def set_state(self, state: StateType) -> None:
-        self.state = {
-            k: v for k, v in state.items()
-        }  # not v.clone() because all changes make new object
+        self.state = {k: v.clone() for k, v in state.items()}
 
     def get_sanity_check_states(self) -> List[SanityCheckState]:
         states = []
@@ -224,7 +209,7 @@ class Connect4(BaseEnvironment):
 
         # --- State 2: Player 0 can win horizontally in column 3 ---
         env2 = Connect4()
-        env2.state["pieces"] = pl.DataFrame(
+        env2.state["pieces"] = DataFrame(
             [
                 (5, 0, 0),
                 (5, 1, 0),
@@ -232,7 +217,7 @@ class Connect4(BaseEnvironment):
                 (5, 4, 1),
                 (5, 5, 1),
             ],
-            schema={"row": pl.Int8, "col": pl.Int8, "player_id": pl.Int8},
+            columns=["row", "col", "player_id"],
         )
         states.append(
             SanityCheckState(
@@ -245,7 +230,7 @@ class Connect4(BaseEnvironment):
 
         # --- State 3: Player 1 can win vertically in column 0 ---
         env3 = Connect4()
-        env3.state["pieces"] = pl.DataFrame(
+        env3.state["pieces"] = DataFrame(
             [
                 (5, 0, 0),
                 (4, 2, 0),
@@ -255,11 +240,9 @@ class Connect4(BaseEnvironment):
                 (3, 0, 1),
                 (2, 0, 1),
             ],
-            schema={"row": pl.Int8, "col": pl.Int8, "player_id": pl.Int8},
+            columns=["row", "col", "player_id"],
         )
-        env3.state["game"] = env3.state["game"].with_columns(
-            pl.lit(1).alias("current_player")
-        )
+        env3.state["game"] = env3.state["game"].with_columns({"current_player": 1})
         states.append(
             SanityCheckState(
                 description="Player 1 can win vertically (col 0)",
@@ -271,7 +254,7 @@ class Connect4(BaseEnvironment):
 
         # --- State 4: Player 0 must block Player 1's win in column 6 ---
         env4 = Connect4()
-        env4.state["pieces"] = pl.DataFrame(
+        env4.state["pieces"] = DataFrame(
             [
                 (5, 0, 0),
                 (4, 0, 0),
@@ -281,7 +264,7 @@ class Connect4(BaseEnvironment):
                 (4, 6, 1),
                 (3, 6, 1),
             ],
-            schema={"row": pl.Int8, "col": pl.Int8, "player_id": pl.Int8},
+            columns=["row", "col", "player_id"],
         )
         states.append(
             SanityCheckState(
