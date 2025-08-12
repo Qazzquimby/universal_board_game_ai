@@ -394,12 +394,9 @@ def run_sanity_checks(env: BaseEnvironment, agent: AlphaZeroAgent):
 
     for check_case in sanity_states:
         logger.info(f"\nChecking State: {check_case.description}")
-        if "board" in check_case.state_with_key:
-            logger.info("Board:")
-            logger.info(f"\n{check_case.state_with_key['board']}")
-        elif "piles" in check_case.state_with_key:
-            logger.info(f"Piles: {check_case.state_with_key['piles']}")
-        logger.info(f"Current Player: {check_case.state_with_key['current_player']}")
+        temp_env = env.copy()
+        temp_env.set_state(check_case.state_with_key.state)
+        temp_env.render()
 
         try:
             policy_np, value_np = agent.network.predict(check_case.state_with_key)
@@ -410,13 +407,11 @@ def run_sanity_checks(env: BaseEnvironment, agent: AlphaZeroAgent):
                     f"  Value: Expected={check_case.expected_value:.1f}, Predicted={value_np:.4f}"
                 )
 
-            temp_env = env.copy()
-            temp_env.set_state(check_case.state_with_key)
             legal_actions = temp_env.get_legal_actions()
 
             action_probs = {}
             for action in legal_actions:
-                idx = agent.network.get_action_index(action)
+                idx = temp_env.map_action_to_policy_index(action)
                 if idx is not None and 0 <= idx < len(policy_np):
                     action_probs[action] = policy_np[idx]
                 else:

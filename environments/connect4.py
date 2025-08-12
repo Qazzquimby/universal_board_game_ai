@@ -200,6 +200,19 @@ class Connect4(BaseEnvironment):
                 "done": 2,  # 0 for False, 1 for True
                 "winner": self.num_players,  # 0, 1. None will be mapped to cardinality.
             },
+            "transforms": {
+                "player_id": lambda val, state: (
+                    val - state["game"]["current_player"][0] + self.num_players
+                )
+                % self.num_players,
+                "winner": lambda val, state: (
+                    val - state["game"]["current_player"][0] + self.num_players
+                )
+                % self.num_players
+                if val is not None
+                else None,
+                "current_player": lambda val, state: 0,
+            },
         }
 
     def copy(self) -> "Connect4":

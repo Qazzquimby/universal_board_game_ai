@@ -57,6 +57,7 @@ class AlphaZeroNet(nn.Module):
         """Converts a game state (dict of DataFrames) into a tensor of token embeddings."""
         device = self.get_device()
         all_tokens = []
+        transforms = self.network_spec.get("transforms", {})
 
         for table_name, table_spec in self.network_spec["tables"].items():
             df = state.get(table_name)
@@ -70,6 +71,10 @@ class AlphaZeroNet(nn.Module):
                 token_embedding = torch.zeros(1, self.embedding_dim, device=device)
                 for i, col_name in enumerate(columns):
                     val = row_data[i]
+
+                    transform = transforms.get(col_name)
+                    if transform:
+                        val = transform(val, state)
 
                     if val is None:
                         # Use max cardinality index for None
