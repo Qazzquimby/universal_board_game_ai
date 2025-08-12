@@ -18,7 +18,7 @@ import torch.nn as nn
 import numpy as np
 
 from environments.base import ActionType, BaseEnvironment, StateWithKey, StateType
-from environments_new.base import DataFrame
+from environments.base import DataFrame
 
 DEBUG = True
 
@@ -261,9 +261,6 @@ class DummyAlphaZeroNet(nn.Module):
     def _calculate_input_size(self, env: BaseEnvironment) -> int:
         # Return a dummy size
         return 1
-
-    def _calculate_policy_size(self, env: BaseEnvironment) -> int:
-        return env.policy_vector_size
 
     def get_action_index(self, action: ActionType) -> Optional[int]:
         """Maps an action to its policy index."""

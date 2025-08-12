@@ -27,30 +27,26 @@ from algorithms.mcts import (
     SelectionStrategy,
 )
 from experiments.architectures.shared import INFERENCE_DEVICE, TRAINING_DEVICE
-from models.networks import AutoGraphNet
 from core.config import (
     AlphaZeroConfig,
     DATA_DIR,
     TrainingConfig,
 )
+from models.networks import AlphaZeroNet
 
 
 class ReplayBufferDataset(Dataset):
-    def __init__(self, buffer: deque, state_model: nn.Module):
+    def __init__(self, buffer: deque):
         self.buffer_list = list(buffer)
-        self.state_model = state_model
 
     def __len__(self):
         return len(self.buffer_list)
 
     def __getitem__(self, idx):
         state_dict, policy_target, value_target = self.buffer_list[idx]
-        self.state_model.env.set_state(state_dict)
-        src, src_key_padding_mask = self.state_model.create_input_tensors_from_state()
 
         return (
-            src.squeeze(0),  # Remove batch dim
-            src_key_padding_mask.squeeze(0),  # Remove batch dim
+            state_dict,
             torch.tensor(policy_target, dtype=torch.float32),
             torch.tensor([value_target], dtype=torch.float32),
         )
@@ -145,6 +141,8 @@ class AlphaZeroAgent(BaseMCTSAgent):
         if self.network:
             self.network.to(self.device)
             self.network.eval()
+            if not hasattr(self.network, "cache"):
+                self.network.cache = {}
 
         self.config = config
         self.training_config = training_config
@@ -340,18 +338,15 @@ class AlphaZeroAgent(BaseMCTSAgent):
         )
         for batch_data in train_iterator:
             (
-                src_batch,
-                mask_batch,
+                state_batch,
                 policy_targets_batch,
                 value_targets_batch,
             ) = batch_data
-            src_batch = src_batch.to(self.device)
-            mask_batch = mask_batch.to(self.device)
             policy_targets_batch = policy_targets_batch.to(self.device)
             value_targets_batch = value_targets_batch.to(self.device)
 
             self.optimizer.zero_grad()
-            policy_logits, value_preds = self.network(src_batch, mask_batch)
+            policy_logits, value_preds = self.network(state_batch)
             (
                 batch_loss,
                 value_loss,
@@ -391,16 +386,13 @@ class AlphaZeroAgent(BaseMCTSAgent):
         with torch.no_grad():
             for batch_data in val_loader:
                 (
-                    src_batch,
-                    mask_batch,
+                    state_batch,
                     policy_targets_batch,
                     value_targets_batch,
                 ) = batch_data
-                src_batch = src_batch.to(self.device)
-                mask_batch = mask_batch.to(self.device)
                 policy_targets_batch = policy_targets_batch.to(self.device)
                 value_targets_batch = value_targets_batch.to(self.device)
-                policy_logits, value_preds = self.network(src_batch, mask_batch)
+                policy_logits, value_preds = self.network(state_batch)
                 (
                     batch_loss,
                     value_loss,
@@ -533,12 +525,8 @@ class AlphaZeroAgent(BaseMCTSAgent):
         if not self.val_replay_buffer:
             raise ValueError("Skipping learn step: Validation buffer is empty.")
 
-        train_dataset = ReplayBufferDataset(
-            self.train_replay_buffer, self.network.state_model
-        )
-        val_dataset = ReplayBufferDataset(
-            self.val_replay_buffer, self.network.state_model
-        )
+        train_dataset = ReplayBufferDataset(self.train_replay_buffer)
+        val_dataset = ReplayBufferDataset(self.val_replay_buffer)
 
         train_loader = DataLoader(
             train_dataset,
@@ -659,10 +647,13 @@ def make_pure_az(
     should_use_network: bool,
 ):
     if should_use_network:
-        network = AutoGraphNet(
+        smp = config.state_model_params
+        network = AlphaZeroNet(
             env=env,
-            state_model_params=config.state_model_params,
-            policy_model_params=config.policy_model_params,
+            embedding_dim=smp.get("embedding_dim", 64),
+            num_heads=smp.get("num_heads", 4),
+            num_encoder_layers=smp.get("num_encoder_layers", 2),
+            dropout=smp.get("dropout", 0.1),
         )
         optimizer = optim.AdamW(network.parameters(), lr=training_config.learning_rate)
     else:
