@@ -217,7 +217,7 @@ def run_self_play(
         state_with_key = game_env.reset()
         game_history = []
 
-        while not game_env.state.done:
+        while not state_with_key.done:
             state = state_with_key.state
             action = agent.act(game_env, train=True)
 
@@ -244,7 +244,7 @@ def run_self_play(
             action_result = game_env.step(action)
             state_with_key = action_result.next_state_with_key
 
-        final_outcome = game_env.state.get_reward_for_player(0)
+        final_outcome = game_env.get_outcome_for_player(player=0)
         all_experiences_iteration.append((game_history, final_outcome))
     return all_experiences_iteration
 
@@ -322,7 +322,7 @@ def run_eval_against_benchmark(
         if game_num % 2 == 1:
             agents = {0: best_agent, 1: current_agent}
 
-        while not game_env.state.done:
+        while not state_with_key.done:
             player = game_env.get_current_player()
             agent_for_turn = agents[player]
 
@@ -348,7 +348,7 @@ def run_eval_against_benchmark(
             action_result = game_env.step(action)
             state_with_key = action_result.next_state_with_key
 
-        outcome = game_env.state.get_reward_for_player(0)
+        outcome = game_env.get_outcome_for_player(player=0)
         episode_result = current_agent.process_finished_episode(game_history, outcome)
         all_tournament_experiences.extend(episode_result.buffer_experiences)
 

@@ -102,6 +102,15 @@ class StateWithKey:
     state: StateType
     key: int
 
+    @property
+    def done(self) -> bool:
+        """Checks if the game is over."""
+        # This is specific to environments that have a 'game' table with a 'done' column.
+        game_df = self.state.get("game")
+        if game_df and not game_df.is_empty():
+            return bool(game_df["done"][0])
+        return False
+
     @classmethod
     def from_state(cls, state: StateType):
         key = cls._get_key_for_state(state)
@@ -162,7 +171,12 @@ class BaseEnvironment(abc.ABC):
             The initial state observation.
         """
         self._dirty = True
-        return self._reset()
+        state_with_key = self._reset()
+        self.state = state_with_key.state
+        return state_with_key
+
+    def is_done(self) -> bool:
+        return self.state["game"]["done"][0]
 
     @abc.abstractmethod
     def _reset(self) -> StateWithKey:
@@ -221,6 +235,25 @@ class BaseEnvironment(abc.ABC):
             The winner's index, or None if there is no winner (draw or game not over).
         """
         pass
+
+    @property
+    def num_players(self) -> int:
+        """The number of players in the game."""
+        if not self.state or "players" not in self.state:
+            raise RuntimeError(
+                "Environment state not initialized or has no 'players' table. "
+                "Cannot determine num_players."
+            )
+        return self.state["players"].height
+
+    def get_outcome_for_player(self, player=0) -> float:
+        winner = self.get_winning_player()
+        if winner is None:
+            return 0.0  # Draw
+        if winner == player:
+            return 1.0
+        else:
+            return -1.0
 
     @abc.abstractmethod
     def copy(self) -> "BaseEnvironment":

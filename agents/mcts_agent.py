@@ -95,7 +95,7 @@ class BaseMCTSAgent(Agent):
         player_at_leaf = leaf_env.get_current_player()
         value = float(self.evaluation_strategy.evaluate(leaf_node, leaf_env))
         player_to_value = {}
-        for player in range(len(env.state.players)):
+        for player in range(env.num_players):
             if player == player_at_leaf:
                 player_to_value[player] = value
             else:

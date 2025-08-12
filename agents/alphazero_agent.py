@@ -84,8 +84,8 @@ class AlphaZeroEvaluation(EvaluationStrategy):
         self.network = network
 
     def evaluate(self, node: "MCTSNode", env: BaseEnvironment) -> float:
-        if env.state.done:
-            return env.state.rewards.get(env.state.players.current_index, 0.0)
+        if env.is_done():
+            return env.get_outcome_for_player(player=env.get_current_player())
 
         _, value = get_policy_value(network=self.network, node=node)
 
@@ -97,7 +97,7 @@ class AlphaZeroExpansion(ExpansionStrategy):
         self.network = network
 
     def expand(self, node: "MCTSNode", env: BaseEnvironment) -> None:
-        if node.is_expanded or env.state.done:
+        if node.is_expanded or env.is_done:
             return
 
         policy_np, _ = get_policy_value(network=self.network, node=node)
@@ -223,7 +223,7 @@ class AlphaZeroAgent(BaseMCTSAgent):
         return policy_vector
 
     def _expand_leaf(self, leaf_node: MCTSNode, leaf_env: BaseEnvironment, train: bool):
-        if not leaf_node.is_expanded and not leaf_env.state.done:
+        if not leaf_node.is_expanded and not leaf_env.is_done:
             self.expansion_strategy.expand(leaf_node, leaf_env)
 
             if leaf_node == self.root and train and self.config.dirichlet_epsilon > 0:
@@ -266,8 +266,7 @@ class AlphaZeroAgent(BaseMCTSAgent):
             return EpisodeResult(buffer_experiences=[], logged_history=[])
 
         for i, (state_at_step, action_taken, policy_target) in enumerate(game_history):
-            # Determine the value target from the perspective of the player at that state
-            player_at_step = dict(state_at_step["players"])["current_index"]
+            player_at_step = state_at_step["game"]["current_player"][0]
 
             if player_at_step == 0:
                 value_target = final_outcome
@@ -276,16 +275,12 @@ class AlphaZeroAgent(BaseMCTSAgent):
             else:
                 assert False
 
-            # The state dictionary is stored as-is. `env.set_state()` will reconstruct it.
             buffer_state = state_at_step.copy()
             buffer_experiences.append((buffer_state, policy_target, value_target))
 
-            # Store the original step info (without modification) for the returned history log
             logged_history.append(
                 (state_at_step, action_taken, policy_target, value_target)
             )
-
-        # Note: Internal history (_current_episode_history) is no longer used by this method.
 
         return EpisodeResult(
             buffer_experiences=buffer_experiences, logged_history=logged_history

@@ -41,11 +41,8 @@ class Connect4(BaseEnvironment):
         }
         return self.get_state_with_key()
 
-    def _is_done(self) -> bool:
-        return self.state["game"]["done"][0]
-
     def _step(self, action: ColumnActionType) -> ActionResult:
-        if self._is_done():
+        if self.is_done():
             winner = self.get_winning_player()
             current_player = self.get_current_player()
             if winner is None:
@@ -172,7 +169,7 @@ class Connect4(BaseEnvironment):
             print()
 
     def get_legal_actions(self) -> List[ColumnActionType]:
-        if self._is_done():
+        if self.is_done():
             return []
 
         full_cols = set(self.state["pieces"].filter(("row", 0))["col"])

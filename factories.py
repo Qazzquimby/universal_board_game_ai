@@ -16,9 +16,8 @@ from core.config import (
 )
 from environments.base import BaseEnvironment
 from environments.connect4 import Connect4
-from environments.nim_env import NimEnv
 from agents.mcts_agent import make_pure_mcts
-from models.networks import AutoGraphNet
+from models.networks import AlphaZeroNet
 from algorithms.mcts import UCB1Selection, StandardBackpropagation
 
 
@@ -27,10 +26,6 @@ def get_environment(env_config: EnvConfig) -> BaseEnvironment:
     if env_config.name.lower() == "connect4":
         # Use connect4 specific dimensions from config
         return Connect4()
-    elif env_config.name.lower() == "nim":
-        return NimEnv(
-            initial_piles=env_config.nim_piles, num_players=env_config.num_players
-        )
     else:
         raise ValueError(f"Unknown environment name: {env_config.name}")
 
@@ -40,12 +35,7 @@ def get_agents(env: BaseEnvironment, config: AppConfig) -> Dict[str, Agent]:
     az_config = config.alpha_zero
     training_config = config.training
 
-    # Create the AutoGraphNet network and optimizer
-    network = AutoGraphNet(
-        env=env,
-        state_model_params=az_config.state_model_params,
-        policy_model_params=az_config.policy_model_params,
-    )
+    network = AlphaZeroNet(env=env)
     network.init_zero()
     optimizer = optim.AdamW(network.parameters(), lr=training_config.learning_rate)
 
@@ -75,12 +65,12 @@ def get_agents(env: BaseEnvironment, config: AppConfig) -> Dict[str, Agent]:
         num_simulations=config.mcts.num_simulations,
     )
 
-    mcts_agent_old_name = f"MCTS_old_{config.mcts.num_simulations}"
-    mcts_agent_old = MCTSAgent_Old(
-        env=env,
-        num_simulations=config.mcts.num_simulations,
-        exploration_constant=config.mcts.exploration_constant,
-    )
+    # mcts_agent_old_name = f"MCTS_old_{config.mcts.num_simulations}"
+    # mcts_agent_old = MCTSAgent_Old(
+    #     env=env,
+    #     num_simulations=config.mcts.num_simulations,
+    #     exploration_constant=config.mcts.exploration_constant,
+    # )
 
     agents = {
         az_agent_name: az_agent,
