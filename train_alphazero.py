@@ -244,7 +244,7 @@ def run_self_play(
             action_result = game_env.step(action)
             state_with_key = action_result.next_state_with_key
 
-        final_outcome = game_env.get_outcome_for_player(player=0)
+        final_outcome = game_env.get_reward_for_player(player=0)
         all_experiences_iteration.append((game_history, final_outcome))
     return all_experiences_iteration
 
@@ -348,7 +348,7 @@ def run_eval_against_benchmark(
             action_result = game_env.step(action)
             state_with_key = action_result.next_state_with_key
 
-        outcome = game_env.get_outcome_for_player(player=0)
+        outcome = game_env.get_reward_for_player(player=0)
         episode_result = current_agent.process_finished_episode(game_history, outcome)
         all_tournament_experiences.extend(episode_result.buffer_experiences)
 

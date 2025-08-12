@@ -85,7 +85,7 @@ class AlphaZeroEvaluation(EvaluationStrategy):
 
     def evaluate(self, node: "MCTSNode", env: BaseEnvironment) -> float:
         if env.is_done():
-            return env.get_outcome_for_player(player=env.get_current_player())
+            return env.get_reward_for_player(player=env.get_current_player())
 
         _, value = get_policy_value(network=self.network, node=node)
 

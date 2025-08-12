@@ -25,18 +25,6 @@ DEBUG = True
 EARLY_STOP_IF_CHANGE_IMPOSSIBLE_CHECK_FREQUENCY = 50
 
 
-def _is_env_done(env: BaseEnvironment) -> bool:
-    """Checks if an environment is in a terminal state, accommodating both old and new env styles."""
-    # New Polars-based env has a method, old has a state attribute.
-    if hasattr(env, "_is_done"):
-        return env._is_done()
-    if hasattr(env, "state") and hasattr(env.state, "done"):
-        return env.state.done
-    raise NotImplementedError(
-        f"Cannot determine 'done' status for environment of type {type(env)}"
-    )
-
-
 def _get_current_player_from_state(state: StateType) -> int:
     """Gets the current player from a state dictionary, accommodating both old and new env styles."""
     # Old Pydantic-based state
@@ -340,7 +328,7 @@ class UCB1Selection(SelectionStrategy):
         path = SearchPath(initial_node=node)
         current_node: MCTSNode = node
 
-        while not _is_env_done(sim_env):
+        while not sim_env.is_done:
             if not current_node.is_expanded:
                 return SelectionResult(path=path, leaf_env=sim_env)
 
@@ -376,7 +364,7 @@ class UniformExpansion(ExpansionStrategy):
     """Expands a node by creating children for all legal actions with uniform priors."""
 
     def expand(self, node: MCTSNode, env_at_node: BaseEnvironment) -> None:
-        if node.is_expanded or _is_env_done(env_at_node):
+        if node.is_expanded or env_at_node.is_done():
             return
 
         legal_actions = env_at_node.get_legal_actions()
@@ -399,7 +387,7 @@ class RandomRolloutEvaluation(EvaluationStrategy):
         """Simulate game from the given environment state using random policy."""
         player_at_start = env.get_current_player()
 
-        if _is_env_done(env):
+        if env.is_done:
             winner = env.get_winning_player()
             if winner is None:
                 return 0.0
@@ -408,7 +396,7 @@ class RandomRolloutEvaluation(EvaluationStrategy):
         sim_env = env.copy()
         current_step = 0
 
-        while not _is_env_done(sim_env) and current_step < self.max_rollout_depth:
+        while not sim_env.is_done and current_step < self.max_rollout_depth:
             legal_actions = sim_env.get_legal_actions()
             if not legal_actions:
                 break

@@ -69,7 +69,7 @@ class MCTS_Old:
         self, node: MCTSNode_Old, sim_env: BaseEnvironment
     ) -> Tuple[MCTSNode_Old, BaseEnvironment]:
         """Select child node with highest UCB score until a leaf node is reached."""
-        while node.is_expanded() and not sim_env.state.done:
+        while node.is_expanded() and not sim_env.is_done:
             parent_visits = node.visit_count
 
             child_scores = {
@@ -98,7 +98,7 @@ class MCTS_Old:
 
     def _expand(self, node: MCTSNode_Old, env: BaseEnvironment):
         """Expand the leaf node by creating children for all legal actions."""
-        if node.is_expanded() or env.state.done:
+        if node.is_expanded() or env.is_done:
             return
 
         legal_actions = env.get_legal_actions()
@@ -120,7 +120,7 @@ class MCTS_Old:
             else 100
         )
 
-        while not sim_env.state.done and steps < max_steps:
+        while not sim_env.is_done and steps < max_steps:
             legal_actions = sim_env.get_legal_actions()
             if not legal_actions:
                 logger.warning("MCTS _rollout: Game not over, but no legal actions.")
@@ -134,9 +134,7 @@ class MCTS_Old:
                 f"MCTS _rollout: Reached max steps ({max_steps}). Treating as draw."
             )
             return 0.0
-
-        winner = sim_env.get_winning_player()
-        value = sim_env.state.get_reward_for_player(player_at_rollout_start)
+        value = sim_env.get_reward_for_player(player=player_at_rollout_start)
         return value
 
     def _backpropagate(
@@ -169,13 +167,13 @@ class MCTS_Old:
 
             leaf_node, leaf_env = self._select(self.root, sim_env)
 
-            if not leaf_env.state.done:
+            if not leaf_env.is_done:
                 if not leaf_node.is_expanded():
                     self._expand(leaf_node, leaf_env)
                 value = self._rollout(leaf_env)
             else:
                 player_at_leaf = leaf_env.get_current_player()
-                value = leaf_env.state.get_reward_for_player(player_at_leaf)
+                value = leaf_env.get_reward_for_player(player_at_leaf)
 
             self._backpropagate(leaf_node, value)
 

@@ -246,7 +246,7 @@ class BaseEnvironment(abc.ABC):
             )
         return self.state["players"].height
 
-    def get_outcome_for_player(self, player=0) -> float:
+    def get_reward_for_player(self, player=0) -> float:
         winner = self.get_winning_player()
         if winner is None:
             return 0.0  # Draw
