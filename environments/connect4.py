@@ -185,6 +185,23 @@ class Connect4(BaseEnvironment):
         winner = self.state["game"]["winner"][0]
         return winner if winner is not None else None
 
+    def get_network_spec(self) -> dict:
+        """Returns the network specification for Connect4."""
+        return {
+            "tables": {
+                "pieces": {"columns": ["row", "col", "player_id"]},
+                "game": {"columns": ["current_player", "done", "winner"]},
+            },
+            "cardinalities": {
+                "row": self.height,
+                "col": self.width,
+                "player_id": self.num_players,
+                "current_player": self.num_players,
+                "done": 2,  # 0 for False, 1 for True
+                "winner": self.num_players,  # 0, 1. None will be mapped to cardinality.
+            },
+        }
+
     def copy(self) -> "Connect4":
         new_env = Connect4()
         new_env.set_state(self.state)

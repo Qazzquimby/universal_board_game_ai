@@ -258,3 +258,11 @@ class BaseEnvironment(abc.ABC):
     def get_sanity_check_states(self) -> List[SanityCheckState]:
         """Returns a list of predefined states for sanity checking the environment."""
         return []
+
+    @abc.abstractmethod
+    def get_network_spec(self) -> Dict:
+        """
+        Returns a specification for the network architecture.
+        This includes table schemas and feature cardinalities.
+        """
+        pass
