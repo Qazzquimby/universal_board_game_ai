@@ -1,277 +1,224 @@
-from typing import List, Optional, Iterable
+from typing import List, Optional
 
 from environments.base import (
-    BaseEnvironment,
-    StateType,
-    SanityCheckState,
-    ActionType,
     ActionResult,
+    BaseEnvironment,
+    DataFrame,
+    SanityCheckState,
+    StateType,
     StateWithKey,
-    Grid,
-    BaseState,
-    Player,
-    Players,
 )
 
 ColumnActionType = int
 
-Connect4Cell = Optional[Player]
-
-
-class Connect4Board(Grid[Player]):
-    width: int = 7
-    height: int = 6
-
-
-class Connect4State(BaseState):
-    players: Players = Players(player_labels=["Y", "R"])
-    board: Connect4Board = Connect4Board()
-
 
 class Connect4(BaseEnvironment):
+    width: int = 7
+    height: int = 6
+    num_players: int = 2
+
     def __init__(self):
         super().__init__()
-        self.state: Connect4State = Connect4State()
-
-    @property
-    def width(self) -> int:
-        return self.state.board.width
+        self.reset()
 
     @property
     def num_action_types(self) -> int:
         return self.width
 
-    def map_action_to_policy_index(self, action: ActionType) -> Optional[int]:
+    def map_action_to_policy_index(self, action: ColumnActionType) -> Optional[int]:
         return action
 
-    def map_policy_index_to_action(self, index: int) -> Optional[ActionType]:
+    def map_policy_index_to_action(self, index: int) -> Optional[ColumnActionType]:
         return index
 
     def _reset(self) -> StateWithKey:
-        """
-        Reset the environment to initial state.
-
-        Returns:
-            observation: The initial observation
-        """
-        self.state = Connect4State()
+        self.state = {
+            "pieces": DataFrame(columns=["row", "col", "player_id"]),
+            "game": DataFrame(
+                data=[[0, False, None]],
+                columns=["current_player", "done", "winner"],
+            ),
+        }
         return self.get_state_with_key()
 
+    def _is_done(self) -> bool:
+        return self.state["game"]["done"][0]
+
     def _step(self, action: ColumnActionType) -> ActionResult:
-        """
-        Take a step in the environment by dropping a piece in a column.
+        if self._is_done():
+            winner = self.get_winning_player()
+            current_player = self.get_current_player()
+            if winner is None:
+                reward = 0.0
+            elif winner == current_player:
+                # This should not happen in a typical game flow
+                reward = 1.0
+            else:
+                reward = -1.0
 
-        Args:
-            action: The column index where the piece is dropped.
-
-        Returns:
-            observation: The current observation after taking the action
-            reward: The reward received by the player who just acted.
-            done: Boolean indicating if the game has ended.
-        """
-        #
-
-        current_legal_actions = self.get_legal_actions()
-        assert (
-            action in current_legal_actions
-        ), f"Connect4.step received illegal action {action}. Legal actions: {current_legal_actions}. Board:\n{self.state.board}"
-
-        if self.state.done:
             return ActionResult(
                 next_state_with_key=self.get_state_with_key(),
-                reward=self.state.rewards.get(self.state.players.current_index, 0.0),
+                reward=reward,
                 done=True,
             )
 
-        col = action  # Action is the column index
+        col = action
 
-        assert self._is_valid_action(col)
+        current_player = self.get_current_player()
 
-        # Find the lowest available row in the chosen column (gravity)
-        row = -1
-        for r in range(self.state.board.height - 1, -1, -1):
-            if self.state.board[r, col] is None:
-                row = r
-                break
+        # Find the lowest available row in the chosen column
+        pieces_in_col = self.state["pieces"].filter(("col", col))
+        row = self.height - 1 - pieces_in_col.height
 
-        self.state.board[row, col] = self.state.players.current_player
+        # Add piece
+        new_piece = DataFrame(
+            [{"row": row, "col": col, "player_id": current_player}],
+            columns=self.state["pieces"].columns,
+        )
+        self.state["pieces"] = self.state["pieces"].concat(new_piece)
 
-        if self._check_win(row, col):
-            self.state.done = True
-            self.state.rewards[self.state.players.current_index] = 1.0
-            for other_player in self.state.players.players:
-                if other_player.id != self.state.players.current_index:
-                    self.state.rewards[other_player.id] = -1.0
-        elif len(self.get_legal_actions()) == 0:
-            self.state.done = True
-            self.state.rewards = {}
+        done = False
+        winner = None
+        reward = 0.0
 
-        # Store the reward for the player who just moved *before* switching player
-        reward_for_acting_player = self.state.rewards.get(
-            self.state.players.current_index, 0.0
+        player_id = self.get_current_player()
+        player_coords = set(
+            self.state["pieces"]
+            .filter(("player_id", player_id))
+            .select(["row", "col"])
+            .rows()
         )
 
-        if not self.state.done:
-            self.state.players.set_to_next()
+        if self._check_win(player_coords, row=row, col=col):
+            done = True
+            winner = current_player
+            reward = 1.0
+        elif self.state["pieces"].height == self.width * self.height:
+            done = True  # Draw
+
+        game_updates = {"done": done, "winner": winner}
+
+        if not done:
+            next_player = (current_player + 1) % self.num_players
+            game_updates["current_player"] = next_player
+
+        self.state["game"] = self.state["game"].with_columns(game_updates)
 
         return ActionResult(
-            next_state_with_key=self.get_state_with_key(),
-            reward=reward_for_acting_player,
-            done=self.state.done,
+            next_state_with_key=self.get_state_with_key(), reward=reward, done=done
         )
 
     def _is_valid_action(self, col: ColumnActionType) -> bool:
         """Check if dropping a piece in the column is valid."""
         if not (0 <= col < self.width):
             return False
-        if self.state.board[0, col] is not None:
+        # A column is full if it has `height` pieces.
+        if self.state["pieces"].is_empty():
+            return True
+        num_pieces_in_col = sum(v == col for v in self.state["pieces"]["col"])
+        if num_pieces_in_col >= self.height:
             return False
         return True
 
-    # Make private methods conventionally private
-    def _check_win(self, row: int, col: int) -> bool:
-        """
-        Check if the player who just moved to (row, col) has won.
-        Only checks lines passing through the last move.
-        """
-        player = self.state.players.current_player
-        board = self.state.board
+    def _check_win(self, player_coords, row: int, col: int) -> bool:
+        """Check if the player who just moved to (row, col) has won."""
         win_condition = 4
 
-        def check_line(line: Iterable[Optional[Player]]) -> bool:
+        def count_contiguous(dx: int, dy: int) -> int:
             count = 0
-            for cell in line:
-                if cell is not None and cell.id == player.id:
+            for i in range(1, win_condition):
+                r, c = row + i * dy, col + i * dx
+                if (r, c) in player_coords:
                     count += 1
-                    if count >= win_condition:
-                        return True
                 else:
-                    count = 0
-            return False
+                    break
+            return count
 
-        # --- Check Horizontal ---
-        if check_line(board.get_row(row)):
+        # Horizontal
+        if count_contiguous(1, 0) + count_contiguous(-1, 0) + 1 >= win_condition:
+            return True
+        # Vertical (only need to check down)
+        if count_contiguous(0, -1) + 1 >= win_condition:
+            return True
+        # Diagonal
+        if count_contiguous(1, 1) + count_contiguous(-1, -1) + 1 >= win_condition:
+            return True
+        # Anti-diagonal
+        if count_contiguous(1, -1) + count_contiguous(-1, 1) + 1 >= win_condition:
             return True
 
-        # --- Check Vertical ---
-        if check_line(board.get_column(col)):
-            return True
-
-        # --- Check Diagonal (top-left to bottom-right) ---
-        diag = [
-            board[row + i, col + i]
-            for i in range(-(win_condition - 1), win_condition)
-            if board._is_in_bounds(col + i, row + i)
-        ]
-        if check_line(diag):
-            return True
-
-        # --- Check Anti-Diagonal (top-right to bottom-left) ---
-        anti_diag = [
-            board[row + i, col - i]
-            for i in range(-(win_condition - 1), win_condition)
-            if board._is_in_bounds(col - i, row + i)
-        ]
-        if check_line(anti_diag):
-            return True
-
-        return False  # No win found for this player on this move
+        return False
 
     def _get_state(self) -> StateType:
-        """Get the current observation of the environment."""
-        return self.state.model_dump()
+        return self.state
 
-    # Ensure method signatures match EnvInterface
     def render(self, mode: str = "human") -> None:
-        """
-        Render the current state of the environment.
-
-        Args:
-            mode: The mode to render with
-        """
         if mode == "human":
-            print(f"Player: {self.state.players.current_index}")
-            # Print column numbers
+            print(f"Player: {self.get_current_player()}")
             print("  " + " ".join(map(str, range(self.width))))
             print(" +" + "--" * self.width + "+")
-            for r in range(self.state.board.height):
-                row_str = f"{r}|"  # Print row numbers
-                for c in range(self.width):
-                    cell = self.state.board[r, c]
-                    if cell is None:
-                        row_str += " ·"
-                    else:
-                        # Use different symbols or colors in a GUI
-                        row_str += f" {cell.id}"  # Player number (0 or 1)
+
+            board = [["·"] * self.width for _ in range(self.height)]
+            if self.state and self.state["pieces"].height > 0:
+                for r, c, p in self.state["pieces"].rows():
+                    board[r][c] = str(p)
+
+            for r_idx, row_list in enumerate(board):
+                row_str = f"{r_idx}|"
+                row_str += " " + " ".join(row_list)
                 print(row_str + " |")
+
             print(" +" + "--" * self.width + "+")
             print()
 
     def get_legal_actions(self) -> List[ColumnActionType]:
-        """
-        Get a list of all valid actions (non-full column indices).
+        if self._is_done():
+            return []
 
-        Returns:
-            A list of valid column indices.
-        """
-        valid_actions = []
-        for col in range(self.width):  # Iterate through columns
-            # A column is a legal action if its top cell (row 0) is empty
-            if self.state.board[0, col] is None:
-                valid_actions.append(col)
-        return valid_actions
+        full_cols = set(self.state["pieces"].filter(("row", 0))["col"])
+        return [c for c in range(self.width) if c not in full_cols]
 
-    # Ensure method signatures match EnvInterface
-    def close(self) -> None:
-        """Close the environment."""
-        pass
+    def get_current_player(self) -> int:
+        return self.state["game"]["current_player"][0]
 
-    # Ensure method signatures match EnvInterface
+    def get_winning_player(self) -> Optional[int]:
+        winner = self.state["game"]["winner"][0]
+        return winner if winner is not None else None
+
     def copy(self) -> "Connect4":
-        """Create a copy of the environment"""
         new_env = Connect4()
-        new_env.state = self.state.model_copy(deep=True)
+        new_env.set_state(self.state)
         return new_env
 
-    # Ensure method signatures match EnvInterface
     def set_state(self, state: StateType) -> None:
-        """Set the environment state"""
-        self.state = Connect4State.model_validate(state)
+        self.state = {k: v.clone() for k, v in state.items()}
 
     def get_sanity_check_states(self) -> List[SanityCheckState]:
-        """Returns predefined states for sanity checking Connect4."""
-        # Expected value is from the perspective of the state's current player
         states = []
 
         # --- State 1: Empty Board (Player 0's turn) ---
-        # Outcome unclear, depends on perfect play. Use 0.0
+        env1 = Connect4()
         states.append(
             SanityCheckState(
                 description="Empty board, Player 0 turn",
-                state_with_key=Connect4().get_state_with_key(),
+                state_with_key=env1.get_state_with_key(),
                 expected_value=0.0,
                 expected_action=None,
             )
         )
 
         # --- State 2: Player 0 can win horizontally in column 3 ---
-        # Board:
-        # . . . . . . .
-        # . . . . . . .
-        # . . . . . . .
-        # . . . . . . .
-        # . . . . . . .
-        # 0 0 0 . 1 1 .  <- Player 0 to move
         env2 = Connect4()
-        p0 = env2.state.players.players[0]
-        p1 = env2.state.players.players[1]
-        env2.state.board[5, 0] = p0
-        env2.state.board[5, 1] = p0
-        env2.state.board[5, 2] = p0
-        env2.state.board[5, 4] = p1
-        env2.state.board[5, 5] = p1
-        env2.state.current_player = p0
-        env2.state.step_count = 5
+        env2.state["pieces"] = DataFrame(
+            [
+                (5, 0, 0),
+                (5, 1, 0),
+                (5, 2, 0),
+                (5, 4, 1),
+                (5, 5, 1),
+            ],
+            columns=["row", "col", "player_id"],
+        )
         states.append(
             SanityCheckState(
                 description="Player 0 can win horizontally (col 3)",
@@ -282,25 +229,20 @@ class Connect4(BaseEnvironment):
         )
 
         # --- State 3: Player 1 can win vertically in column 0 ---
-        # Board:
-        # . . . . . . .
-        # . . . . . . .
-        # 1 . . . . . .
-        # 1 . 0 . . . .
-        # 1 . 0 . . . .
-        # 0 . 0 . . . . <- Player 1 to move
         env3 = Connect4()
-        p0 = env3.state.players.players[0]
-        p1 = env3.state.players.players[1]
-        env3.state.board[5, 0] = p0
-        env3.state.board[4, 2] = p0
-        env3.state.board[5, 2] = p0
-        env3.state.board[3, 2] = p0
-        env3.state.board[4, 0] = p1
-        env3.state.board[3, 0] = p1
-        env3.state.board[2, 0] = p1
-        env3.state.current_player = p1
-        env3.state.step_count = 7
+        env3.state["pieces"] = DataFrame(
+            [
+                (5, 0, 0),
+                (4, 2, 0),
+                (5, 2, 0),
+                (3, 2, 0),
+                (4, 0, 1),
+                (3, 0, 1),
+                (2, 0, 1),
+            ],
+            columns=["row", "col", "player_id"],
+        )
+        env3.state["game"] = env3.state["game"].with_columns({"current_player": 1})
         states.append(
             SanityCheckState(
                 description="Player 1 can win vertically (col 0)",
@@ -311,32 +253,23 @@ class Connect4(BaseEnvironment):
         )
 
         # --- State 4: Player 0 must block Player 1's win in column 6 ---
-        # Board:
-        # . . . . . . .
-        # . . . . . . .
-        # . . . . . . .
-        # . . . . . . 1
-        # 0 0 . . . . 1
-        # 0 0 . . . . 1 <- Player 0 to move
         env4 = Connect4()
-        p0 = env4.state.players.players[0]
-        p1 = env4.state.players.players[1]
-        env4.state.board[5, 0] = p0
-        env4.state.board[4, 0] = p0
-        env4.state.board[5, 1] = p0
-        env4.state.board[4, 1] = p0
-        env4.state.board[3, 6] = p1
-        env4.state.board[4, 6] = p1
-        env4.state.board[5, 6] = p1
-        env4.state.current_player = p0
-        env4.state.step_count = 7
+        env4.state["pieces"] = DataFrame(
+            [
+                (5, 0, 0),
+                (4, 0, 0),
+                (5, 1, 0),
+                (4, 1, 0),
+                (5, 6, 1),
+                (4, 6, 1),
+                (3, 6, 1),
+            ],
+            columns=["row", "col", "player_id"],
+        )
         states.append(
             SanityCheckState(
                 description="Player 0 must block P1 win (col 6)",
                 state_with_key=env4.get_state_with_key(),
-                # Player 0 *must* block, but doesn't guarantee a win. Outcome unclear. Use 0.0
-                # Alternatively, could argue it's slightly negative as P1 forced the block? Let's use 0.0 for simplicity.
-                # expected_value=0.0,  # Blocking doesn't guarantee win/loss
                 expected_action=6,
             )
         )

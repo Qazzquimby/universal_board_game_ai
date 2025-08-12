@@ -7,7 +7,6 @@ import numpy as np
 
 from environments.base import BaseEnvironment, StateWithKey
 
-
 # TODO this was written for the environments in base.py. The conversion is too complex. Dropped to move onto writing game specific models for time being.
 
 # Temporarily dropping graph support because many simple games dont need it.
