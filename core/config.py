@@ -126,7 +126,7 @@ class WandBConfig:
 class EvaluationConfig:
     full_eval_num_games: int = 40
     run_periodic_evaluation: bool = True
-    periodic_eval_frequency: int = 4
+    periodic_eval_frequency: int = 10
     periodic_eval_num_games: int = 40
 
 

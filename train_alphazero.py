@@ -151,46 +151,32 @@ def run_training(config: AppConfig, env_name_override: str = None):
                 if eval_results["total_games"] > 0
                 else 0
             )
-            win_rate_threshold = 0.55  # TODO: Move to config
+            print(f"New model has win rate of {win_rate} against {best_agent_name}")
+            # even if lost, still update best as new.
 
-            if win_rate > win_rate_threshold:
-                logger.info(
-                    f"New best agent found! Win rate: {win_rate:.2f} > {win_rate_threshold:.2f}"
+            best_agent_name = f"AlphaZero_iter{iteration + 1}"
+
+            if not isinstance(best_agent, AlphaZeroAgent):
+                best_agent = make_pure_az(
+                    env,
+                    config.alpha_zero,
+                    config.training,
+                    should_use_network=True,
                 )
-                best_agent_name = f"AlphaZero_iter{iteration + 1}"
 
-                if not isinstance(best_agent, AlphaZeroAgent):
-                    best_agent = make_pure_az(
-                        env,
-                        config.alpha_zero,
-                        config.training,
-                        should_use_network=True,
-                    )
-
-                best_agent.network.load_state_dict(current_agent.network.state_dict())
-                if best_agent.optimizer and current_agent.optimizer:
-                    best_agent.optimizer.load_state_dict(
-                        current_agent.optimizer.state_dict()
-                    )
-                self_play_agent = best_agent
-
-                checkpoint_path = (
-                    DATA_DIR
-                    / f"alphazero_net_{config.env.name}_best_iter_{iteration + 1}.pth"
+            best_agent.network.load_state_dict(current_agent.network.state_dict())
+            if best_agent.optimizer and current_agent.optimizer:
+                best_agent.optimizer.load_state_dict(
+                    current_agent.optimizer.state_dict()
                 )
-                current_agent.save(checkpoint_path)
-                logger.info(f"Saved new best model to {checkpoint_path}")
-            else:
-                logger.info(
-                    f"Current agent failed to beat best. Win rate: {win_rate:.2f} <= {win_rate_threshold:.2f}"
-                )
-                if isinstance(best_agent, AlphaZeroAgent):
-                    logger.info(
-                        "Resetting current agent's weights to best agent's weights."
-                    )
-                    current_agent.network.load_state_dict(
-                        best_agent.network.state_dict()
-                    )
+            self_play_agent = best_agent
+
+            checkpoint_path = (
+                DATA_DIR
+                / f"alphazero_net_{config.env.name}_best_iter_{iteration + 1}.pth"
+            )
+            current_agent.save(checkpoint_path)
+            logger.info(f"Saved new best model to {checkpoint_path}")
 
     logger.info("\nTraining complete. Saving final agent state.")
     current_agent.save()
