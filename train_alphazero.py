@@ -10,7 +10,7 @@ from loguru import logger
 from agents.mcts_agent import MCTSAgent, make_pure_mcts
 from core.config import AppConfig, DATA_DIR
 from core.serialization import LOG_DIR, save_game_log
-from environments.base import BaseEnvironment, StateType
+from environments.base import BaseEnvironment, StateType, DataFrame
 from agents.alphazero_agent import AlphaZeroAgent, make_pure_az
 from factories import (
     get_environment,
@@ -47,15 +47,21 @@ def load_game_logs_into_buffer(agent: AlphaZeroAgent, env_name: str, buffer_limi
 
         loaded_games += 1
         for step_data in game_data:
-            state = step_data.get("state")
+            state_json = step_data.get("state")
             policy_target_list = step_data.get("policy_target")
             value_target = step_data.get("value_target")
 
             if (
-                state is not None
+                state_json is not None
                 and policy_target_list is not None
                 and value_target is not None
             ):
+                state = {
+                    table_name: DataFrame(
+                        data=table_data.get("data"), columns=table_data.get("columns")
+                    )
+                    for table_name, table_data in state_json.items()
+                }
                 policy_target = np.array(policy_target_list, dtype=np.float32)
                 all_experiences.append((state, policy_target, value_target))
 

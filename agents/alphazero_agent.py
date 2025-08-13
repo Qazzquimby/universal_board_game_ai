@@ -14,7 +14,7 @@ import numpy as np
 from loguru import logger
 
 from agents.mcts_agent import BaseMCTSAgent
-from environments.base import BaseEnvironment, StateType, ActionType
+from environments.base import BaseEnvironment, StateType, ActionType, DataFrame
 from algorithms.mcts import (
     DummyAlphaZeroNet,
     MCTSNode,
@@ -33,6 +33,45 @@ from core.config import (
     TrainingConfig,
 )
 from models.networks import AlphaZeroNet
+
+
+def az_collate_fn(batch):
+    """
+    Custom collate function to handle batches of experiences, where states are
+    dictionaries of DataFrames.
+    """
+    state_dicts, policy_targets, value_targets = zip(*batch)
+
+    batched_state = {}
+    if state_dicts:
+        # Get table names from the first sample, assuming all samples have the same tables.
+        table_names = state_dicts[0].keys()
+        for table_name in table_names:
+            # For each table, gather all the DataFrames from the batch, adding a batch index.
+            all_dfs_for_table = []
+            for i, state_dict in enumerate(state_dicts):
+                original_df = state_dict.get(table_name)
+                # Skip if a state is missing this table or the table is empty.
+                if original_df is None or original_df.is_empty():
+                    continue
+
+                new_data = [row + [i] for row in original_df._data]
+                new_columns = original_df.columns + ["batch_idx"]
+                new_df = DataFrame(data=new_data, columns=new_columns)
+                all_dfs_for_table.append(new_df)
+
+            if all_dfs_for_table:
+                # Concatenate the list of DataFrames into a single DataFrame.
+                concatenated_df = all_dfs_for_table[0].clone()
+                for df in all_dfs_for_table[1:]:
+                    concatenated_df = concatenated_df.concat(df)
+                batched_state[table_name] = concatenated_df
+
+    # Stack the policy and value targets into tensors.
+    policy_targets = torch.stack(list(policy_targets), 0)
+    value_targets = torch.stack(list(value_targets), 0)
+
+    return batched_state, policy_targets, value_targets
 
 
 class ReplayBufferDataset(Dataset):
@@ -298,6 +337,67 @@ class AlphaZeroAgent(BaseMCTSAgent):
             else:
                 self.train_replay_buffer.append(exp)
 
+    def _convert_state_df_to_tensors(
+        self, state_df: Dict[str, DataFrame]
+    ) -> Dict[str, torch.Tensor]:
+        """Converts a dictionary of batched DataFrames to a dictionary of tensors."""
+        network_spec = self.env.get_network_spec()
+        tensors = {}
+
+        game_df = state_df.get("game")
+        game_context_map = {}
+        if game_df:
+            # Create a map from batch_idx to a single-row DataFrame for that game's state
+            game_cols = game_df.columns
+            for row in game_df._data:
+                batch_idx = row[game_df._col_to_idx["batch_idx"]]
+                game_context_map[batch_idx] = DataFrame(data=[row], columns=game_cols)
+
+        for table_name, table_df in state_df.items():
+            for col_name in table_df.columns:
+                key = f"{table_name}_{col_name}"
+                raw_values = table_df[col_name]
+
+                # batch_idx is already a tensor, just move to device
+                if col_name == "batch_idx":
+                    tensors[key] = torch.tensor(
+                        raw_values, dtype=torch.long, device=self.device
+                    )
+                    continue
+
+                transform = network_spec.get("transforms", {}).get(col_name)
+                if transform and game_context_map:
+                    batch_indices = table_df["batch_idx"]
+                    transformed_values = []
+                    for val, batch_idx in zip(raw_values, batch_indices):
+                        # The state passed to transform only contains the 'game' table.
+                        # This is a simplification that works for connect4-style transforms.
+                        game_state_for_transform = {
+                            "game": game_context_map.get(batch_idx)
+                        }
+                        if game_state_for_transform["game"]:
+                            transformed_values.append(
+                                transform(val, game_state_for_transform)
+                            )
+                        else:
+                            transformed_values.append(val)  # Fallback
+                else:
+                    transformed_values = raw_values
+
+                cardinality = network_spec.get("cardinalities", {}).get(col_name)
+                if cardinality is not None:
+                    final_values = [
+                        v if v is not None else cardinality for v in transformed_values
+                    ]
+                else:
+                    final_values = transformed_values  # Assumes values are numerical
+
+                tensors[key] = torch.tensor(
+                    final_values, dtype=torch.long, device=self.device
+                )
+
+        return tensors
+
     def _calculate_loss(
         self, policy_logits, value_preds, policy_targets, value_targets
     ):
@@ -333,15 +433,17 @@ class AlphaZeroAgent(BaseMCTSAgent):
         )
         for batch_data in train_iterator:
             (
-                state_batch,
+                state_df_batch,
                 policy_targets_batch,
                 value_targets_batch,
             ) = batch_data
+
+            state_tensor_batch = self._convert_state_df_to_tensors(state_df_batch)
             policy_targets_batch = policy_targets_batch.to(self.device)
             value_targets_batch = value_targets_batch.to(self.device)
 
             self.optimizer.zero_grad()
-            policy_logits, value_preds = self.network(state_batch)
+            policy_logits, value_preds = self.network(state_tensor_batch)
             (
                 batch_loss,
                 value_loss,
@@ -381,13 +483,14 @@ class AlphaZeroAgent(BaseMCTSAgent):
         with torch.no_grad():
             for batch_data in val_loader:
                 (
-                    state_batch,
+                    state_df_batch,
                     policy_targets_batch,
                     value_targets_batch,
                 ) = batch_data
+                state_tensor_batch = self._convert_state_df_to_tensors(state_df_batch)
                 policy_targets_batch = policy_targets_batch.to(self.device)
                 value_targets_batch = value_targets_batch.to(self.device)
-                policy_logits, value_preds = self.network(state_batch)
+                policy_logits, value_preds = self.network(state_tensor_batch)
                 (
                     batch_loss,
                     value_loss,
@@ -529,6 +632,7 @@ class AlphaZeroAgent(BaseMCTSAgent):
             shuffle=True,
             num_workers=0,
             drop_last=True,
+            collate_fn=az_collate_fn,
         )
         val_loader = DataLoader(
             val_dataset,
@@ -536,6 +640,7 @@ class AlphaZeroAgent(BaseMCTSAgent):
             shuffle=False,
             num_workers=0,
             drop_last=False,
+            collate_fn=az_collate_fn,
         )
         logger.info(
             f"Training with {len(train_dataset)} samples, validating with {len(val_dataset)} samples."
