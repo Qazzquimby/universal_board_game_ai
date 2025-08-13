@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from environments.base import BaseEnvironment, StateType, StateWithKey
+from environments.base import BaseEnvironment, StateType, StateWithKey, ActionType
 
 
 class AlphaZeroNet(nn.Module):
@@ -145,12 +145,14 @@ class AlphaZeroNet(nn.Module):
             return policy_probs.cpu().numpy(), value
 
     def forward(
-        self, state_batch: dict
+        self, state_batch: dict, legal_actions: List[List[ActionType]]
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Performs a forward pass for a batch of states during training.
         The input is a dictionary of tensors, where each tensor represents a
         flattened column of data from all states in the batch.
+        `legal_actions` is a list of lists, where each inner list contains the
+        legal actions for a state in the batch.
         """
         device = self.get_device()
         all_tokens = []
@@ -224,19 +226,47 @@ class AlphaZeroNet(nn.Module):
         value_preds = self.value_head(game_token_output).squeeze(-1)
 
         # --- Policy Head ---
-        num_actions = self.env.num_action_types
-        action_indices = torch.arange(num_actions, device=device)
-        action_embs = self.action_embedding(action_indices)
-
-        game_token_expanded = game_token_output.unsqueeze(1).expand(
-            -1, num_actions, -1
+        policy_logits = torch.full(
+            (batch_size, self.env.num_action_types),
+            -torch.inf,
+            device=device,
         )
-        action_embs_expanded = action_embs.unsqueeze(0).expand(batch_size, -1, -1)
-        policy_input = torch.cat([game_token_expanded, action_embs_expanded], dim=-1)
 
-        policy_input_flat = policy_input.view(batch_size * num_actions, -1)
-        policy_logits_flat = self.policy_head(policy_input_flat)
-        policy_logits = policy_logits_flat.view(batch_size, num_actions)
+        batch_indices_for_policy = []
+        action_indices_for_policy = []
+
+        for i in range(batch_size):
+            if not legal_actions[i]:
+                continue
+
+            num_legal_actions = len(legal_actions[i])
+            batch_indices_for_policy.extend([i] * num_legal_actions)
+            action_indices_for_policy.extend(
+                [self.env.map_action_to_policy_index(a) for a in legal_actions[i]]
+            )
+
+        if batch_indices_for_policy:
+            batch_indices_tensor = torch.tensor(
+                batch_indices_for_policy, device=device, dtype=torch.long
+            )
+            action_indices_tensor = torch.tensor(
+                action_indices_for_policy, device=device, dtype=torch.long
+            )
+
+            # Select the corresponding state embeddings
+            state_embs_for_policy = game_token_output[batch_indices_tensor]
+
+            # Get action embeddings
+            action_embs_for_policy = self.action_embedding(action_indices_tensor)
+
+            # Combine and get scores
+            policy_input = torch.cat(
+                [state_embs_for_policy, action_embs_for_policy], dim=1
+            )
+            scores = self.policy_head(policy_input).squeeze(-1)
+
+            # Scatter scores back into the policy_logits tensor
+            policy_logits[batch_indices_tensor, action_indices_tensor] = scores
 
         return policy_logits, value_preds
 

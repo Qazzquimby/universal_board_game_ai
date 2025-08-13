@@ -38,6 +38,7 @@ def load_game_logs_into_buffer(agent: AlphaZeroAgent, env_name: str, buffer_limi
         return
 
     all_experiences = []
+    temp_env = agent.env.copy()
     for filepath in tqdm(log_files, desc="Scanning Logs"):
         if len(all_experiences) >= buffer_limit:
             break
@@ -58,12 +59,16 @@ def load_game_logs_into_buffer(agent: AlphaZeroAgent, env_name: str, buffer_limi
             ):
                 state = {
                     table_name: DataFrame(
-                        data=table_data.get("data"), columns=table_data.get("columns")
+                        data=table_data.get("_data"), columns=table_data.get("columns")
                     )
                     for table_name, table_data in state_json.items()
                 }
+                temp_env.set_state(state)
+                legal_actions = temp_env.get_legal_actions()
                 policy_target = np.array(policy_target_list, dtype=np.float32)
-                all_experiences.append((state, policy_target, value_target))
+                all_experiences.append(
+                    (state, policy_target, value_target, legal_actions)
+                )
 
     # Add to agent's buffers, which will handle shuffling, splitting, and capacity
     agent.add_experiences_to_buffer(all_experiences)
@@ -211,6 +216,7 @@ def run_self_play(
 
         while not state_with_key.done:
             state = state_with_key.state
+            legal_actions = game_env.get_legal_actions()
             action = agent.act(game_env, train=True)
 
             policy_target = np.zeros(game_env.num_action_types, dtype=np.float32)
@@ -232,7 +238,7 @@ def run_self_play(
             else:
                 raise TypeError(f"Unsupported agent type for self-play: {type(agent)}")
 
-            game_history.append((state, action, policy_target))
+            game_history.append((state, action, policy_target, legal_actions))
             action_result = game_env.step(action)
             state_with_key = action_result.next_state_with_key
 
@@ -319,6 +325,7 @@ def run_eval_against_benchmark(
             agent_for_turn = agents[player]
 
             state = state_with_key.state
+            legal_actions = game_env.get_legal_actions()
             action = agent_for_turn.act(game_env, train=False)
 
             policy_target = np.zeros(game_env.num_action_types, dtype=np.float32)
@@ -336,7 +343,7 @@ def run_eval_against_benchmark(
                             if idx is not None:
                                 policy_target[idx] = visits / total_visits
 
-            game_history.append((state, action, policy_target))
+            game_history.append((state, action, policy_target, legal_actions))
             action_result = game_env.step(action)
             state_with_key = action_result.next_state_with_key
 

@@ -40,7 +40,7 @@ def az_collate_fn(batch):
     Custom collate function to handle batches of experiences, where states are
     dictionaries of DataFrames.
     """
-    state_dicts, policy_targets, value_targets = zip(*batch)
+    state_dicts, policy_targets, value_targets, legal_actions_batch = zip(*batch)
 
     batched_state = {}
     if state_dicts:
@@ -71,7 +71,7 @@ def az_collate_fn(batch):
     policy_targets = torch.stack(list(policy_targets), 0)
     value_targets = torch.stack(list(value_targets), 0)
 
-    return batched_state, policy_targets, value_targets
+    return batched_state, policy_targets, value_targets, legal_actions_batch
 
 
 class ReplayBufferDataset(Dataset):
@@ -82,12 +82,13 @@ class ReplayBufferDataset(Dataset):
         return len(self.buffer_list)
 
     def __getitem__(self, idx):
-        state_dict, policy_target, value_target = self.buffer_list[idx]
+        state_dict, policy_target, value_target, legal_actions = self.buffer_list[idx]
 
         return (
             state_dict,
             torch.tensor(policy_target, dtype=torch.float32),
             torch.tensor([value_target], dtype=torch.float32),
+            legal_actions,
         )
 
 
@@ -95,7 +96,7 @@ class ReplayBufferDataset(Dataset):
 class EpisodeResult:
     """Holds the results of a finished self-play episode."""
 
-    buffer_experiences: List[Tuple[StateType, np.ndarray, float]]
+    buffer_experiences: List[Tuple[StateType, np.ndarray, float, List[ActionType]]]
     logged_history: List[Tuple[StateType, ActionType, np.ndarray, float]]
 
 
@@ -281,7 +282,7 @@ class AlphaZeroAgent(BaseMCTSAgent):
 
     def process_finished_episode(
         self,
-        game_history: List[Tuple[StateType, ActionType, np.ndarray]],
+        game_history: List[Tuple[StateType, ActionType, np.ndarray, List[ActionType]]],
         final_outcome: float,
     ) -> EpisodeResult:
         """
@@ -289,7 +290,7 @@ class AlphaZeroAgent(BaseMCTSAgent):
         Assigns the final outcome to all steps and prepares data for buffer and logging.
 
         Args:
-            game_history: A list of tuples (state, action, policy_target) for the episode.
+            game_history: A list of tuples (state, action, policy_target, legal_actions) for the episode.
             final_outcome: The outcome for player 0 (+1 win, -1 loss, 0 draw).
 
         Returns:
@@ -304,7 +305,9 @@ class AlphaZeroAgent(BaseMCTSAgent):
             logger.warning("process_finished_episode called with empty history.")
             return EpisodeResult(buffer_experiences=[], logged_history=[])
 
-        for i, (state_at_step, action_taken, policy_target) in enumerate(game_history):
+        for i, (state_at_step, action_taken, policy_target, legal_actions) in enumerate(
+            game_history
+        ):
             player_at_step = state_at_step["game"]["current_player"][0]
 
             if player_at_step == 0:
@@ -315,7 +318,9 @@ class AlphaZeroAgent(BaseMCTSAgent):
                 assert False
 
             buffer_state = state_at_step.copy()
-            buffer_experiences.append((buffer_state, policy_target, value_target))
+            buffer_experiences.append(
+                (buffer_state, policy_target, value_target, legal_actions)
+            )
 
             logged_history.append(
                 (state_at_step, action_taken, policy_target, value_target)
@@ -326,7 +331,7 @@ class AlphaZeroAgent(BaseMCTSAgent):
         )
 
     def add_experiences_to_buffer(
-        self, experiences: List[Tuple[StateType, np.ndarray, float]]
+        self, experiences: List[Tuple[StateType, np.ndarray, float, List[ActionType]]]
     ):
         """Adds a list of experiences to the replay buffer, splitting it between train and val sets."""
         random.shuffle(experiences)
@@ -401,7 +406,7 @@ class AlphaZeroAgent(BaseMCTSAgent):
     def _calculate_loss(
         self, policy_logits, value_preds, policy_targets, value_targets
     ):
-        value_loss = F.mse_loss(value_preds, value_targets)
+        value_loss = F.mse_loss(value_preds, value_targets.squeeze(-1))
         policy_loss = F.cross_entropy(policy_logits, policy_targets)
         total_loss = (self.config.value_loss_weight * value_loss) + policy_loss
 
@@ -436,6 +441,7 @@ class AlphaZeroAgent(BaseMCTSAgent):
                 state_df_batch,
                 policy_targets_batch,
                 value_targets_batch,
+                legal_actions_batch,
             ) = batch_data
 
             state_tensor_batch = self._convert_state_df_to_tensors(state_df_batch)
@@ -443,7 +449,9 @@ class AlphaZeroAgent(BaseMCTSAgent):
             value_targets_batch = value_targets_batch.to(self.device)
 
             self.optimizer.zero_grad()
-            policy_logits, value_preds = self.network(state_tensor_batch)
+            policy_logits, value_preds = self.network(
+                state_tensor_batch, legal_actions=legal_actions_batch
+            )
             (
                 batch_loss,
                 value_loss,
@@ -486,11 +494,14 @@ class AlphaZeroAgent(BaseMCTSAgent):
                     state_df_batch,
                     policy_targets_batch,
                     value_targets_batch,
+                    legal_actions_batch,
                 ) = batch_data
                 state_tensor_batch = self._convert_state_df_to_tensors(state_df_batch)
                 policy_targets_batch = policy_targets_batch.to(self.device)
                 value_targets_batch = value_targets_batch.to(self.device)
-                policy_logits, value_preds = self.network(state_tensor_batch)
+                policy_logits, value_preds = self.network(
+                    state_tensor_batch, legal_actions=legal_actions_batch
+                )
                 (
                     batch_loss,
                     value_loss,
