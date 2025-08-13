@@ -364,7 +364,7 @@ class UniformExpansion(ExpansionStrategy):
     """Expands a node by creating children for all legal actions with uniform priors."""
 
     def expand(self, node: MCTSNode, env_at_node: BaseEnvironment) -> None:
-        if node.is_expanded or env_at_node.is_done():
+        if node.is_expanded or env_at_node.is_done:
             return
 
         legal_actions = env_at_node.get_legal_actions()

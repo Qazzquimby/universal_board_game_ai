@@ -124,7 +124,7 @@ class AlphaZeroEvaluation(EvaluationStrategy):
         self.network = network
 
     def evaluate(self, node: "MCTSNode", env: BaseEnvironment) -> float:
-        if env.is_done():
+        if env.is_done:
             return env.get_reward_for_player(player=env.get_current_player())
 
         _, value = get_policy_value(network=self.network, node=node)
@@ -205,6 +205,7 @@ class AlphaZeroAgent(BaseMCTSAgent):
             if not legal_actions:
                 logger.warning("No legal actions from a non-expanded root. Cannot act.")
                 return None
+            self.search(env=env, train=train)  # for debugging
             raise RuntimeError(
                 f"Search finished but root has no edges. Legal actions: {legal_actions}"
             )
@@ -282,7 +283,7 @@ class AlphaZeroAgent(BaseMCTSAgent):
 
     def process_finished_episode(
         self,
-        game_history: List[Tuple[StateType, ActionType, np.ndarray, List[ActionType]]],
+        game_history: List[Tuple[StateType, ActionType, np.ndarray]],
         final_outcome: float,
     ) -> EpisodeResult:
         """
@@ -305,9 +306,14 @@ class AlphaZeroAgent(BaseMCTSAgent):
             logger.warning("process_finished_episode called with empty history.")
             return EpisodeResult(buffer_experiences=[], logged_history=[])
 
-        for i, (state_at_step, action_taken, policy_target, legal_actions) in enumerate(
-            game_history
-        ):
+        for i, (state_at_step, action_taken, policy_target) in enumerate(game_history):
+            legal_actions_df = state_at_step.get("legal_actions")
+            if legal_actions_df is None or legal_actions_df.is_empty():
+                continue
+
+            # Reconstruct the list of legal actions from the DataFrame
+            legal_actions = [row[0] for row in legal_actions_df.rows()]
+
             player_at_step = state_at_step["game"]["current_player"][0]
 
             if player_at_step == 0:

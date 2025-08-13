@@ -175,6 +175,7 @@ class BaseEnvironment(abc.ABC):
         self.state = state_with_key.state
         return state_with_key
 
+    @property
     def is_done(self) -> bool:
         return self.state["game"]["done"][0]
 

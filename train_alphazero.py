@@ -63,8 +63,13 @@ def load_game_logs_into_buffer(agent: AlphaZeroAgent, env_name: str, buffer_limi
                     )
                     for table_name, table_data in state_json.items()
                 }
-                temp_env.set_state(state)
-                legal_actions = temp_env.get_legal_actions()
+                legal_actions_df = state.get("legal_actions")
+                if legal_actions_df is None or legal_actions_df.is_empty():
+                    continue
+
+                # Reconstruct the list of legal actions from the DataFrame
+                legal_actions = [row[0] for row in legal_actions_df.rows()]
+
                 policy_target = np.array(policy_target_list, dtype=np.float32)
                 all_experiences.append(
                     (state, policy_target, value_target, legal_actions)
@@ -238,7 +243,19 @@ def run_self_play(
             else:
                 raise TypeError(f"Unsupported agent type for self-play: {type(agent)}")
 
-            game_history.append((state, action, policy_target, legal_actions))
+            state_with_actions = state.copy()
+            if legal_actions:
+                # Assuming actions are simple (int or tuple) and can be in one column
+                action_data = [[a] for a in legal_actions]
+                state_with_actions["legal_actions"] = DataFrame(
+                    data=action_data, columns=["action_id"]
+                )
+            else:
+                state_with_actions["legal_actions"] = DataFrame(
+                    data=[], columns=["action_id"]
+                )
+
+            game_history.append((state_with_actions, action, policy_target))
             action_result = game_env.step(action)
             state_with_key = action_result.next_state_with_key
 
@@ -343,7 +360,17 @@ def run_eval_against_benchmark(
                             if idx is not None:
                                 policy_target[idx] = visits / total_visits
 
-            game_history.append((state, action, policy_target, legal_actions))
+            state_with_actions = state.copy()
+            if legal_actions:
+                action_data = [[a] for a in legal_actions]
+                state_with_actions["legal_actions"] = DataFrame(
+                    data=action_data, columns=["action_id"]
+                )
+            else:
+                state_with_actions["legal_actions"] = DataFrame(
+                    data=[], columns=["action_id"]
+                )
+            game_history.append((state_with_actions, action, policy_target))
             action_result = game_env.step(action)
             state_with_key = action_result.next_state_with_key
 
