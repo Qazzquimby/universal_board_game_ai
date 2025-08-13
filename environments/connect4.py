@@ -21,15 +21,6 @@ class Connect4(BaseEnvironment):
         super().__init__()
         self.reset()
 
-    @property
-    def num_action_types(self) -> int:
-        return self.width
-
-    def map_action_to_policy_index(self, action: ColumnActionType) -> Optional[int]:
-        return action
-
-    def map_policy_index_to_action(self, index: int) -> Optional[ColumnActionType]:
-        return index
 
     def _reset(self) -> StateWithKey:
         self.state = {
@@ -185,6 +176,7 @@ class Connect4(BaseEnvironment):
     def get_network_spec(self) -> dict:
         """Returns the network specification for Connect4."""
         return {
+            "action_space": {"components": ["col"]},
             "tables": {
                 "pieces": {"columns": ["row", "col", "player_id"]},
                 "game": {"columns": ["current_player", "done", "winner"]},

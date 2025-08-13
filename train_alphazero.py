@@ -224,10 +224,10 @@ def run_self_play(
             legal_actions = game_env.get_legal_actions()
             action = agent.act(game_env, train=True)
 
-            policy_target = np.zeros(game_env.num_action_types, dtype=np.float32)
             if isinstance(agent, AlphaZeroAgent):
-                policy_target = agent.get_policy_target()
+                policy_target = agent.get_policy_target(legal_actions)
             elif isinstance(agent, MCTSAgent):
+                policy_target = np.zeros(len(legal_actions), dtype=np.float32)
                 if not agent.root:
                     raise RuntimeError("MCTSAgent has no root after act()")
                 action_visits = {
@@ -236,10 +236,15 @@ def run_self_play(
                 }
                 total_visits = sum(action_visits.values())
                 if total_visits > 0:
-                    for act_key, visits in action_visits.items():
-                        action_idx = game_env.map_action_to_policy_index(act_key)
-                        if action_idx is not None:
-                            policy_target[action_idx] = visits / total_visits
+                    # Create a dictionary of visit probabilities
+                    visit_probs = {
+                        act: visits / total_visits
+                        for act, visits in action_visits.items()
+                    }
+                    # Populate policy_target based on the order of legal_actions
+                    for i, act in enumerate(legal_actions):
+                        act_key = tuple(act) if isinstance(act, list) else act
+                        policy_target[i] = visit_probs.get(act_key, 0.0)
             else:
                 raise TypeError(f"Unsupported agent type for self-play: {type(agent)}")
 
@@ -345,20 +350,22 @@ def run_eval_against_benchmark(
             legal_actions = game_env.get_legal_actions()
             action = agent_for_turn.act(game_env, train=False)
 
-            policy_target = np.zeros(game_env.num_action_types, dtype=np.float32)
             if isinstance(agent_for_turn, AlphaZeroAgent):
-                policy_target = agent_for_turn.get_policy_target()
+                policy_target = agent_for_turn.get_policy_target(legal_actions)
             elif isinstance(agent_for_turn, MCTSAgent):
+                policy_target = np.zeros(len(legal_actions), dtype=np.float32)
                 if agent_for_turn.root:
                     action_visits = {
                         k: v.num_visits for k, v in agent_for_turn.root.edges.items()
                     }
                     total_visits = sum(action_visits.values())
                     if total_visits > 0:
-                        for act_key, visits in action_visits.items():
-                            idx = game_env.map_action_to_policy_index(act_key)
-                            if idx is not None:
-                                policy_target[idx] = visits / total_visits
+                        visit_probs = {
+                            k: v / total_visits for k, v in action_visits.items()
+                        }
+                        for i, act in enumerate(legal_actions):
+                            act_key = tuple(act) if isinstance(act, list) else act
+                            policy_target[i] = visit_probs.get(act_key, 0.0)
 
             state_with_actions = state.copy()
             if legal_actions:
@@ -424,8 +431,11 @@ def run_sanity_checks(env: BaseEnvironment, agent: AlphaZeroAgent):
         temp_env.set_state(check_case.state_with_key.state)
         temp_env.render()
 
+        legal_actions = temp_env.get_legal_actions()
         try:
-            policy_np, value_np = agent.network.predict(check_case.state_with_key)
+            policy_dict, value_np = agent.network.predict(
+                check_case.state_with_key, legal_actions
+            )
             if check_case.expected_value is None:
                 logger.info(f"  Value: Predicted={value_np:.4f}")
             else:
@@ -433,30 +443,19 @@ def run_sanity_checks(env: BaseEnvironment, agent: AlphaZeroAgent):
                     f"  Value: Expected={check_case.expected_value:.1f}, Predicted={value_np:.4f}"
                 )
 
-            legal_actions = temp_env.get_legal_actions()
-
-            action_probs = {}
-            for action in legal_actions:
-                idx = temp_env.map_action_to_policy_index(action)
-                if idx is not None and 0 <= idx < len(policy_np):
-                    action_probs[action] = policy_np[idx]
-                else:
-                    action_probs[action] = -1  # Indicate mapping error
+            action_probs = policy_dict
 
             sorted_probs = sorted(
                 action_probs.items(), key=lambda item: item[1], reverse=True
             )
 
             logger.info(f"  Predicted Probabilities for Legal Actions:")
-            if not legal_actions:
+            if not sorted_probs:
                 logger.info("    - (No legal actions)")
             else:
                 for action, prob in sorted_probs:
-                    if prob >= 0:
-                        highlight = " <<< BEST" if action == sorted_probs[0][0] else ""
-                        logger.info(f"    - {action}: {prob:.4f}{highlight}")
-                    else:
-                        logger.info(f"    - {action}: (Error mapping action)")
+                    highlight = " <<< BEST" if action == sorted_probs[0][0] else ""
+                    logger.info(f"    - {action}: {prob:.4f}{highlight}")
 
         except Exception as e:
             logger.error(f"  Error during prediction for this state: {e}")

@@ -1,4 +1,4 @@
-from typing import List, Tuple
+from typing import List, Tuple, Dict
 
 import numpy as np
 import torch
@@ -34,8 +34,6 @@ class AlphaZeroNet(nn.Module):
             self.embedding_layers[feature] = nn.Embedding(
                 cardinality + 1, embedding_dim
             )
-
-        self.action_embedding = nn.Embedding(env.num_action_types, embedding_dim)
 
         # --- Transformer ---
         encoder_layer = nn.TransformerEncoderLayer(
@@ -91,6 +89,23 @@ class AlphaZeroNet(nn.Module):
 
         return torch.cat(all_tokens, dim=0).unsqueeze(0)  # (1, num_tokens, dim)
 
+    def _action_to_token(self, action: ActionType) -> torch.Tensor:
+        """Converts a single action into an embedding token."""
+        device = self.get_device()
+        action_embedding = torch.zeros(1, self.embedding_dim, device=device)
+        action_spec = self.network_spec["action_space"]
+        action_components = action_spec["components"]
+
+        # Handle simple actions (like int for Connect4)
+        if not isinstance(action, (list, tuple)):
+            action = [action]
+
+        for i, comp_name in enumerate(action_components):
+            val = action[i]
+            val_tensor = torch.tensor([val], device=device, dtype=torch.long)
+            action_embedding += self.embedding_layers[comp_name](val_tensor)
+        return action_embedding.squeeze(0)  # (dim,)
+
     def _get_state_embedding_and_value(
         self, state: StateType
     ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -107,9 +122,12 @@ class AlphaZeroNet(nn.Module):
         value = self.value_head(game_token_output)
         return game_token_output, value
 
-    def predict(self, state_with_key: StateWithKey) -> Tuple[np.ndarray, float]:
+    def predict(
+        self, state_with_key: StateWithKey, legal_actions: List[ActionType]
+    ) -> Tuple[Dict[ActionType, float], float]:
         """
         Performs a forward pass for a single state during MCTS search.
+        Returns a dictionary of action priors and a value estimate.
         """
         self.eval()
         with torch.no_grad():
@@ -117,32 +135,22 @@ class AlphaZeroNet(nn.Module):
             game_embedding, value_tensor = self._get_state_embedding_and_value(state)
             value = value_tensor.squeeze().cpu().item()
 
-            legal_actions = self.env.get_legal_actions()
             if not legal_actions:
-                policy = np.zeros(self.env.num_action_types)
-                return policy, value
+                return {}, value
 
             # Score legal actions
-            action_indices = [
-                self.env.map_action_to_policy_index(a) for a in legal_actions
-            ]
-            action_indices_tensor = torch.tensor(
-                action_indices, device=self.get_device(), dtype=torch.long
+            action_tokens = torch.stack(
+                [self._action_to_token(a) for a in legal_actions]
             )
-            action_embs = self.action_embedding(action_indices_tensor)
-
             state_embedding_expanded = game_embedding.expand(len(legal_actions), -1)
-            policy_input = torch.cat([state_embedding_expanded, action_embs], dim=1)
+            policy_input = torch.cat([state_embedding_expanded, action_tokens], dim=1)
             scores = self.policy_head(policy_input).squeeze(-1)
+            policy_probs = F.softmax(scores, dim=0)
 
-            # Create full policy vector
-            policy_logits = torch.full(
-                (self.env.num_action_types,), -torch.inf, device=self.get_device()
-            )
-            policy_logits[action_indices] = scores
-            policy_probs = F.softmax(policy_logits, dim=0)
-
-            return policy_probs.cpu().numpy(), value
+            policy_dict = {
+                action: prob.item() for action, prob in zip(legal_actions, policy_probs)
+            }
+            return policy_dict, value
 
     def forward(
         self, state_batch: dict, legal_actions: List[List[ActionType]]
@@ -191,9 +199,10 @@ class AlphaZeroNet(nn.Module):
             batch_size = state_batch["game_current_player"].shape[0]
 
         if batch_size == 0:
-            policy_logits = torch.empty(0, self.env.num_action_types, device=device)
-            value_preds = torch.empty(0, device=device)
-            return policy_logits, value_preds
+            # Cannot process anything, return empty tensors.
+            # Note: The dimensions might need adjustment depending on the loss function.
+            # Here, we return 1D value preds and 2D policy logits.
+            return torch.empty(0, 0, device=device), torch.empty(0, device=device)
 
         if all_tokens:
             token_tensor = torch.cat(all_tokens, dim=0)
@@ -226,47 +235,58 @@ class AlphaZeroNet(nn.Module):
         value_preds = self.value_head(game_token_output).squeeze(-1)
 
         # --- Policy Head ---
-        policy_logits = torch.full(
-            (batch_size, self.env.num_action_types),
-            -torch.inf,
-            device=device,
-        )
+        # This part becomes more complex because each item in the batch can have a
+        # different number of legal actions. We process them all together and then
+        # group the results.
 
+        flat_action_tokens = []
         batch_indices_for_policy = []
-        action_indices_for_policy = []
-
         for i in range(batch_size):
             if not legal_actions[i]:
                 continue
-
-            num_legal_actions = len(legal_actions[i])
-            batch_indices_for_policy.extend([i] * num_legal_actions)
-            action_indices_for_policy.extend(
-                [self.env.map_action_to_policy_index(a) for a in legal_actions[i]]
+            action_tokens = torch.stack(
+                [self._action_to_token(a) for a in legal_actions[i]]
             )
+            flat_action_tokens.append(action_tokens)
+            batch_indices_for_policy.extend([i] * len(legal_actions[i]))
 
-        if batch_indices_for_policy:
-            batch_indices_tensor = torch.tensor(
-                batch_indices_for_policy, device=device, dtype=torch.long
-            )
-            action_indices_tensor = torch.tensor(
-                action_indices_for_policy, device=device, dtype=torch.long
-            )
+        if not batch_indices_for_policy:
+            # If no legal actions in the entire batch, return empty logits.
+            # This needs to be handled by the caller/loss function.
+            return torch.empty(batch_size, 0, device=device), value_preds
 
-            # Select the corresponding state embeddings
-            state_embs_for_policy = game_token_output[batch_indices_tensor]
+        flat_action_tokens_tensor = torch.cat(flat_action_tokens, dim=0)
+        batch_indices_tensor = torch.tensor(
+            batch_indices_for_policy, device=device, dtype=torch.long
+        )
 
-            # Get action embeddings
-            action_embs_for_policy = self.action_embedding(action_indices_tensor)
+        # Select the corresponding state embeddings for each action
+        state_embs_for_policy = game_token_output[batch_indices_tensor]
 
-            # Combine and get scores
-            policy_input = torch.cat(
-                [state_embs_for_policy, action_embs_for_policy], dim=1
-            )
-            scores = self.policy_head(policy_input).squeeze(-1)
+        # Combine state and action embeddings and get scores
+        policy_input = torch.cat(
+            [state_embs_for_policy, flat_action_tokens_tensor], dim=1
+        )
+        scores = self.policy_head(policy_input).squeeze(-1)
 
-            # Scatter scores back into the policy_logits tensor
-            policy_logits[batch_indices_tensor, action_indices_tensor] = scores
+        # The output `scores` is a flat tensor. The loss function will need to
+        # handle this. We'll return the raw scores and let the loss function apply softmax.
+        # However, CrossEntropyLoss expects logits in a (N, C) tensor.
+        # We will pad the scores for each batch item.
+        scores_by_item = []
+        start_idx = 0
+        for i in range(batch_size):
+            num_actions = len(legal_actions[i])
+            if num_actions > 0:
+                scores_by_item.append(scores[start_idx : start_idx + num_actions])
+                start_idx += num_actions
+            else:
+                scores_by_item.append(torch.empty(0, device=device))
+
+        # Pad the list of score tensors to create a single (batch_size, max_actions) tensor.
+        policy_logits = nn.utils.rnn.pad_sequence(
+            scores_by_item, batch_first=True, padding_value=-torch.inf
+        )
 
         return policy_logits, value_preds
 

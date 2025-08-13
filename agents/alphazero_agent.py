@@ -67,8 +67,10 @@ def az_collate_fn(batch):
                     concatenated_df = concatenated_df.concat(df)
                 batched_state[table_name] = concatenated_df
 
-    # Stack the policy and value targets into tensors.
-    policy_targets = torch.stack(list(policy_targets), 0)
+    # Pad the policy targets to have the same length.
+    policy_targets = nn.utils.rnn.pad_sequence(
+        list(policy_targets), batch_first=True, padding_value=0.0
+    )
     value_targets = torch.stack(list(value_targets), 0)
 
     return batched_state, policy_targets, value_targets, legal_actions_batch
@@ -127,7 +129,7 @@ class AlphaZeroEvaluation(EvaluationStrategy):
         if env.is_done:
             return env.get_reward_for_player(player=env.get_current_player())
 
-        _, value = get_policy_value(network=self.network, node=node)
+        _, value = get_policy_value(network=self.network, node=node, env=env)
 
         return float(value)
 
@@ -140,15 +142,11 @@ class AlphaZeroExpansion(ExpansionStrategy):
         if node.is_expanded or env.is_done:
             return
 
-        policy_np, _ = get_policy_value(network=self.network, node=node)
+        policy_dict, _ = get_policy_value(network=self.network, node=node, env=env)
 
-        legal_actions = env.get_legal_actions()
-        for action in legal_actions:
-            action_idx = env.map_action_to_policy_index(action)
-            if action_idx is not None:
-                prior = policy_np[action_idx]
-                action_key = tuple(action) if isinstance(action, list) else action
-                node.edges[action_key] = Edge(prior=prior)
+        for action, prior in policy_dict.items():
+            action_key = tuple(action) if isinstance(action, list) else action
+            node.edges[action_key] = Edge(prior=prior)
         node.is_expanded = True
 
 
@@ -236,32 +234,46 @@ class AlphaZeroAgent(BaseMCTSAgent):
 
         return chosen_action
 
-    def get_policy_target(self) -> np.ndarray:
+    def get_policy_target(self, legal_actions: List[ActionType]) -> np.ndarray:
         """
-        Returns the policy target vector based on the visit counts from the last search.
-        This should be called after `act()` to get the data for training.
+        Returns the policy target vector based on the visit counts from the last search,
+        ordered according to the provided legal_actions list.
         """
         if not self.root:
             raise RuntimeError(
                 "Must run `act()` to perform a search before getting a policy target."
             )
 
-        policy_vector = np.zeros(self.env.num_action_types, dtype=np.float32)
         if not self.root.edges:
-            return policy_vector  # Return zeros if no actions were possible/explored
+            # If there are no edges, it implies no actions were explored, possibly because
+            # it's a terminal state. The policy target should be uniform or zero,
+            # but it must match the length of legal_actions.
+            if not legal_actions:
+                return np.array([], dtype=np.float32)
+            # This case might indicate an issue, but we return a uniform distribution
+            # to avoid crashing.
+            return np.ones(len(legal_actions), dtype=np.float32) / len(legal_actions)
 
         action_visits: Dict[ActionType, int] = {
             action: edge.num_visits for action, edge in self.root.edges.items()
         }
-        visits = np.array(list(action_visits.values()), dtype=np.float64)
-        visit_sum = np.sum(visits)
+        total_visits = sum(action_visits.values())
 
-        if visit_sum > 0:
-            for action, visit_count in action_visits.items():
-                action_idx = self.env.map_action_to_policy_index(action)
-                if action_idx is not None:
-                    policy_vector[action_idx] = visit_count / visit_sum
-        return policy_vector
+        if total_visits == 0:
+            return np.ones(len(legal_actions), dtype=np.float32) / len(legal_actions)
+
+        # Create the policy target vector, ensuring the order matches legal_actions.
+        policy_target = np.zeros(len(legal_actions), dtype=np.float32)
+        for i, action in enumerate(legal_actions):
+            action_key = tuple(action) if isinstance(action, list) else action
+            visit_count = action_visits.get(action_key, 0)
+            policy_target[i] = visit_count / total_visits
+
+        # Normalize again to be safe, although it should sum to 1.
+        if np.sum(policy_target) > 0:
+            policy_target /= np.sum(policy_target)
+
+        return policy_target
 
     def _expand_leaf(self, leaf_node: MCTSNode, leaf_env: BaseEnvironment, train: bool):
         if not leaf_node.is_expanded and not leaf_env.is_done:
@@ -413,15 +425,31 @@ class AlphaZeroAgent(BaseMCTSAgent):
         self, policy_logits, value_preds, policy_targets, value_targets
     ):
         value_loss = F.mse_loss(value_preds, value_targets.squeeze(-1))
-        policy_loss = F.cross_entropy(policy_logits, policy_targets)
+
+        # Policy loss for padded sequences
+        log_probs = F.log_softmax(policy_logits, dim=1)
+        safe_log_probs = torch.where(log_probs == -torch.inf, 0.0, log_probs)
+        policy_loss_per_item = -torch.sum(policy_targets * safe_log_probs, dim=1)
+        policy_loss = policy_loss_per_item.mean()
+
         total_loss = (self.config.value_loss_weight * value_loss) + policy_loss
 
         value_mse = value_loss.item()
-        _, predicted_policy_indices = torch.max(policy_logits, 1)
-        _, target_policy_indices = torch.max(policy_targets, 1)
-        policy_acc = (
-            (predicted_policy_indices == target_policy_indices).float().sum().item()
-        )
+
+        # Accuracy calculation for padded sequences
+        predicted_indices = torch.argmax(policy_logits, dim=1)
+        target_indices = torch.argmax(policy_targets, dim=1)
+
+        # Only calculate accuracy for samples that have legal actions
+        has_legal_actions = torch.any(policy_logits != -torch.inf, dim=1)
+        num_valid_samples = has_legal_actions.sum().item()
+
+        if num_valid_samples > 0:
+            policy_acc = (
+                (predicted_indices == target_indices)[has_legal_actions].sum().item()
+            )
+        else:
+            policy_acc = 0
 
         return total_loss, value_loss, policy_loss, policy_acc, value_mse
 
@@ -790,15 +818,16 @@ def make_pure_az(
     )
 
 
-def get_policy_value(network: nn.Module, node: "MCTSNode"):
+def get_policy_value(network: nn.Module, node: "MCTSNode", env: BaseEnvironment):
     key = node.state_with_key.key
     cached_result = network.cache.get(key)
 
     if cached_result:
-        policy_np, value = cached_result
+        policy_dict, value = cached_result
     else:
         network.eval()
         with torch.no_grad():
-            policy_np, value = network.predict(node.state_with_key)
-        network.cache[key] = (policy_np, value)
-    return policy_np, value
+            legal_actions = env.get_legal_actions()
+            policy_dict, value = network.predict(node.state_with_key, legal_actions)
+        network.cache[key] = (policy_dict, value)
+    return policy_dict, value

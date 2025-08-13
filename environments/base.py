@@ -147,21 +147,6 @@ class BaseEnvironment(abc.ABC):
         self._state_with_key: Optional[StateWithKey] = None
         self.state: Optional[StateType] = None
 
-    @abc.abstractmethod
-    def map_action_to_policy_index(self, action: ActionType) -> Optional[int]:
-        """Maps a specific action to its index in the policy output array."""
-        pass
-
-    @abc.abstractmethod
-    def map_policy_index_to_action(self, index: int) -> Optional[ActionType]:
-        """Maps a policy index back to a specific action."""
-        pass
-
-    @property
-    @abc.abstractmethod
-    def num_action_types(self) -> int:
-        """The total number of distinct actions possible in the game."""
-        pass
 
     def reset(self) -> StateWithKey:
         """
@@ -297,6 +282,6 @@ class BaseEnvironment(abc.ABC):
     def get_network_spec(self) -> Dict:
         """
         Returns a specification for the network architecture.
-        This includes table schemas and feature cardinalities.
+        This includes table schemas, feature cardinalities, and action space information.
         """
         pass
