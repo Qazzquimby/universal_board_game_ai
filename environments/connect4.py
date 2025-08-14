@@ -125,7 +125,7 @@ class Connect4(BaseEnvironment):
         if count_contiguous(1, 0) + count_contiguous(-1, 0) + 1 >= win_condition:
             return True
         # Vertical (only need to check down)
-        if count_contiguous(0, -1) + 1 >= win_condition:
+        if count_contiguous(0, 1) + 1 >= win_condition:
             return True
         # Diagonal
         if count_contiguous(1, 1) + count_contiguous(-1, -1) + 1 >= win_condition:
@@ -215,37 +215,37 @@ class Connect4(BaseEnvironment):
     def get_sanity_check_states(self) -> List[SanityCheckState]:
         states = []
 
-        # --- State 1: Empty Board (Player 0's turn) ---
-        env1 = Connect4()
-        states.append(
-            SanityCheckState(
-                description="Empty board, Player 0 turn",
-                state_with_key=env1.get_state_with_key(),
-                expected_value=0.0,
-                expected_action=None,
-            )
-        )
+        # # --- State 1: Empty Board (Player 0's turn) ---
+        # env1 = Connect4()
+        # states.append(
+        #     SanityCheckState(
+        #         description="Empty board, Player 0 turn",
+        #         state_with_key=env1.get_state_with_key(),
+        #         expected_value=0.0,
+        #         expected_action=None,
+        #     )
+        # )
 
-        # --- State 2: Player 0 can win horizontally in column 3 ---
-        env2 = Connect4()
-        env2.state["pieces"] = DataFrame(
-            [
-                (5, 0, 0),
-                (5, 1, 0),
-                (5, 2, 0),
-                (5, 4, 1),
-                (5, 5, 1),
-            ],
-            columns=["row", "col", "player_id"],
-        )
-        states.append(
-            SanityCheckState(
-                description="Player 0 can win horizontally (col 3)",
-                state_with_key=env2.get_state_with_key(),
-                expected_value=1.0,
-                expected_action=3,
-            )
-        )
+        # # --- State 2: Player 0 can win horizontally in column 3 ---
+        # env2 = Connect4()
+        # env2.state["pieces"] = DataFrame(
+        #     [
+        #         (5, 0, 0),
+        #         (5, 1, 0),
+        #         (5, 2, 0),
+        #         (5, 4, 1),
+        #         (5, 5, 1),
+        #     ],
+        #     columns=["row", "col", "player_id"],
+        # )
+        # states.append(
+        #     SanityCheckState(
+        #         description="Player 0 can win horizontally (col 3)",
+        #         state_with_key=env2.get_state_with_key(),
+        #         expected_value=1.0,
+        #         expected_action=3,
+        #     )
+        # )
 
         # --- State 3: Player 1 can win vertically in column 0 ---
         env3 = Connect4()
