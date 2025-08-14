@@ -51,11 +51,47 @@ class AlphaZeroNet(nn.Module):
             nn.Linear(policy_input_dim, 64), nn.ReLU(), nn.Linear(64, 1)
         )
 
+    def _apply_transforms(self, state: StateType) -> StateType:
+        """Applies transformations to a state dictionary of DataFrames, returning a new state dict."""
+        transformed_state = {}
+        transforms = self.network_spec.get("transforms", {})
+
+        for table_name, df in state.items():
+            if df is None or df.is_empty():
+                transformed_state[table_name] = df
+                continue
+
+            table_spec = self.network_spec["tables"].get(table_name)
+            if not table_spec:
+                transformed_state[table_name] = df
+                continue
+
+            columns_to_update = {}
+            for col_name in table_spec["columns"]:
+                if col_name in df.columns:
+                    transform = transforms.get(col_name)
+                    if transform:
+                        original_values = df[col_name]
+                        # The transform function needs the original state.
+                        transformed_values = [
+                            transform(val, state) for val in original_values
+                        ]
+                        columns_to_update[col_name] = transformed_values
+
+            if columns_to_update:
+                transformed_state[table_name] = df.with_columns(columns_to_update)
+            else:
+                transformed_state[table_name] = df
+
+        return transformed_state
+
     def _state_to_tokens(self, state: StateType) -> torch.Tensor:
-        """Converts a game state (dict of DataFrames) into a tensor of token embeddings."""
+        """
+        Converts a game state (dict of DataFrames) into a tensor of token embeddings.
+        Assumes that any necessary transformations have already been applied to the state.
+        """
         device = self.get_device()
         all_tokens = []
-        transforms = self.network_spec.get("transforms", {})
 
         for table_name, table_spec in self.network_spec["tables"].items():
             df = state.get(table_name)
@@ -69,10 +105,6 @@ class AlphaZeroNet(nn.Module):
                 token_embedding = torch.zeros(1, self.embedding_dim, device=device)
                 for i, col_name in enumerate(columns):
                     val = row_data[i]
-
-                    transform = transforms.get(col_name)
-                    if transform:
-                        val = transform(val, state)
 
                     if val is None:
                         # Use max cardinality index for None
@@ -131,7 +163,7 @@ class AlphaZeroNet(nn.Module):
         """
         self.eval()
         with torch.no_grad():
-            state = state_with_key.state
+            state = self._apply_transforms(state_with_key.state)
             game_embedding, value_tensor = self._get_state_embedding_and_value(state)
             value = value_tensor.squeeze().cpu().item()
 

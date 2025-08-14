@@ -335,9 +335,9 @@ class AlphaZeroAgent(BaseMCTSAgent):
             else:
                 assert False
 
-            buffer_state = state_at_step.copy()
+            transformed_state = self.network._apply_transforms(state_at_step)
             buffer_experiences.append(
-                (buffer_state, policy_target, value_target, legal_actions)
+                (transformed_state, policy_target, value_target, legal_actions)
             )
 
             logged_history.append(
@@ -388,24 +388,7 @@ class AlphaZeroAgent(BaseMCTSAgent):
                     )
                     continue
 
-                transform = network_spec.get("transforms", {}).get(col_name)
-                if transform and game_context_map:
-                    batch_indices = table_df["batch_idx"]
-                    transformed_values = []
-                    for val, batch_idx in zip(raw_values, batch_indices):
-                        # The state passed to transform only contains the 'game' table.
-                        # This is a simplification that works for connect4-style transforms.
-                        game_state_for_transform = {
-                            "game": game_context_map.get(batch_idx)
-                        }
-                        if game_state_for_transform["game"]:
-                            transformed_values.append(
-                                transform(val, game_state_for_transform)
-                            )
-                        else:
-                            transformed_values.append(val)  # Fallback
-                else:
-                    transformed_values = raw_values
+                transformed_values = raw_values
 
                 cardinality = network_spec.get("cardinalities", {}).get(col_name)
                 if cardinality is not None:
@@ -818,7 +801,7 @@ def make_pure_az(
     )
 
 
-def get_policy_value(network: nn.Module, node: "MCTSNode", env: BaseEnvironment):
+def get_policy_value(network: AlphaZeroNet, node: "MCTSNode", env: BaseEnvironment):
     key = node.state_with_key.key
     cached_result = network.cache.get(key)
 
