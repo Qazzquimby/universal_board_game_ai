@@ -63,25 +63,25 @@ class DataFrame:
         return DataFrame(data=new_data, columns=self.columns)
 
     def with_columns(self, updates_dict):
-        # This is a simplified version for single-row dataframe, as used in Connect4
-        if self.height > 1:
-            raise NotImplementedError(
-                "with_columns is simplified for single-row DataFrames"
-            )
+        for col_name in updates_dict:
+            if col_name not in self._col_to_idx:
+                raise ValueError(f"Column {col_name} not in DataFrame")
 
         if self.is_empty():
             new_row_dict = {c: None for c in self.columns}
             new_row_dict.update(updates_dict)
             new_row = [new_row_dict[c] for c in self.columns]
-        else:
-            new_row = list(self._data[0])
-            for col_name, value in updates_dict.items():
-                if col_name not in self._col_to_idx:
-                    raise ValueError(f"Column {col_name} not in DataFrame")
-                col_idx = self._col_to_idx[col_name]
-                new_row[col_idx] = value
+            return DataFrame(data=[new_row], columns=self.columns)
 
-        return DataFrame(data=[new_row], columns=self.columns)
+        new_data = [list(row) for row in self._data]
+        for col_name, value in updates_dict.items():
+            col_idx = self._col_to_idx[col_name]
+            for row in new_data:
+                row[col_idx] = value
+                # todo assumes 1 value. Not at all sure if this is correct.
+                # Saw a players column with [0, 1].
+
+        return DataFrame(data=new_data, columns=self.columns)
 
     def __getitem__(self, key):
         if isinstance(key, str):
@@ -146,7 +146,6 @@ class BaseEnvironment(abc.ABC):
         self._dirty = True
         self._state_with_key: Optional[StateWithKey] = None
         self.state: Optional[StateType] = None
-
 
     def reset(self) -> StateWithKey:
         """
