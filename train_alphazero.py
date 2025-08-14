@@ -98,8 +98,16 @@ def run_training_loop(config: AppConfig, env_name_override: str = None):
     )
     assert isinstance(current_agent, AlphaZeroAgent)
 
-    logger.info("Initializing with pure MCTS for the first self-play iteration.")
-    self_play_agent = make_pure_mcts(num_simulations=config.mcts.num_simulations)
+    mcts_agent = make_pure_mcts(num_simulations=config.mcts.num_simulations)
+    has_checkpoint = current_agent.load()
+
+    if has_checkpoint:
+        logger.info("Checkpoint found, starting with AlphaZero for self-play.")
+        self_play_agent = current_agent
+    else:
+        logger.info("No checkpoint, starting with pure MCTS for self-play.")
+        self_play_agent = mcts_agent
+
     self_play_agent.temperature = (
         1.0  # Use temperature for exploration during self-play
     )
@@ -141,8 +149,29 @@ def run_training_loop(config: AppConfig, env_name_override: str = None):
             policy_losses.append(metrics.train.policy_loss)
             reporter.log_iteration_end(iteration=iteration, metrics=metrics)
 
-        # After training, the current agent is used for the next self-play iteration.
-        self_play_agent = current_agent
+        if isinstance(self_play_agent, MCTSAgent):
+            eval_results = check_if_az_outperforms_mcts(
+                iteration=iteration,
+                reporter=reporter,
+                current_agent=current_agent,
+                mcts_agent=mcts_agent,
+                env=env,
+            )
+
+            if eval_results["win_rate"] > 0.5:
+                logger.info(
+                    f"AlphaZero outperformed MCTS with win rate: {eval_results['win_rate']:.2f}. "
+                    "Promoting to use AlphaZero for self-play."
+                )
+                self_play_agent = current_agent
+            else:
+                logger.info(
+                    f"AlphaZero did not outperform MCTS (win rate: {eval_results['win_rate']:.2f}). "
+                    "Continuing with MCTS for self-play."
+                )
+        else:
+            # After training, the current agent is used for the next self-play iteration.
+            self_play_agent = current_agent
 
         # Save a checkpoint of the agent after every iteration.
         checkpoint_path = (
@@ -224,6 +253,29 @@ def run_self_play(
     return all_experiences_iteration
 
 
+def check_if_az_outperforms_mcts(iteration, reporter, current_agent, mcts_agent, env):
+    logger.info("Evaluating AlphaZero against MCTS for promotion...")
+    original_num_games = config.evaluation.periodic_eval_num_games
+    config.evaluation.periodic_eval_num_games = 20
+    eval_results, tournament_experiences = run_eval_against_benchmark(
+        iteration=iteration,
+        reporter=reporter,
+        current_agent=current_agent,
+        best_agent=mcts_agent,
+        best_agent_name="MCTS",
+        config=config,
+        env=env,
+    )
+    config.evaluation.periodic_eval_num_games = original_num_games
+    add_results_to_buffer(
+        iteration=iteration,
+        all_experiences_iteration=tournament_experiences,
+        agent=current_agent,
+        config=config,
+    )
+    return eval_results
+
+
 def add_results_to_buffer(
     iteration: int,
     all_experiences_iteration: list,
@@ -275,7 +327,7 @@ def run_eval_against_benchmark(
     best_agent_name: str,
     config: AppConfig,
     env: BaseEnvironment,
-) -> Tuple[dict, List[Tuple[StateType, np.ndarray, float]]]:
+) -> Tuple[dict, list]:
     logger.info(
         f"\n--- Running Evaluation vs '{best_agent_name}' (Iteration {iteration + 1}) ---"
     )
@@ -285,7 +337,7 @@ def run_eval_against_benchmark(
 
     num_games = config.evaluation.periodic_eval_num_games
     wins = {"AlphaZero": 0, best_agent_name: 0, "draw": 0}
-    all_tournament_experiences = []
+    all_experiences = []
 
     for game_num in tqdm(range(num_games), desc=f"Eval vs {best_agent_name}"):
         game_env = env.copy()
@@ -337,8 +389,7 @@ def run_eval_against_benchmark(
             state_with_key = action_result.next_state_with_key
 
         outcome = game_env.get_reward_for_player(player=0)
-        episode_result = current_agent.process_finished_episode(game_history, outcome)
-        all_tournament_experiences.extend(episode_result.buffer_experiences)
+        all_experiences.append((game_history, outcome))
 
         winner = game_env.get_winning_player()
         if winner is None:
@@ -362,7 +413,7 @@ def run_eval_against_benchmark(
             benchmark_agent_name=best_agent_name,
             iteration=iteration,
         )
-    return eval_results, all_tournament_experiences
+    return eval_results, all_experiences
 
 
 def run_sanity_checks(env: BaseEnvironment, agent: AlphaZeroAgent):
