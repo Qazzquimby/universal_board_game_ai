@@ -12,14 +12,14 @@ from factories import get_agents, get_environment
 
 
 def predict(
-    agent: Agent, env: BaseEnvironment
+    agent: Agent, env: BaseEnvironment, network_only: bool = False
 ) -> Tuple[Optional[Dict], Optional[float]]:
     """
     Get policy and value prediction from an agent for a given environment state.
     """
     legal_actions = env.get_legal_actions()
 
-    if isinstance(agent, AlphaZeroAgent):
+    if isinstance(agent, AlphaZeroAgent) and network_only:
         if not agent.network:
             logger.warning("Agent has no network, cannot predict.")
             return None, None
@@ -29,10 +29,10 @@ def predict(
         )
         return policy_dict, value
 
-    elif isinstance(agent, MCTSAgent):
+    elif isinstance(agent, (MCTSAgent, AlphaZeroAgent)):
         # Run MCTS search to populate the root node
         _ = agent.act(env, train=False)
-        policy_result = agent.get_policy()
+        policy_result = agent.get_policy_from_visits(temperature=0.0)
         action_visits = policy_result.action_visits
         total_visits = sum(action_visits.values())
 
@@ -44,7 +44,8 @@ def predict(
         else:
             policy_dict = {}
 
-        return policy_dict, policy_result.value
+        # Per user, only AZ network-only prediction should have a value.
+        return policy_dict, None
 
     else:
         logger.warning(
@@ -53,7 +54,9 @@ def predict(
         return None, None
 
 
-def run_sanity_checks_for_agent(env: BaseEnvironment, agent: Agent, agent_name: str):
+def run_sanity_checks_for_agent(
+    env: BaseEnvironment, agent: Agent, agent_name: str, network_only: bool = False
+):
     """Runs predictions on predefined sanity check states for a given agent."""
     logger.info(f"\n--- Running Sanity Checks for Agent: '{agent_name}' ---")
     sanity_states = env.get_sanity_check_states()
@@ -68,18 +71,19 @@ def run_sanity_checks_for_agent(env: BaseEnvironment, agent: Agent, agent_name: 
         temp_env.set_state(check_case.state_with_key.state)
         temp_env.render()
 
-        policy_dict, value = predict(agent, temp_env)
+        policy_dict, value = predict(agent, temp_env, network_only=network_only)
 
         if policy_dict is None:
             logger.warning(f"  Could not get prediction for this state.")
             continue
 
-        if check_case.expected_value is None:
-            logger.info(f"  Value: Predicted={value:.4f}")
-        else:
-            logger.info(
-                f"  Value: Expected={check_case.expected_value:.1f}, Predicted={value:.4f}"
-            )
+        if value is not None:
+            if check_case.expected_value is None:
+                logger.info(f"  Value: Predicted={value:.4f}")
+            else:
+                logger.info(
+                    f"  Value: Expected={check_case.expected_value:.1f}, Predicted={value:.4f}"
+                )
 
         sorted_probs = sorted(
             policy_dict.items(), key=lambda item: item[1], reverse=True
@@ -121,8 +125,14 @@ def main():
             else:
                 logger.warning(f"No checkpoint found for '{agent_name}'")
 
+    agents_to_check = []
     for agent_name, agent in agents.items():
-        run_sanity_checks_for_agent(env, agent, agent_name)
+        agents_to_check.append((agent_name, agent, False))
+        if isinstance(agent, AlphaZeroAgent):
+            agents_to_check.append((f"{agent_name} (Network Only)", agent, True))
+
+    for agent_name, agent, network_only in agents_to_check:
+        run_sanity_checks_for_agent(env, agent, agent_name, network_only=network_only)
 
 
 if __name__ == "__main__":

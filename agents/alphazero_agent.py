@@ -25,6 +25,7 @@ from algorithms.mcts import (
     Edge,
     BackpropagationStrategy,
     SelectionStrategy,
+    PolicyResult,
 )
 from experiments.architectures.shared import INFERENCE_DEVICE, TRAINING_DEVICE
 from core.config import (
@@ -196,9 +197,9 @@ class AlphaZeroAgent(BaseMCTSAgent):
         self.search(env=env, train=train)
 
         temperature = self.config.temperature if train else 0.0
+        policy_result = self.get_policy_from_visits(temperature)
 
-        assert self.root is not None
-        if not self.root.edges:
+        if policy_result.chosen_action is None:
             legal_actions = env.get_legal_actions()
             if not legal_actions:
                 logger.warning("No legal actions from a non-expanded root. Cannot act.")
@@ -207,32 +208,7 @@ class AlphaZeroAgent(BaseMCTSAgent):
             raise RuntimeError(
                 f"Search finished but root has no edges. Legal actions: {legal_actions}"
             )
-
-        action_visits: Dict[ActionType, int] = {
-            action: edge.num_visits for action, edge in self.root.edges.items()
-        }
-        actions = list(action_visits.keys())
-        visits = np.array(
-            [action_visits[action] for action in actions], dtype=np.float64
-        )
-
-        if temperature == 0:
-            if len(visits) == 0:
-                raise RuntimeError("Cannot select action, no visits recorded.")
-            best_action_index = np.argmax(visits)
-            chosen_action = actions[best_action_index]
-        else:
-            # More numerically stable temperature scaling
-            log_visits = np.log(visits + 1e-10)
-            scaled_log_visits = log_visits / temperature
-            scaled_log_visits -= np.max(scaled_log_visits)
-            exp_scaled_log_visits = np.exp(scaled_log_visits)
-            visit_probs = exp_scaled_log_visits / np.sum(exp_scaled_log_visits)
-
-            chosen_action_index = np.random.choice(len(actions), p=visit_probs)
-            chosen_action = actions[chosen_action_index]
-
-        return chosen_action
+        return policy_result.chosen_action
 
     def get_policy_target(self, legal_actions: List[ActionType]) -> np.ndarray:
         """

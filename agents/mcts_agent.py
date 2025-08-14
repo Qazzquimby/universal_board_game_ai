@@ -119,6 +119,52 @@ class BaseMCTSAgent(Agent):
             self._run_simulation(env, train)
         return self.root
 
+    def get_policy_from_visits(self, temperature: float) -> PolicyResult:
+        """
+        Calculates the final action policy based on root children visits.
+        This is a utility method, temperature must be passed explicitly.
+        """
+        assert self.root
+
+        action_visits: Dict[ActionType, int] = {
+            action: edge.num_visits for action, edge in self.root.edges.items()
+        }
+
+        actions = list(action_visits.keys())
+        visits = np.array(
+            [action_visits[action] for action in actions], dtype=np.float64
+        )
+
+        if not actions:
+            return PolicyResult(
+                chosen_action=None, action_probabilities={}, action_visits=action_visits
+            )
+
+        if temperature == 0:
+            best_action_index = np.argmax(visits)
+            chosen_action = actions[best_action_index]
+            probabilities = {
+                act: (1.0 if act == chosen_action else 0.0) for act in actions
+            }
+        else:
+            log_visits = np.log(visits + 1e-10)
+            scaled_log_visits = log_visits / temperature
+            scaled_log_visits -= np.max(scaled_log_visits)
+            exp_scaled_log_visits = np.exp(scaled_log_visits)
+
+            probs_values = exp_scaled_log_visits / np.sum(exp_scaled_log_visits)
+
+            chosen_action_index = np.random.choice(len(actions), p=probs_values)
+            chosen_action = actions[chosen_action_index]
+
+            probabilities = {act: prob for act, prob in zip(actions, probs_values)}
+
+        return PolicyResult(
+            chosen_action=chosen_action,
+            action_probabilities=probabilities,
+            action_visits=action_visits,
+        )
+
     def act(self, env: BaseEnvironment, train: bool = False) -> Optional[ActionType]:
         raise NotImplementedError
 
@@ -144,56 +190,8 @@ class MCTSAgent(BaseMCTSAgent):
 
     def act(self, env: BaseEnvironment, train: bool = False) -> Optional[ActionType]:
         self.search(env=env, train=train)
-        policy_result = self.get_policy()
+        policy_result = self.get_policy_from_visits(temperature=self.temperature)
         return policy_result.chosen_action
-
-    def get_policy(self) -> PolicyResult:
-        """
-        Calculates the final action policy based on root children visits.
-
-        Returns:
-            A PolicyResult dataclass instance.
-
-        Raises:
-            ValueError: If the root node has no children or no child has visits > 0
-                        after simulations, indicating an issue (e.g., insufficient search
-                        or problem during MCTS phases).
-        """
-        assert self.root
-
-        action_visits: Dict[ActionType, int] = {
-            action: edge.num_visits for action, edge in self.root.edges.items()
-        }
-
-        actions = list(action_visits.keys())
-        visits = np.array(
-            [action_visits[action] for action in actions], dtype=np.float64
-        )
-
-        if self.temperature == 0:
-            best_action_index = np.argmax(visits)
-            chosen_action = actions[best_action_index]
-            probabilities = {
-                act: (1.0 if act == chosen_action else 0.0) for act in actions
-            }
-        else:
-            log_visits = np.log(visits + 1e-10)
-            scaled_log_visits = log_visits / self.temperature
-            scaled_log_visits -= np.max(scaled_log_visits)
-            exp_scaled_log_visits = np.exp(scaled_log_visits)
-
-            probs_values = exp_scaled_log_visits / np.sum(exp_scaled_log_visits)
-
-            chosen_action_index = np.random.choice(len(actions), p=probs_values)
-            chosen_action = actions[chosen_action_index]
-
-            probabilities = {act: prob for act, prob in zip(actions, probs_values)}
-
-        return PolicyResult(
-            chosen_action=chosen_action,
-            action_probabilities=probabilities,
-            action_visits=action_visits,
-        )
 
 
 def make_pure_mcts(num_simulations):
