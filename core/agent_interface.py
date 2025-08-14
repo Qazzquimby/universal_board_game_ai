@@ -46,9 +46,7 @@ class Agent(abc.ABC):
         Returns:
             True if loading was successful, False otherwise.
         """
-        raise NotImplementedError(
-            f"Load method not implemented for {self.__class__.__name__}"
-        )
+        print(f"Load method not implemented for {self.__class__.__name__}")
 
     def reset(self) -> None:
         """

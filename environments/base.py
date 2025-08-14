@@ -76,10 +76,10 @@ class DataFrame:
         new_data = [list(row) for row in self._data]
         for col_name, value in updates_dict.items():
             col_idx = self._col_to_idx[col_name]
-            for row in new_data:
-                row[col_idx] = value
-                # todo assumes 1 value. Not at all sure if this is correct.
-                # Saw a players column with [0, 1].
+            if not isinstance(value, list):
+                value = [value]
+            for row, value_for_row in zip(new_data, value, strict=True):
+                row[col_idx] = value_for_row
 
         return DataFrame(data=new_data, columns=self.columns)
 
@@ -258,7 +258,7 @@ class BaseEnvironment(abc.ABC):
         Args:
             state: The state dictionary to load.
         """
-        pass
+        raise NotImplementedError
 
     def render(self, mode: str = "human") -> None:
         """

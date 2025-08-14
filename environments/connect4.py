@@ -21,7 +21,6 @@ class Connect4(BaseEnvironment):
         super().__init__()
         self.reset()
 
-
     def _reset(self) -> StateWithKey:
         self.state = {
             "pieces": DataFrame(columns=["row", "col", "player_id"]),
@@ -211,6 +210,7 @@ class Connect4(BaseEnvironment):
 
     def set_state(self, state: StateType) -> None:
         self.state = {k: v.clone() for k, v in state.items()}
+        self._dirty = True
 
     def get_sanity_check_states(self) -> List[SanityCheckState]:
         states = []
