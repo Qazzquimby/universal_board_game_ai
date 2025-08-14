@@ -81,7 +81,7 @@ def run_training(config: AppConfig, env_name_override: str = None):
         )
 
         logger.info("Running learning step...")
-        metrics = current_agent.learn()
+        metrics = current_agent.train_network()
         if metrics:
             # ... update losses, log metrics
             pass

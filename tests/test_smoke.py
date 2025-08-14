@@ -9,7 +9,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 # Import the main functions and config
 from core.config import AppConfig
 from main import run_main
-from train_alphazero import run_training
+from train_alphazero import run_training_loop
 
 
 class TestSmoke(unittest.TestCase):
@@ -73,7 +73,7 @@ class TestSmoke(unittest.TestCase):
         # run_training takes env name override separately if needed, but setting config is fine
         config.env.name = "connect4"
         try:
-            run_training(config)
+            run_training_loop(config)
         except Exception as e:
             self.fail(f"run_training(connect4) failed with exception: {e}")
 
@@ -83,7 +83,7 @@ class TestSmoke(unittest.TestCase):
         config = self._get_smoke_config()
         config.env.name = "Nim"
         try:
-            run_training(config)
+            run_training_loop(config)
         except Exception as e:
             self.fail(f"run_training(Nim) failed with exception: {e}")
 

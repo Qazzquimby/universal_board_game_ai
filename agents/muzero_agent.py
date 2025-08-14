@@ -133,7 +133,7 @@ class MuZeroAgent(
         logger.warning("MuZero search is not implemented. Using random action.")
         return
 
-    def learn(self):
+    def train_network(self):
         """
         MuZero's learning step. Samples trajectories from replay buffer and updates network.
         """

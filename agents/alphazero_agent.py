@@ -584,7 +584,7 @@ class AlphaZeroAgent(BaseMCTSAgent):
                     if isinstance(v, torch.Tensor):
                         state[k] = v.to(self.device)
 
-    def learn(self) -> Optional[BestEpochMetrics]:
+    def train_network(self) -> Optional[BestEpochMetrics]:
         """
         Update the neural network by training for multiple epochs over the replay buffer,
         using early stopping based on a validation set.

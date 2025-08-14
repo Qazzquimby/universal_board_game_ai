@@ -85,7 +85,7 @@ def load_game_logs_into_buffer(agent: AlphaZeroAgent, env_name: str, buffer_limi
     )
 
 
-def run_training(config: AppConfig, env_name_override: str = None):
+def run_training_loop(config: AppConfig, env_name_override: str = None):
     """Runs the AlphaZero training process."""
 
     if env_name_override:
@@ -98,11 +98,11 @@ def run_training(config: AppConfig, env_name_override: str = None):
     )
     assert isinstance(current_agent, AlphaZeroAgent)
 
-    logger.info("Initializing with pure MCTS as the starting 'best' agent.")
-    best_agent = make_pure_mcts(num_simulations=config.mcts.num_simulations)
-    best_agent.temperature = 1.0  # Use temperature for exploration during self-play
-    self_play_agent = best_agent
-    best_agent_name = f"MCTS_{config.mcts.num_simulations}"
+    logger.info("Initializing with pure MCTS for the first self-play iteration.")
+    self_play_agent = make_pure_mcts(num_simulations=config.mcts.num_simulations)
+    self_play_agent.temperature = (
+        1.0  # Use temperature for exploration during self-play
+    )
 
     load_game_logs_into_buffer(
         current_agent, config.env.name, config.alpha_zero.replay_buffer_size
@@ -122,7 +122,7 @@ def run_training(config: AppConfig, env_name_override: str = None):
     for iteration in outer_loop_iterator:
         reporter.log_iteration_start(iteration)
 
-        logger.info(f"Running self-play with '{best_agent_name}'...")
+        logger.info(f"Running self-play with '{type(self_play_agent).__name__}'...")
         all_experiences_iteration = run_self_play(
             agent=self_play_agent, env=env, config=config
         )
@@ -134,68 +134,23 @@ def run_training(config: AppConfig, env_name_override: str = None):
         )
 
         logger.info("Running learning step...")
-        metrics = current_agent.learn()
+        metrics = current_agent.train_network()
         if metrics:
             total_losses.append(metrics.train.loss)
             value_losses.append(metrics.train.value_loss)
             policy_losses.append(metrics.train.policy_loss)
             reporter.log_iteration_end(iteration=iteration, metrics=metrics)
 
-        if (
-            config.evaluation.run_periodic_evaluation
-            and (iteration + 1) % config.evaluation.periodic_eval_frequency == 0
-        ):
-            eval_results, tournament_experiences = run_eval_against_benchmark(
-                iteration=iteration,
-                reporter=reporter,
-                current_agent=current_agent,
-                best_agent=best_agent,
-                best_agent_name=best_agent_name,
-                config=config,
-                env=env,
-            )
-            # Add tournament games to buffer
-            if tournament_experiences:
-                logger.info(
-                    f"Adding {len(tournament_experiences)} experiences from tournament games to replay buffer."
-                )
-                current_agent.add_experiences_to_buffer(tournament_experiences)
+        # After training, the current agent is used for the next self-play iteration.
+        self_play_agent = current_agent
 
-            # Check for new best agent
-            win_rate = (
-                eval_results["wins"]["AlphaZero"] / eval_results["total_games"]
-                if eval_results["total_games"] > 0
-                else 0
-            )
-            print(f"New model has win rate of {win_rate} against {best_agent_name}")
-            # even if lost, still update best as new.
-
-            best_agent_name = f"AlphaZero_iter{iteration + 1}"
-
-            if not isinstance(best_agent, AlphaZeroAgent):
-                best_agent = make_pure_az(
-                    env,
-                    config.alpha_zero,
-                    config.training,
-                    should_use_network=True,
-                )
-
-            best_agent.network.load_state_dict(current_agent.network.state_dict())
-            if best_agent.optimizer and current_agent.optimizer:
-                best_agent.optimizer.load_state_dict(
-                    current_agent.optimizer.state_dict()
-                )
-            self_play_agent = best_agent
-
-            checkpoint_path = (
-                DATA_DIR
-                / f"alphazero_net_{config.env.name}_best_iter_{iteration + 1}.pth"
-            )
-            current_agent.save(checkpoint_path)
-            logger.info(f"Saved new best model to {checkpoint_path}")
-
-    logger.info("\nTraining complete. Saving final agent state.")
-    current_agent.save()
+        # Save a checkpoint of the agent after every iteration.
+        checkpoint_path = (
+            DATA_DIR / f"alphazero_net_{config.env.name}_iter_{iteration + 1}.pth"
+        )
+        current_agent.save(checkpoint_path)
+        current_agent.save()
+        logger.info(f"Saved checkpoint to {checkpoint_path}")
 
     plot_losses(total_losses, value_losses, policy_losses)
 
@@ -472,4 +427,4 @@ if __name__ == "__main__":
     logger.remove()
     logger.add(sys.stderr, level="INFO")
 
-    run_training(config, env_name_override=env_override)
+    run_training_loop(config, env_name_override=env_override)

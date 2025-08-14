@@ -20,7 +20,7 @@ class Agent(abc.ABC):
     # Removed episode_history from base class learn method.
     # Agents are responsible for their own learning mechanisms.
     # Implementations might learn from internal buffers or require specific data passed from a training loop.
-    def learn(self) -> None:
+    def train_network(self) -> None:
         """
         Perform a learning step.
         Not all agents learn (e.g., RandomAgent). Default implementation does nothing.
