@@ -226,26 +226,26 @@ class Connect4(BaseEnvironment):
         #     )
         # )
 
-        # # --- State 2: Player 0 can win horizontally in column 3 ---
-        # env2 = Connect4()
-        # env2.state["pieces"] = DataFrame(
-        #     [
-        #         (5, 0, 0),
-        #         (5, 1, 0),
-        #         (5, 2, 0),
-        #         (5, 4, 1),
-        #         (5, 5, 1),
-        #     ],
-        #     columns=["row", "col", "player_id"],
-        # )
-        # states.append(
-        #     SanityCheckState(
-        #         description="Player 0 can win horizontally (col 3)",
-        #         state_with_key=env2.get_state_with_key(),
-        #         expected_value=1.0,
-        #         expected_action=3,
-        #     )
-        # )
+        # --- State 2: Player 0 can win horizontally in column 3 ---
+        env2 = Connect4()
+        env2.state["pieces"] = DataFrame(
+            [
+                (5, 0, 0),
+                (5, 1, 0),
+                (5, 2, 0),
+                (5, 4, 1),
+                (5, 5, 1),
+            ],
+            columns=["row", "col", "player_id"],
+        )
+        states.append(
+            SanityCheckState(
+                description="Player 0 can win horizontally (col 3)",
+                state_with_key=env2.get_state_with_key(),
+                expected_value=1.0,
+                expected_action=3,
+            )
+        )
 
         # --- State 3: Player 1 can win vertically in column 0 ---
         env3 = Connect4()

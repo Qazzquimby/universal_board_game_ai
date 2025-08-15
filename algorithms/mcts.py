@@ -166,7 +166,11 @@ class SelectionResult:
 class SelectionStrategy(abc.ABC):
     @abc.abstractmethod
     def select(
-        self, node: "MCTSNode", sim_env: BaseEnvironment, cache: "MCTSNodeCache"
+        self,
+        node: "MCTSNode",
+        sim_env: BaseEnvironment,
+        cache: "MCTSNodeCache",
+        remaining_sims: int,
     ) -> SelectionResult:
         pass
 
@@ -321,7 +325,11 @@ class UCB1Selection(SelectionStrategy):
         return exploitation_term + exploration_term
 
     def select(
-        self, node: MCTSNode, sim_env: BaseEnvironment, cache: "MCTSNodeCache"
+        self,
+        node: MCTSNode,
+        sim_env: BaseEnvironment,
+        cache: "MCTSNodeCache",
+        remaining_sims: int,
     ) -> SelectionResult:
         """Select child node with highest UCB score until a leaf node is reached.
         Modifies sim_env"""
@@ -335,7 +343,19 @@ class UCB1Selection(SelectionStrategy):
             best_score = -float("inf")
             best_action: Optional[ActionType] = None
 
-            for action, edge in current_node.edges.items():
+            # only care about edges that could catch up to leader
+            edges_to_consider = current_node.edges
+            if current_node is node and len(current_node.edges) > 1:
+                max_visits = max(
+                    edge.num_visits for edge in current_node.edges.values()
+                )
+                edges_to_consider = {
+                    action: edge
+                    for action, edge in current_node.edges.items()
+                    if max_visits - edge.num_visits <= remaining_sims
+                }
+
+            for action, edge in edges_to_consider.items():
                 score = self._score_edge(
                     edge=edge, parent_node_num_visits=current_node.num_visits
                 )

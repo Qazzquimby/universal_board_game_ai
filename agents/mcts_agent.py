@@ -55,34 +55,23 @@ class BaseMCTSAgent(Agent):
 
     def _should_stop_early(self, sim_idx: int) -> bool:
         """Checks if the search can be stopped early."""
-        if not (
-            sim_idx
-            and EARLY_STOP_IF_CHANGE_IMPOSSIBLE_CHECK_FREQUENCY
-            and sim_idx % EARLY_STOP_IF_CHANGE_IMPOSSIBLE_CHECK_FREQUENCY == 0
-        ):
-            return False
-
-        visit_counts = sorted([edge.num_visits for edge in self.root.edges.values()])
-        if len(visit_counts) < 2:
-            return True  # Stop if only one action, or no actions explored
-        max_visits = visit_counts[-1]
-        second_most_visits = visit_counts[-2]
-        sims_needed_to_change_mind = max_visits - second_most_visits
-        remaining_sims = self.num_simulations - sim_idx
-        return remaining_sims < sims_needed_to_change_mind
+        return False  # Consider ucb tracking https://aistudio.google.com/prompts/1u8ZK7JpExSOXckEx9FfhrfSQTn5cFr8X
 
     def _expand_leaf(self, leaf_node: MCTSNode, leaf_env: BaseEnvironment, train: bool):
         """Default expansion logic. Can be overridden."""
         if not leaf_node.is_expanded:
             self.expansion_strategy.expand(leaf_node, leaf_env)
 
-    def _run_simulation(self, env: BaseEnvironment, train: bool):
+    def _run_simulation(self, env: BaseEnvironment, train: bool, remaining_sims: int):
         """Runs a single simulation from selection to backpropagation."""
         sim_env = env.copy()
 
         # 1. Selection
         selection_result = self.selection_strategy.select(
-            node=self.root, sim_env=sim_env, cache=self.node_cache
+            node=self.root,
+            sim_env=sim_env,
+            cache=self.node_cache,
+            remaining_sims=remaining_sims,
         )
         path = selection_result.path
         leaf_node = selection_result.leaf_node
@@ -116,7 +105,22 @@ class BaseMCTSAgent(Agent):
             if self._should_stop_early(sim_idx):
                 break
 
-            self._run_simulation(env, train)
+            remaining_sims = self.num_simulations - (sim_idx + 1)
+            self._run_simulation(env, train, remaining_sims=remaining_sims)
+
+            # Early stopping based on contenders
+            if self.root.edges and len(self.root.edges) > 1:
+                edges = list(self.root.edges.values())
+                max_visits = max(edge.num_visits for edge in edges)
+
+                contenders = [
+                    edge
+                    for edge in edges
+                    if max_visits - edge.num_visits <= remaining_sims
+                ]
+
+                if len(contenders) <= 1:
+                    break
         return self.root
 
     def get_policy_from_visits(self, temperature: float) -> PolicyResult:
