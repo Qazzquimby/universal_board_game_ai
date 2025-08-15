@@ -62,7 +62,13 @@ class BaseMCTSAgent(Agent):
         if not leaf_node.is_expanded:
             self.expansion_strategy.expand(leaf_node, leaf_env)
 
-    def _run_simulation(self, env: BaseEnvironment, train: bool, remaining_sims: int):
+    def _run_simulation(
+        self,
+        env: BaseEnvironment,
+        train: bool,
+        remaining_sims: int,
+        contender_actions: Optional[set],
+    ):
         """Runs a single simulation from selection to backpropagation."""
         sim_env = env.copy()
 
@@ -72,6 +78,7 @@ class BaseMCTSAgent(Agent):
             sim_env=sim_env,
             cache=self.node_cache,
             remaining_sims=remaining_sims,
+            contender_actions=contender_actions,
         )
         path = selection_result.path
         leaf_node = selection_result.leaf_node
@@ -101,26 +108,25 @@ class BaseMCTSAgent(Agent):
         """
         self.set_root_to_state(state_with_key=env.get_state_with_key())
 
+        contender_actions: Optional[set] = None
+
         for sim_idx in range(self.num_simulations):
             if self._should_stop_early(sim_idx):
                 break
 
             remaining_sims = self.num_simulations - (sim_idx + 1)
-            self._run_simulation(env, train, remaining_sims=remaining_sims)
+            self._run_simulation(
+                env,
+                train,
+                remaining_sims=remaining_sims,
+                contender_actions=contender_actions,
+            )
 
-            # Early stopping based on contenders
-            if self.root.edges and len(self.root.edges) > 1:
-                edges = list(self.root.edges.values())
-                max_visits = max(edge.num_visits for edge in edges)
-
-                contenders = [
-                    edge
-                    for edge in edges
-                    if max_visits - edge.num_visits <= remaining_sims
-                ]
-
-                if len(contenders) <= 1:
-                    break
+            contender_actions = self.get_new_contender_actions(
+                contender_actions=contender_actions, remaining_sims=remaining_sims
+            )
+            if contender_actions and len(contender_actions) <= 1:
+                break
         return self.root
 
     def get_policy_from_visits(self, temperature: float) -> PolicyResult:
@@ -171,6 +177,23 @@ class BaseMCTSAgent(Agent):
 
     def act(self, env: BaseEnvironment, train: bool = False) -> Optional[ActionType]:
         raise NotImplementedError
+
+    def get_new_contender_actions(self, contender_actions, remaining_sims):
+        if contender_actions is None and self.root.is_expanded:
+            contender_actions = set(self.root.edges.keys())
+        if contender_actions and len(contender_actions) > 1:
+            edges = self.root.edges
+            max_visits = max(edge.num_visits for edge in edges.values())
+
+            eliminated_actions = {
+                action
+                for action in contender_actions
+                if max_visits - edges[action].num_visits > remaining_sims
+            }
+            if eliminated_actions:
+                contender_actions -= eliminated_actions
+
+        return contender_actions
 
 
 class MCTSAgent(BaseMCTSAgent):

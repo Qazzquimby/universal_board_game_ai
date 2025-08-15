@@ -171,6 +171,7 @@ class SelectionStrategy(abc.ABC):
         sim_env: BaseEnvironment,
         cache: "MCTSNodeCache",
         remaining_sims: int,
+        contender_actions: Optional[set],
     ) -> SelectionResult:
         pass
 
@@ -330,6 +331,7 @@ class UCB1Selection(SelectionStrategy):
         sim_env: BaseEnvironment,
         cache: "MCTSNodeCache",
         remaining_sims: int,
+        contender_actions: Optional[set],
     ) -> SelectionResult:
         """Select child node with highest UCB score until a leaf node is reached.
         Modifies sim_env"""
@@ -343,16 +345,12 @@ class UCB1Selection(SelectionStrategy):
             best_score = -float("inf")
             best_action: Optional[ActionType] = None
 
-            # only care about edges that could catch up to leader
             edges_to_consider = current_node.edges
-            if current_node is node and len(current_node.edges) > 1:
-                max_visits = max(
-                    edge.num_visits for edge in current_node.edges.values()
-                )
+            if current_node is node and contender_actions is not None:
                 edges_to_consider = {
                     action: edge
                     for action, edge in current_node.edges.items()
-                    if max_visits - edge.num_visits <= remaining_sims
+                    if action in contender_actions
                 }
 
             for action, edge in edges_to_consider.items():
