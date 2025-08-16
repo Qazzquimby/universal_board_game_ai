@@ -30,9 +30,9 @@ class AlphaZeroNet(nn.Module):
         # --- Embeddings ---
         self.embedding_layers = nn.ModuleDict()
         for feature, cardinality in self.network_spec["cardinalities"].items():
-            # Add 1 to cardinality for a "None" or "padding" token
+            # Add 1 for padding, and 1 because cardinality is max value, not count.
             self.embedding_layers[feature] = nn.Embedding(
-                cardinality + 1, embedding_dim
+                cardinality + 2, embedding_dim, padding_idx=0
             )
 
         # --- Transformer ---
@@ -107,10 +107,12 @@ class AlphaZeroNet(nn.Module):
                     val = row_data[i]
 
                     if val is None:
-                        # Use max cardinality index for None
-                        val = cardinalities[col_name]
-                    elif isinstance(val, bool):
-                        val = int(val)
+                        # Use 0 for padding/None index
+                        val = 0
+                    else:
+                        if isinstance(val, bool):
+                            val = int(val)
+                        val = val + 1
 
                     val_tensor = torch.tensor([val], device=device, dtype=torch.long)
                     token_embedding += self.embedding_layers[col_name](val_tensor)
@@ -134,7 +136,8 @@ class AlphaZeroNet(nn.Module):
 
         for i, comp_name in enumerate(action_components):
             val = action[i]
-            val_tensor = torch.tensor([val], device=device, dtype=torch.long)
+            # Add 1 to shift values for padding_idx=0
+            val_tensor = torch.tensor([val + 1], device=device, dtype=torch.long)
             action_embedding += self.embedding_layers[comp_name](val_tensor)
         return action_embedding.squeeze(0)  # (dim,)
 
@@ -214,7 +217,8 @@ class AlphaZeroNet(nn.Module):
             )
             for col_name in columns:
                 feature_key = f"{table_name}_{col_name}"
-                values = state_batch[feature_key]
+                # Add 1 to shift values for padding_idx=0. Assumes -1 for None in batch.
+                values = state_batch[feature_key] + 1
                 table_token_embeddings += self.embedding_layers[col_name](values)
 
             all_tokens.append(table_token_embeddings)

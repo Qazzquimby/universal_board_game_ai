@@ -1,3 +1,8 @@
+On muzero difficulties
+https://aistudio.google.com/prompts/1trfIx7qtUauQZ-9WgecTgO6bP5RbP016
+
+
+
 The goal is to create a universal board game engine which makes it easy (as it can be) to define any
 board game, up to and including extremely complex board games like MtG.
 The engine then automatically designs, parameterizes, and trains a powerful AI model to play the
