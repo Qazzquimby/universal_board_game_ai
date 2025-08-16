@@ -42,6 +42,9 @@ class BaseMCTSAgent(Agent):
         self.root: MCTSNode = None
         self.node_cache = MCTSNodeCache()
 
+    def new_game(self):
+        self.node_cache = MCTSNodeCache()
+
     def set_root_to_state(self, state_with_key: StateWithKey):
         if self.root and self.root.state_with_key.key == state_with_key.key:
             return  # already root

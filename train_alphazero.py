@@ -202,6 +202,7 @@ def run_self_play(
         game_env = env.copy()
         state_with_key = game_env.reset()
         game_history = []
+        agent.new_game()
 
         while not state_with_key.done:
             state = state_with_key.state
