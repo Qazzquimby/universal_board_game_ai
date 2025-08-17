@@ -37,7 +37,9 @@ class AlphaZeroConfig:
     weight_decay: float = 0.0001
     hidden_layer_size: int = 128  # Size for the MLP hidden layers
     num_hidden_layers: int = 2  # Number of hidden layers in the MLP
-    replay_buffer_size: int = 500_000  # 10000
+    replay_buffer_size: int = (
+        20_000  # todo configure to be on avg 3 iterations of games
+    )
     training_batch_size: int = 256
     # Weight for value loss (default 1.0, try increasing)
     value_loss_weight: float = 1.0

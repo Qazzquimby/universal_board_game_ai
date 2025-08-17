@@ -602,6 +602,8 @@ class AlphaZeroAgent(BaseMCTSAgent):
             self.network.load_state_dict(best_model_state)
 
         self._set_device_and_mode(training=False)
+        self.network.cache = {}
+
         logger.info(f"Network set to {self.device} and eval mode.")
 
         if best_epoch_metrics:

@@ -51,6 +51,8 @@ class AlphaZeroNet(nn.Module):
             nn.Linear(policy_input_dim, 64), nn.ReLU(), nn.Linear(64, 1)
         )
 
+        self.cache = {}
+
     def _apply_transforms(self, state: StateType) -> StateType:
         """Applies transformations to a state dictionary of DataFrames, returning a new state dict."""
         transformed_state = {}
