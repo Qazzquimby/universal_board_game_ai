@@ -1,4 +1,5 @@
 import abc
+import pickle
 from dataclasses import dataclass
 from typing import Dict, List, Optional, TypeVar
 
@@ -118,7 +119,7 @@ class StateWithKey:
 
     @staticmethod
     def _get_key_for_state(state: StateType) -> int:
-        hashed = sum([v.hash() for v in state.values()])
+        hashed = hash(pickle.dumps(state))
         return hashed
 
 
