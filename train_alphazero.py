@@ -158,7 +158,7 @@ def run_training_loop(config: AppConfig, env_name_override: str = None):
                 env=env,
             )
 
-            if eval_results["win_rate"] > 0.5:
+            if eval_results["win_rate"] > 0.6:
                 logger.info(
                     f"AlphaZero outperformed MCTS with win rate: {eval_results['win_rate']:.2f}. "
                     "Promoting to use AlphaZero for self-play."
