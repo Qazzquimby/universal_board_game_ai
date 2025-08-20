@@ -134,20 +134,7 @@ def run_test_games(
         print(f"{key}: {value}")
     print("-" * (len(f"--- Testing {agent0_name} vs {agent1_name} ---") + 5))
 
-    total_games = sum(results.values())
-    if total_games == 0:
-        return {
-            f"{agent0_name}_win_rate": 0.0,
-            f"{agent1_name}_win_rate": 0.0,
-            "draw_rate": 0.0,
-        }
-
-    rates = {
-        f"{agent0_name}_win_rate": results[agent0_name] / total_games,
-        f"{agent1_name}_win_rate": results[agent1_name] / total_games,
-        "draw_rate": results["draws"] / total_games,
-    }
-    return rates
+    return results
 
 
 def run_evaluation(env: BaseEnvironment, agents: Dict[str, Agent], config: AppConfig):
@@ -161,6 +148,9 @@ def run_evaluation(env: BaseEnvironment, agents: Dict[str, Agent], config: AppCo
     """
     print("\n--- Starting Agent Evaluation ---")
     agent_names = list(agents.keys())
+    agent_stats = {
+        name: {"wins": 0, "losses": 0, "draws": 0, "games": 0} for name in agent_names
+    }
 
     if len(agent_names) < 2:
         print("Need at least two agents for evaluation.")
@@ -173,7 +163,7 @@ def run_evaluation(env: BaseEnvironment, agents: Dict[str, Agent], config: AppCo
             agent0 = agents[agent0_name]
             agent1 = agents[agent1_name]
 
-            run_test_games(
+            results = run_test_games(
                 env=env,
                 agent0_name=agent0_name,
                 agent0=agent0,
@@ -182,3 +172,33 @@ def run_evaluation(env: BaseEnvironment, agents: Dict[str, Agent], config: AppCo
                 num_games=config.evaluation.full_eval_num_games,
                 config=config,
             )
+            agent0_wins = results[agent0_name]
+            agent1_wins = results[agent1_name]
+            draws = results["draws"]
+
+            agent_stats[agent0_name]["wins"] += agent0_wins
+            agent_stats[agent0_name]["losses"] += agent1_wins
+            agent_stats[agent0_name]["draws"] += draws
+            agent_stats[agent0_name]["games"] += (
+                agent0_wins + agent1_wins + draws
+            )
+
+            agent_stats[agent1_name]["wins"] += agent1_wins
+            agent_stats[agent1_name]["losses"] += agent0_wins
+            agent_stats[agent1_name]["draws"] += draws
+            agent_stats[agent1_name]["games"] += (
+                agent0_wins + agent1_wins + draws
+            )
+
+    print("\n--- Final Evaluation Summary ---")
+    print(
+        f"{'Agent':<20} | {'Wins':>5} | {'Losses':>6} | {'Draws':>5} | {'Win Rate':>10}"
+    )
+    print("-" * 58)
+    for agent_name in agent_names:
+        stats = agent_stats[agent_name]
+        total_games = stats["games"]
+        win_rate = stats["wins"] / total_games if total_games > 0 else 0.0
+        print(
+            f"{agent_name:<20} | {stats['wins']:>5} | {stats['losses']:>6} | {stats['draws']:>5} | {win_rate:>10.2%}"
+        )

@@ -8,7 +8,7 @@ from evaluation import run_evaluation
 def run_main(config: AppConfig):
     """Runs the main evaluation process."""
     env = get_environment(config.env)
-    agents = get_agents(env, config)
+    agents = get_agents(env, config, load_all_az_iterations=True)
 
     run_evaluation(env, agents, config)
 
