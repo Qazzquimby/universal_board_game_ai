@@ -32,7 +32,7 @@ class MCTSAgent_Old(Agent):
         Returns:
             The chosen action (row, col).
         """
-        self.reset()
+        self.reset_turn()
         self.env = env
         root_node = self.mcts.search(self.env)
         assert root_node.children
@@ -44,6 +44,6 @@ class MCTSAgent_Old(Agent):
 
         return best_action
 
-    def reset(self) -> None:
+    def reset_turn(self) -> None:
         """Reset the MCTS search tree."""
         self.mcts.reset_root()

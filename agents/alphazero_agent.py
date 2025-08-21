@@ -25,7 +25,7 @@ from algorithms.mcts import (
     Edge,
     BackpropagationStrategy,
     SelectionStrategy,
-    PolicyResult,
+    MCTSNodeCache,
 )
 from experiments.architectures.shared import INFERENCE_DEVICE, TRAINING_DEVICE
 from core.config import (
@@ -741,7 +741,11 @@ class AlphaZeroAgent(BaseMCTSAgent):
             logger.error(f"Error loading AlphaZero network from {filepath}: {net_e}")
             return False
 
-    def reset(self) -> None:
+    def reset_game(self) -> None:
+        self.network.cache = {}
+        self.node_cache = MCTSNodeCache()
+
+    def reset_turn(self) -> None:
         """Reset agent state (e.g., MCTS tree)."""
         self.root = None
 

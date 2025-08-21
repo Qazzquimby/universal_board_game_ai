@@ -107,7 +107,7 @@ def test_mcts_agent_reset(mcts_agent_nim_deterministic, nim_env_simple):
         pytest.fail("MCTSAgent.act failed unexpectedly during setup for reset test.")
 
     # Reset the agent
-    agent.reset()
+    agent.reset_turn()
 
     # Check if orchestrator root and last action are reset
     assert agent.mcts_orchestrator.root.num_visits == 0

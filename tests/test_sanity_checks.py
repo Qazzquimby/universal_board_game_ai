@@ -88,7 +88,7 @@ class TestSanityChecks:
         print(f"\n--- Testing MCTS: {check_case.description} ---")
         current_env = env.copy()
         current_env.set_state(check_case.state_with_key)
-        agent.reset()
+        agent.reset_turn()
         chosen_action = agent.act(check_case.state_with_key)
         root_node = agent.mcts.root
 
@@ -141,7 +141,7 @@ class TestSanityChecks:
 
         current_env = env.copy()
         current_env.set_state(check_case.state_with_key)
-        agent.reset()
+        agent.reset_turn()
 
         # Loading is handled by the agent based on its config (set in the test method)
         if load_attempted:

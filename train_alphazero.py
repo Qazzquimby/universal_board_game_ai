@@ -202,7 +202,7 @@ def run_self_play(
         game_env = env.copy()
         state_with_key = game_env.reset()
         game_history = []
-        agent.new_game()
+        agent.reset_game()
 
         while not state_with_key.done:
             state = state_with_key.state
@@ -349,6 +349,8 @@ def run_eval_against_benchmark(
         agents = {0: current_agent, 1: best_agent}
         if game_num % 2 == 1:
             agents = {0: best_agent, 1: current_agent}
+        agents[0].reset_game()
+        agents[1].reset_game()
 
         while not state_with_key.done:
             player = game_env.get_current_player()

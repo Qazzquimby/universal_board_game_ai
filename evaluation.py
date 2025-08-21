@@ -32,6 +32,8 @@ def _play_one_game(
         The index of the winning player (0 or 1), or None for a draw.
     """
     done = False
+    agent0.reset_game()
+    agent1.reset_game()
 
     while not done:
         current_player_idx = env.get_current_player()
@@ -179,16 +181,12 @@ def run_evaluation(env: BaseEnvironment, agents: Dict[str, Agent], config: AppCo
             agent_stats[agent0_name]["wins"] += agent0_wins
             agent_stats[agent0_name]["losses"] += agent1_wins
             agent_stats[agent0_name]["draws"] += draws
-            agent_stats[agent0_name]["games"] += (
-                agent0_wins + agent1_wins + draws
-            )
+            agent_stats[agent0_name]["games"] += agent0_wins + agent1_wins + draws
 
             agent_stats[agent1_name]["wins"] += agent1_wins
             agent_stats[agent1_name]["losses"] += agent0_wins
             agent_stats[agent1_name]["draws"] += draws
-            agent_stats[agent1_name]["games"] += (
-                agent0_wins + agent1_wins + draws
-            )
+            agent_stats[agent1_name]["games"] += agent0_wins + agent1_wins + draws
 
     print("\n--- Final Evaluation Summary ---")
     print(

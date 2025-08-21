@@ -1,5 +1,5 @@
 import abc
-from typing import Any, Dict, List
+from typing import Any
 
 from environments.base import BaseEnvironment
 
@@ -48,7 +48,11 @@ class Agent(abc.ABC):
         """
         print(f"Load method not implemented for {self.__class__.__name__}")
 
-    def reset(self) -> None:
+    def reset_game(self) -> None:
+        # Resets that happen per game like clearing network cache
+        pass
+
+    def reset_turn(self) -> None:
         """
         Reset any internal state of the agent (e.g., MCTS tree).
         Default implementation does nothing.

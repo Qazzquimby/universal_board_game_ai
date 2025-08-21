@@ -44,8 +44,8 @@ def _play_and_collect_one_game(
     Starts with a number of random moves before MCTS agents take over.
     """
     env.reset()
-    agent0.reset()
-    agent1.reset()
+    agent0.reset_turn()
+    agent1.reset_turn()
 
     action_history = []
 

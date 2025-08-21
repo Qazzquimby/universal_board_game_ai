@@ -42,9 +42,6 @@ class BaseMCTSAgent(Agent):
         self.root: MCTSNode = None
         self.node_cache = MCTSNodeCache()
 
-    def new_game(self):
-        self.node_cache = MCTSNodeCache()
-
     def set_root_to_state(self, state_with_key: StateWithKey):
         if self.root and self.root.state_with_key.key == state_with_key.key:
             return  # already root
@@ -222,6 +219,9 @@ class MCTSAgent(BaseMCTSAgent):
         self.search(env=env, train=train)
         policy_result = self.get_policy_from_visits(temperature=self.temperature)
         return policy_result.chosen_action
+
+    def reset_game(self) -> None:
+        self.node_cache = MCTSNodeCache()
 
 
 def make_pure_mcts(num_simulations):
