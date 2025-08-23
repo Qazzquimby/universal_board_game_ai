@@ -261,9 +261,9 @@ def check_if_az_outperforms_mcts(iteration, reporter, current_agent, mcts_agent,
     eval_results, tournament_experiences = run_eval_against_benchmark(
         iteration=iteration,
         reporter=reporter,
-        current_agent=current_agent,
-        best_agent=mcts_agent,
-        best_agent_name="MCTS",
+        agent_in_training=current_agent,
+        benchmark_agent=mcts_agent,
+        benchmark_agent_name="MCTS",
         config=config,
         env=env,
     )
@@ -323,32 +323,34 @@ def add_results_to_buffer(
 def run_eval_against_benchmark(
     iteration: int,
     reporter: TrainingReporter,
-    current_agent: AlphaZeroAgent,
-    best_agent: Union[AlphaZeroAgent, MCTSAgent],
-    best_agent_name: str,
+    agent_in_training: AlphaZeroAgent,
+    benchmark_agent: Union[AlphaZeroAgent, MCTSAgent],
+    benchmark_agent_name: str,
     config: AppConfig,
     env: BaseEnvironment,
 ) -> Tuple[dict, list]:
     logger.info(
-        f"\n--- Running Evaluation vs '{best_agent_name}' (Iteration {iteration + 1}) ---"
+        f"\n--- Running Evaluation vs '{benchmark_agent_name}' (Iteration {iteration + 1}) ---"
     )
-    current_agent.network.eval()
-    if hasattr(best_agent, "network") and best_agent.network:
-        best_agent.network.eval()
+    agent_in_training.name = "AlphaZero"
+    benchmark_agent.name = benchmark_agent_name
+    agent_in_training.network.eval()
+    if hasattr(benchmark_agent, "network") and benchmark_agent.network:
+        benchmark_agent.network.eval()
 
     num_games = config.evaluation.periodic_eval_num_games
-    wins = {"AlphaZero": 0, best_agent_name: 0, "draw": 0}
+    wins = {agent_in_training.name: 0, benchmark_agent.name: 0, "draw": 0}
     all_experiences = []
 
-    for game_num in tqdm(range(num_games), desc=f"Eval vs {best_agent_name}"):
+    for game_num in tqdm(range(num_games), desc=f"Eval vs {benchmark_agent.name}"):
         game_env = env.copy()
         state_with_key = game_env.reset()
         game_history = []
 
         # Alternate who goes first
-        agents = {0: current_agent, 1: best_agent}
+        agents = {0: agent_in_training, 1: benchmark_agent}
         if game_num % 2 == 1:
-            agents = {0: best_agent, 1: current_agent}
+            agents = {0: benchmark_agent, 1: agent_in_training}
         agents[0].reset_game()
         agents[1].reset_game()
 
@@ -399,21 +401,18 @@ def run_eval_against_benchmark(
             wins["draw"] += 1
         else:
             winner_agent = agents[winner]
-            if winner_agent == current_agent:
-                wins["AlphaZero"] += 1
-            else:
-                wins[best_agent_name] += 1
+            wins[winner_agent.name] += 1
 
     eval_results = {
         "wins": wins,
         "total_games": num_games,
-        "win_rate": wins["AlphaZero"] / num_games if num_games > 0 else 0,
+        "win_rate": wins[agent_in_training.name] / num_games if num_games > 0 else 0,
     }
 
     if iteration > -1:  # Don't log for initial evaluation
         reporter.log_evaluation_results(
             eval_results=eval_results,
-            benchmark_agent_name=best_agent_name,
+            benchmark_agent_name=benchmark_agent_name,
             iteration=iteration,
         )
     return eval_results, all_experiences

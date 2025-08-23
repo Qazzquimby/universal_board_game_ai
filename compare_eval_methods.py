@@ -66,9 +66,9 @@ def run_comparison(config: AppConfig):
     eval_results, _ = run_eval_against_benchmark(
         iteration=-1,  # To prevent logging to reporter
         reporter=reporter,
-        current_agent=az_agent_iter_1,
-        best_agent=mcts_agent,
-        best_agent_name=mcts_agent_name,
+        agent_in_training=az_agent_iter_1,
+        benchmark_agent=mcts_agent,
+        benchmark_agent_name=mcts_agent_name,
         config=config,
         env=env,
     )

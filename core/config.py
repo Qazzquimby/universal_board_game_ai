@@ -38,7 +38,7 @@ class AlphaZeroConfig:
     hidden_layer_size: int = 128  # Size for the MLP hidden layers
     num_hidden_layers: int = 2  # Number of hidden layers in the MLP
     replay_buffer_size: int = (
-        20_000  # todo configure to be on avg 3 iterations of games
+        10_000 * 75  # 128 * 2 * 75  # todo configure to be on avg 3 iterations of games
     )
     training_batch_size: int = 256
     # Weight for value loss (default 1.0, try increasing)
@@ -98,7 +98,7 @@ class MuZeroConfig:
 class TrainingConfig:
     # Specific to AlphaZero/MuZero training loops
     num_iterations: int = 1000  # Total training iterations
-    num_games_per_iteration: int = 128 * 2
+    num_games_per_iteration: int = 10_000  # 128 * 2
     # # Number of epochs (passes over replay buffer) per learning phase
     # num_epochs_per_iteration: int = 4
     # How often (in iterations) to run sanity checks (0=only at end, 1=every iteration)
