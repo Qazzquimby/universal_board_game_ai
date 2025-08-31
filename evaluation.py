@@ -32,8 +32,11 @@ def _play_one_game(
         The index of the winning player (0 or 1), or None for a draw.
     """
     done = False
-    agent0.reset_game()
-    agent1.reset_game()
+
+    for agent in (agent0, agent1):
+        agent.reset_game()
+        if hasattr(agent, "network") and agent.network:
+            agent.network.eval()
 
     while not done:
         current_player_idx = env.get_current_player()
