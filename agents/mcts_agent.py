@@ -195,6 +195,9 @@ class BaseMCTSAgent(Agent):
 
         return contender_actions
 
+    def reset_game(self) -> None:
+        self.node_cache = MCTSNodeCache()
+
 
 class MCTSAgent(BaseMCTSAgent):
     def __init__(
