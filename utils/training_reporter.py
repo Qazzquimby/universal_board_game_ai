@@ -13,14 +13,14 @@ class TrainingReporter:
         self.config = config
         self.agent = agent
         self.start_time = start_time
-        if self.config.wandb.enabled:
-            wandb.login(key=WANDB_KEY)
-            wandb.init(
-                project=self.config.wandb.project_name,
-                entity=self.config.wandb.entity or None,
-                name=self.config.wandb.run_name or None,
-                config=self.config.to_dict(),
-            )
+        # if self.config.wandb.enabled:
+        #     wandb.login(key=WANDB_KEY)
+        #     wandb.init(
+        #         project=self.config.wandb.project_name,
+        #         entity=self.config.wandb.entity or None,
+        #         name=self.config.wandb.run_name or None,
+        #         config=self.config.to_dict(),
+        #     )
 
     def log_iteration_start(self, iteration: int):
         logger.info(
@@ -84,7 +84,11 @@ class TrainingReporter:
                 ),
                 "iteration": iteration + 1,
             }
-            wandb.log(wandb_eval_log)
+            try:
+                wandb.log(wandb_eval_log)
+            except Exception as e:
+                print("Couldn't log to wandb")
+                pass
             logger.info(f"Logged periodic evaluation results to WandB.")
 
     def finish(self):
