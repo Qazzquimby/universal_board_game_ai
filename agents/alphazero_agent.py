@@ -220,15 +220,7 @@ class AlphaZeroAgent(BaseMCTSAgent):
                 "Must run `act()` to perform a search before getting a policy target."
             )
 
-        if not self.root.edges:
-            # If there are no edges, it implies no actions were explored, possibly because
-            # it's a terminal state. The policy target should be uniform or zero,
-            # but it must match the length of legal_actions.
-            if not legal_actions:
-                return np.array([], dtype=np.float32)
-            # This case might indicate an issue, but we return a uniform distribution
-            # to avoid crashing.
-            return np.ones(len(legal_actions), dtype=np.float32) / len(legal_actions)
+        assert self.root.edges
 
         action_visits: Dict[ActionType, int] = {
             action: edge.num_visits for action, edge in self.root.edges.items()
