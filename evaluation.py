@@ -90,7 +90,11 @@ def run_test_games(
         dict: Aggregated results {agent1_name: total_wins, agent2_name: total_wins, "draws": total_draws}
     """
     print(f"\n--- Testing {agent0_name} vs {agent1_name} ---")
-    results = {agent0_name: 0, agent1_name: 0, "draws": 0}
+    results = {
+        agent0_name: {"wins_as_0": 0, "wins_as_1": 0},
+        agent1_name: {"wins_as_0": 0, "wins_as_1": 0},
+        "draws": 0,
+    }
 
     profiler = GameProfiler()
 
@@ -104,25 +108,37 @@ def run_test_games(
                 winner = _play_one_game(game_env, agent0, agent1, profiler=profiler)
 
                 if winner == 0:
-                    results[agent0_name] += 1
+                    results[agent0_name]["wins_as_0"] += 1
                 elif winner == 1:
-                    results[agent1_name] += 1
+                    results[agent1_name]["wins_as_1"] += 1
                 else:
                     results["draws"] += 1
             else:
                 winner = _play_one_game(game_env, agent1, agent0, profiler=profiler)
                 if winner == 0:
-                    results[agent1_name] += 1
+                    results[agent1_name]["wins_as_0"] += 1
                 elif winner == 1:
-                    results[agent0_name] += 1
+                    results[agent0_name]["wins_as_1"] += 1
                 else:
                     results["draws"] += 1
-            pbar.set_postfix(results)
+            pbar.set_postfix(
+                {
+                    f"{agent0_name}_wins": sum(results[agent0_name].values()),
+                    f"{agent1_name}_wins": sum(results[agent1_name].values()),
+                    "draws": results["draws"],
+                }
+            )
             pbar.update(1)
 
+    agent0_total_wins = sum(results[agent0_name].values())
+    agent1_total_wins = sum(results[agent1_name].values())
     log_results = {
-        f"{agent0_name} total wins": results[agent0_name],
-        f"{agent1_name} total wins": results[agent1_name],
+        f"{agent0_name} total wins": agent0_total_wins,
+        f"{agent0_name} wins as P0": results[agent0_name]["wins_as_0"],
+        f"{agent0_name} wins as P1": results[agent0_name]["wins_as_1"],
+        f"{agent1_name} total wins": agent1_total_wins,
+        f"{agent1_name} wins as P0": results[agent1_name]["wins_as_0"],
+        f"{agent1_name} wins as P1": results[agent1_name]["wins_as_1"],
         "total draws": results["draws"],
     }
     if profiler:
@@ -154,7 +170,15 @@ def run_evaluation(env: BaseEnvironment, agents: Dict[str, Agent], config: AppCo
     print("\n--- Starting Agent Evaluation ---")
     agent_names = list(agents.keys())
     agent_stats = {
-        name: {"wins": 0, "losses": 0, "draws": 0, "games": 0} for name in agent_names
+        name: {
+            "wins": 0,
+            "wins_as_0": 0,
+            "wins_as_1": 0,
+            "losses": 0,
+            "draws": 0,
+            "games": 0,
+        }
+        for name in agent_names
     }
 
     if len(agent_names) < 2:
@@ -177,29 +201,33 @@ def run_evaluation(env: BaseEnvironment, agents: Dict[str, Agent], config: AppCo
                 num_games=config.evaluation.full_eval_num_games,
                 config=config,
             )
-            agent0_wins = results[agent0_name]
-            agent1_wins = results[agent1_name]
+            agent0_wins = sum(results[agent0_name].values())
+            agent1_wins = sum(results[agent1_name].values())
             draws = results["draws"]
 
             agent_stats[agent0_name]["wins"] += agent0_wins
+            agent_stats[agent0_name]["wins_as_0"] += results[agent0_name]["wins_as_0"]
+            agent_stats[agent0_name]["wins_as_1"] += results[agent0_name]["wins_as_1"]
             agent_stats[agent0_name]["losses"] += agent1_wins
             agent_stats[agent0_name]["draws"] += draws
             agent_stats[agent0_name]["games"] += agent0_wins + agent1_wins + draws
 
             agent_stats[agent1_name]["wins"] += agent1_wins
+            agent_stats[agent1_name]["wins_as_0"] += results[agent1_name]["wins_as_0"]
+            agent_stats[agent1_name]["wins_as_1"] += results[agent1_name]["wins_as_1"]
             agent_stats[agent1_name]["losses"] += agent0_wins
             agent_stats[agent1_name]["draws"] += draws
             agent_stats[agent1_name]["games"] += agent0_wins + agent1_wins + draws
 
     print("\n--- Final Evaluation Summary ---")
-    print(
-        f"{'Agent':<20} | {'Wins':>5} | {'Losses':>6} | {'Draws':>5} | {'Win Rate':>10}"
-    )
-    print("-" * 58)
+    header = f"{'Agent':<20} | {'Wins (P0|P1)':>15} | {'Losses':>6} | {'Draws':>5} | {'Win Rate':>10}"
+    print(header)
+    print("-" * len(header))
     for agent_name in agent_names:
         stats = agent_stats[agent_name]
         total_games = stats["games"]
         win_rate = stats["wins"] / total_games if total_games > 0 else 0.0
+        wins_str = f"{stats['wins']} ({stats['wins_as_0']}|{stats['wins_as_1']})"
         print(
-            f"{agent_name:<20} | {stats['wins']:>5} | {stats['losses']:>6} | {stats['draws']:>5} | {win_rate:>10.2%}"
+            f"{agent_name:<20} | {wins_str:>15} | {stats['losses']:>6} | {stats['draws']:>5} | {win_rate:>10.2%}"
         )
