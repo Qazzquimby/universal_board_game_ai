@@ -337,6 +337,7 @@ def run_eval_against_benchmark(
     agent_in_training.name = "AlphaZero"
     benchmark_agent.name = benchmark_agent_name
     agent_in_training.network.eval()
+    benchmark_agent.temperature = 0.0
     if hasattr(benchmark_agent, "network") and benchmark_agent.network:
         benchmark_agent.network.eval()
 
@@ -417,6 +418,7 @@ def run_eval_against_benchmark(
             benchmark_agent_name=benchmark_agent_name,
             iteration=iteration,
         )
+    benchmark_agent.temperature = 1.0
     return eval_results, all_experiences
 
 
