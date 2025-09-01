@@ -254,7 +254,9 @@ def run_self_play(
     return all_experiences_iteration
 
 
-def check_if_az_outperforms_mcts(iteration, reporter, current_agent, mcts_agent, env):
+def check_if_az_outperforms_mcts(
+    iteration, current_agent, mcts_agent, env, reporter=None
+):
     logger.info("Evaluating AlphaZero against MCTS for promotion...")
     original_num_games = config.evaluation.periodic_eval_num_games
     config.evaluation.periodic_eval_num_games = 20
@@ -322,12 +324,12 @@ def add_results_to_buffer(
 
 def run_eval_against_benchmark(
     iteration: int,
-    reporter: TrainingReporter,
     agent_in_training: AlphaZeroAgent,
     benchmark_agent: Union[AlphaZeroAgent, MCTSAgent],
     benchmark_agent_name: str,
     config: AppConfig,
     env: BaseEnvironment,
+    reporter: TrainingReporter = None,
 ) -> Tuple[dict, list]:
     logger.info(
         f"\n--- Running Evaluation vs '{benchmark_agent_name}' (Iteration {iteration + 1}) ---"
@@ -409,7 +411,7 @@ def run_eval_against_benchmark(
         "win_rate": wins[agent_in_training.name] / num_games if num_games > 0 else 0,
     }
 
-    if iteration > -1:  # Don't log for initial evaluation
+    if iteration > -1 and reporter:  # Don't log for initial evaluation
         reporter.log_evaluation_results(
             eval_results=eval_results,
             benchmark_agent_name=benchmark_agent_name,
