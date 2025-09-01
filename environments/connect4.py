@@ -107,6 +107,64 @@ class Connect4(BaseEnvironment):
             return False
         return True
 
+    @staticmethod
+    def check_for_winner_from_pieces(
+        pieces_df: DataFrame, width: int, height: int
+    ) -> Optional[int]:
+        """Checks for a winner on the given board state. Returns winning player_id or None."""
+        if pieces_df.is_empty():
+            return None
+
+        board = [[None] * width for _ in range(height)]
+        for r, c, p in pieces_df.rows():
+            board[r][c] = p
+
+        # Check horizontal
+        for r in range(height):
+            for c in range(width - 3):
+                if (
+                    board[r][c] is not None
+                    and board[r][c] == board[r][c + 1]
+                    and board[r][c] == board[r][c + 2]
+                    and board[r][c] == board[r][c + 3]
+                ):
+                    return board[r][c]
+
+        # Check vertical
+        for r in range(height - 3):
+            for c in range(width):
+                if (
+                    board[r][c] is not None
+                    and board[r][c] == board[r + 1][c]
+                    and board[r][c] == board[r + 2][c]
+                    and board[r][c] == board[r + 3][c]
+                ):
+                    return board[r][c]
+
+        # Check diagonal (down-right)
+        for r in range(height - 3):
+            for c in range(width - 3):
+                if (
+                    board[r][c] is not None
+                    and board[r][c] == board[r + 1][c + 1]
+                    and board[r][c] == board[r + 2][c + 2]
+                    and board[r][c] == board[r + 3][c + 3]
+                ):
+                    return board[r][c]
+
+        # Check anti-diagonal (up-right)
+        for r in range(3, height):
+            for c in range(width - 3):
+                if (
+                    board[r][c] is not None
+                    and board[r][c] == board[r - 1][c + 1]
+                    and board[r][c] == board[r - 2][c + 2]
+                    and board[r][c] == board[r - 3][c + 3]
+                ):
+                    return board[r][c]
+
+        return None
+
     def _check_win(self, player_coords, row: int, col: int) -> bool:
         """Check if the player who just moved to (row, col) has won."""
         win_condition = 4
