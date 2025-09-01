@@ -3,14 +3,13 @@ from pathlib import Path
 from typing import Dict
 from loguru import logger
 
-from agents.mcts_agent_old import MCTSAgent_Old
-
 import torch.optim as optim
 from agents.alphazero_agent import (
     AlphaZeroAgent,
     AlphaZeroExpansion,
     AlphaZeroEvaluation,
 )
+from agents.random_agent import RandomAgent
 from core.agent_interface import Agent
 from core.config import (
     AppConfig,
@@ -112,6 +111,8 @@ def get_agents(
         num_simulations=config.mcts.num_simulations,
     )
     agents[mcts_agent_name] = mcts_agent
+
+    # agents["Random"] = RandomAgent(env=env)
 
     # mcts_agent_old_name = f"MCTS_old_{config.mcts.num_simulations}"
     # mcts_agent_old = MCTSAgent_Old(

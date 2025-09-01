@@ -15,14 +15,9 @@ class RandomAgent(Agent):
         self.env = env  # Keep env reference mainly for copy()
 
     # Update action return type hint
-    def act(self, state: StateType) -> ActionType:
-        """Choose a random valid action based on the provided state."""
-        # Create a temporary environment copy and set its state
-        temp_env = self.env.copy()
-        temp_env.set_state(state)
-
-        # Get legal actions from the temporary environment
-        valid_actions = temp_env.get_legal_actions()
+    def act(self, env: BaseEnvironment) -> ActionType:
+        """Choose a random valid action from the current environment state."""
+        valid_actions = env.get_legal_actions()
 
         if valid_actions:
             return random.choice(valid_actions)
