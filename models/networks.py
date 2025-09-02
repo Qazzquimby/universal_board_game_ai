@@ -187,6 +187,35 @@ class AlphaZeroNet(nn.Module):
             policy_dict = {
                 action: prob.item() for action, prob in zip(legal_actions, policy_probs)
             }
+
+            # TEMP SCALING
+            # strength = 1
+            # # 0 means uniform
+            # # 1 means unchanged
+            # # > 1 scales towards endpoints
+            #
+            # #
+            # value = sharpen_in_range(
+            #     value=value, range_min=-1, range_max=1, sharpness=strength
+            # )
+            #
+            # #
+            # policy_uniform = 1 / len(policy_dict)
+            # policy_transformed = {
+            #     k: sharpen_in_range(
+            #         value=v,
+            #         range_min=0,
+            #         range_max=1,
+            #         sharpness=strength,
+            #         home_point=policy_uniform,
+            #     )
+            #     for k, v in policy_dict.items()
+            # }
+            # policy_transformed_sum = sum(policy_transformed.values())
+            # policy_dict = {
+            #     k: v / policy_transformed_sum for k, v in policy_dict.items()
+            # }
+
             return policy_dict, value
 
     def forward(
@@ -339,3 +368,22 @@ class AlphaZeroNet(nn.Module):
         nn.init.constant_(self.value_head[0].bias, 0)
         nn.init.constant_(self.policy_head[-1].weight, 0)
         nn.init.constant_(self.policy_head[-1].bias, 0)
+
+
+def sharpen_in_range(
+    value: float,
+    range_min: float,
+    range_max: float,
+    sharpness: float,
+    home_point: float = None,
+):
+    if sharpness <= 0:
+        sharpness = 0.0001
+    if home_point is None:
+        home_point = range_min + (range_max - range_min) / 2
+
+    nearest_edge = range_max if value > home_point else range_min
+    distance_edge_from_home = nearest_edge - home_point
+    proportion = (value - home_point) / distance_edge_from_home
+    new_proportion = proportion ** (1.0 / sharpness)
+    return home_point + new_proportion * distance_edge_from_home
