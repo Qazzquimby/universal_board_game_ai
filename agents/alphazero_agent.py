@@ -165,6 +165,7 @@ class AlphaZeroAgent(BaseMCTSAgent):
         env: BaseEnvironment,
         config: AlphaZeroConfig,
         training_config: TrainingConfig,
+        model_name: str = "alphazero",
     ):
         super().__init__(
             num_simulations=config.num_simulations,
@@ -177,6 +178,8 @@ class AlphaZeroAgent(BaseMCTSAgent):
         self.optimizer = optimizer
         self.env = env
         self.device = INFERENCE_DEVICE
+        self.model_name = model_name
+        self.name = model_name.capitalize()
         if self.network:
             self.network.to(self.device)
             self.network.eval()
@@ -648,13 +651,13 @@ class AlphaZeroAgent(BaseMCTSAgent):
     def _get_save_path(self) -> Path:
         """Constructs the save file path for the network weights."""
         env_type_name = type(self.env).__name__
-        filename = f"alphazero_net_{env_type_name}.pth"
+        filename = f"{self.model_name}_net_{env_type_name}.pth"
         return DATA_DIR / filename
 
     def _get_optimizer_save_path(self) -> Path:
         """Constructs the save file path for the optimizer state."""
         env_type_name = type(self.env).__name__
-        filename = f"alphazero_optimizer_{env_type_name}.pth"
+        filename = f"{self.model_name}_optimizer_{env_type_name}.pth"
         return DATA_DIR / filename
 
     def save(self, filepath: Optional[Path] = None) -> None:
@@ -742,7 +745,8 @@ class AlphaZeroAgent(BaseMCTSAgent):
         self.root = None
 
 
-def make_pure_az(
+def _make_agent(
+    agent_class,
     env: BaseEnvironment,
     config: AlphaZeroConfig,
     training_config: TrainingConfig,
@@ -762,7 +766,7 @@ def make_pure_az(
         network = DummyAlphaZeroNet(env)
         optimizer = None
 
-    return AlphaZeroAgent(
+    return agent_class(
         selection_strategy=UCB1Selection(exploration_constant=config.cpuct),
         expansion_strategy=AlphaZeroExpansion(network=network),
         evaluation_strategy=AlphaZeroEvaluation(network=network),
@@ -772,6 +776,17 @@ def make_pure_az(
         env=env,
         config=config,
         training_config=training_config,
+    )
+
+
+def make_pure_az(
+    env: BaseEnvironment,
+    config: AlphaZeroConfig,
+    training_config: TrainingConfig,
+    should_use_network: bool,
+):
+    return _make_agent(
+        AlphaZeroAgent, env, config, training_config, should_use_network
     )
 
 

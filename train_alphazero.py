@@ -1,3 +1,4 @@
+import random
 import sys
 import json
 import time
@@ -11,11 +12,9 @@ from agents.mcts_agent import MCTSAgent, make_pure_mcts
 from core.config import AppConfig, DATA_DIR
 from core.serialization import LOG_DIR, save_game_log
 from environments.base import BaseEnvironment, DataFrame
-from agents.alphazero_agent import AlphaZeroAgent
-from factories import (
-    get_environment,
-    get_agents,
-)
+from agents.alphazero_agent import AlphaZeroAgent, make_pure_az
+from agents.muzero_agent import MuZeroAgent, make_pure_muzero
+from factories import get_environment
 from utils.plotting import plot_losses
 from utils.training_reporter import TrainingReporter
 
@@ -82,24 +81,33 @@ def load_game_logs_into_buffer(agent: AlphaZeroAgent, env_name: str, buffer_limi
     )
 
 
-def run_training_loop(config: AppConfig, env_name_override: str = None):
-    """Runs the AlphaZero training process."""
+def run_training_loop(
+    config: AppConfig, model_type: str, env_name_override: str = None
+):
+    """Runs the training process for a given model type (AlphaZero or MuZero)."""
 
     if env_name_override:
         config.env.name = env_name_override
 
     env = get_environment(config.env)
-    agents = get_agents(env, config)
-    current_agent = next(
-        agent for agent in agents.values() if isinstance(agent, AlphaZeroAgent)
-    )
-    assert isinstance(current_agent, AlphaZeroAgent)
+
+    if model_type == "alphazero":
+        current_agent = make_pure_az(
+            env=env,
+            config=config.alpha_zero,
+            training_config=config.training,
+            should_use_network=True,
+        )
+    else:
+        raise ValueError(f"Unknown model type: {model_type}")
 
     mcts_agent = make_pure_mcts(num_simulations=config.mcts.num_simulations)
     has_checkpoint = current_agent.load()
 
     if has_checkpoint:
-        logger.info("Checkpoint found, starting with AlphaZero for self-play.")
+        logger.info(
+            f"Checkpoint found, starting with {current_agent.name} for self-play."
+        )
         self_play_agent = current_agent
     else:
         logger.info("No checkpoint, starting with pure MCTS for self-play.")
@@ -112,7 +120,7 @@ def run_training_loop(config: AppConfig, env_name_override: str = None):
     )
 
     logger.info(
-        f"Starting AlphaZero training for {config.training.num_iterations} iterations...\n"
+        f"Starting {current_agent.name} training for {config.training.num_iterations} iterations...\n"
         f"({config.training.num_games_per_iteration} self-play games per iteration)"
     )
 
@@ -145,30 +153,32 @@ def run_training_loop(config: AppConfig, env_name_override: str = None):
             reporter.log_iteration_end(iteration=iteration, metrics=metrics)
 
         if isinstance(self_play_agent, MCTSAgent):
-            eval_results = check_if_az_outperforms_mcts(
+            eval_results = check_if_agent_outperforms_mcts(
                 iteration=iteration,
                 reporter=reporter,
                 current_agent=current_agent,
                 mcts_agent=mcts_agent,
                 env=env,
+                config=config,
             )
 
             if eval_results["win_rate"] > 0.6:
                 logger.info(
-                    f"AlphaZero outperformed MCTS with win rate: {eval_results['win_rate']:.2f}. "
-                    "Promoting to use AlphaZero for self-play."
+                    f"{current_agent.name} outperformed MCTS with win rate: {eval_results['win_rate']:.2f}. "
+                    f"Promoting to use {current_agent.name} for self-play."
                 )
                 self_play_agent = current_agent
             else:
                 logger.info(
-                    f"AlphaZero did not outperform MCTS (win rate: {eval_results['win_rate']:.2f}). "
+                    f"{current_agent.name} did not outperform MCTS (win rate: {eval_results['win_rate']:.2f}). "
                     "Continuing with MCTS for self-play."
                 )
         else:
             self_play_agent = current_agent
 
         checkpoint_path = (
-            DATA_DIR / f"alphazero_net_{config.env.name}_iter_{iteration + 1}.pth"
+            DATA_DIR
+            / f"{current_agent.model_name}_net_{config.env.name}_iter_{iteration + 1}.pth"
         )
         current_agent.save(checkpoint_path)
         current_agent.save()
@@ -176,7 +186,7 @@ def run_training_loop(config: AppConfig, env_name_override: str = None):
 
     plot_losses(total_losses, value_losses, policy_losses)
 
-    logger.info("\n--- AlphaZero Training Finished ---")
+    logger.info(f"\n--- {current_agent.name} Training Finished ---")
 
     reporter.finish()
 
@@ -244,10 +254,10 @@ def run_self_play(
     return all_experiences_iteration
 
 
-def check_if_az_outperforms_mcts(
-    iteration, current_agent, mcts_agent, env, reporter=None
+def check_if_agent_outperforms_mcts(
+    iteration, current_agent, mcts_agent, env, config, reporter=None
 ):
-    logger.info("Evaluating AlphaZero against MCTS for promotion...")
+    logger.info(f"Evaluating {current_agent.name} against MCTS for promotion...")
     original_num_games = config.evaluation.periodic_eval_num_games
     config.evaluation.periodic_eval_num_games = 20
     eval_results, tournament_experiences = run_eval_against_benchmark(
@@ -318,7 +328,6 @@ def run_eval_against_benchmark(
     logger.info(
         f"\n--- Running Evaluation vs '{benchmark_agent_name}' (Iteration {iteration + 1}) ---"
     )
-    agent_in_training.name = "AlphaZero"
     benchmark_agent.name = benchmark_agent_name
     agent_in_training.network.eval()
     benchmark_agent.temperature = 0.0
@@ -457,12 +466,19 @@ def run_sanity_checks(env: BaseEnvironment, agent: AlphaZeroAgent):
 
 if __name__ == "__main__":
     config = AppConfig()
+    model_type_arg = "alphazero"
     env_override = None
 
+    # Basic command line parsing: train.py [model_type] [env_name]
     if len(sys.argv) > 1:
-        env_override = sys.argv[1]
+        if sys.argv[1] in ["alphazero", "muzero"]:
+            model_type_arg = sys.argv[1]
+            if len(sys.argv) > 2:
+                env_override = sys.argv[2]
+        else:
+            env_override = sys.argv[1]
 
     logger.remove()
     logger.add(sys.stderr, level="INFO")
 
-    run_training_loop(config, env_name_override=env_override)
+    run_training_loop(config, model_type=model_type_arg, env_name_override=env_override)
