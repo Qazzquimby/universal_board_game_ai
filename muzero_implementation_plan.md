@@ -1,3 +1,8 @@
+Oh but for stochasticity
+you can get a range over hidden state, sure, but the legal actions would be totally different in different successor states.
+Could do (hidden state distribution) -> (specific hidden state) -> predict legal action set
+But that would be a lot of repeated work per simulation step, and with continuous action tokens it wouldn't repeat edges
+
 # MuZero Implementation Plan
 
 ## 1. Introduction
@@ -8,136 +13,57 @@ The implementation will require three new core components, encapsulated within a
 
 - The state is represented by a dictionary of DataFrames, which are converted to tokens.
 - The action space is dynamic and potentially large; we cannot assume a fixed superset of actions.
+- Well its probably okay to repeat samples, maybe have 5 randomizations. "Progressive Widening"?
+- https://aistudio.google.com/prompts/1rWCyLuGL2ruG2XYIEn0p9lHwNxjv6U97
 
-## 2. Core MuZero Components
 
-A MuZero model consists of three main functions, which we will implement in a single `MuZeroNet` module:
 
-1.  **Representation Function (h):**
-    -   **Input:** The raw game state (dictionary of DataFrames).
-    -   **Output:** An initial *hidden state* (`s_0`). This is a fixed-size vector that summarizes the initial observation.
-    -   **Implementation:** We can largely reuse the existing `AlphaZeroNet`'s embedding layers and transformer encoder. The hidden state `s_0` can be derived from the transformer's output, for example, by taking the embedding corresponding to the special `[GAME]` token.
+hidden states should actually be a mean and std so we can generate stochastic states.
+We don't need reward at this time. Value is enough.
 
-2.  **Dynamics Function (g):**
-    -   **Input:** A previous hidden state (`s_{k-1}`) and an action (`a_k`).
-    -   **Output:** A predicted reward for taking that action (`r_k`) and the next hidden state (`s_k`).
-    -   **Implementation:** This is a completely new component. A simple approach is to:
-        -   Convert the action `a_k` into an embedding token (reusing the embedding logic from `AlphaZeroNet`).
-        -   Concatenate the hidden state `s_{k-1}` and the action embedding.
-        -   Pass this combined vector through an MLP to produce the next hidden state `s_k`.
-        -   Add a separate MLP head (the "reward head") to the dynamics function to predict the scalar reward `r_k`.
+def get_hidden_state(state_tokens, game_token, action_tokens) -> hidden_state_vector:
+    """Representation Function h"""
+    tokens go through transformer encoder
+    return (state tokens mean) concat (state tokens max) concat (game token)
+Input is the raw game state and legal move list.
+Can largely reuse embedding layers and transformer encoder in AlphaZeroNet.
 
-3.  **Prediction Function (f):**
-    -   **Input:** A hidden state (`s_k`).
-    -   **Output:** A predicted policy (`p_k`) and value (`v_k`).
-    -   **Implementation:** This is analogous to the policy and value heads in `AlphaZeroNet`. We can reuse the existing `policy_head` and `value_head`, which take the hidden state as input.
+def get_next_hidden_state(previous_hidden_state, action_token) -> hidden_state, value:
+    """Dynamics function g""")
+Can reuse embedding logic from AlphaZeroNet for the action?
+Can probably just be an MLP for next hidden state and an MLP for value.
 
-## 3. `MuZeroNet` Architecture (`models/networks.py`)
+def get_hidden_state_action_tokens(hidden_state) ?
+...
 
-A new class `MuZeroNet` should be created.
+def get_policy_and_value(hidden_state) -> list scores corresponding to policy tokens, value:
+Can reuse from AlphaZeroNet
 
-```python
-class MuZeroNet(nn.Module):
-    def __init__(self, ...):
-        super().__init__()
-        # Reuse from AlphaZeroNet
-        self.embedding_layers = ...
-        self.transformer_encoder = ...
-        self.policy_head = ...
-        self.value_head = ...
+Will need a MuZeroNet that shares most code with AZ but adds the new required heads
 
-        # New components
-        self.dynamics_network = ... # E.g., an MLP
-        self.reward_head = ... # E.g., a linear layer
 
-    def representation(self, state: StateType) -> torch.Tensor:
-        # state -> tokens -> transformer -> hidden_state
-        # ...
-        return hidden_state_s0
+MCTS statewithkey will need to accept the hidden state vector
+Make variants of the MCTS components such that:
+- Root calls get hidden state
+- env uses get next hidden state instead of env.step 
+- expansion and evaluation use muzero's get_policy_and_value
 
-    def dynamics(self, hidden_state: torch.Tensor, action: ActionType) -> Tuple[torch.Tensor, torch.Tensor]:
-        # action -> action_embedding
-        # combined = concat(hidden_state, action_embedding)
-        # next_hidden_state = self.dynamics_network(combined)
-        # reward = self.reward_head(next_hidden_state) # or from `combined`
-        # ...
-        return next_hidden_state, reward
+Probably needs new `SelectionStrategy`, `ExpansionStrategy`, and `EvaluationStrategy` that interact with the `MuZeroNet`.
 
-    def prediction(self, hidden_state: torch.Tensor, legal_actions: List[ActionType]) -> Tuple[Dict[ActionType, float], float]:
-        # policy_logits = self.policy_head(...)
-        # value = self.value_head(hidden_state)
-        # ...
-        return policy_dict, value
+Need train_muzero.py and `agents/muzero_agent.py`, which should reuse from train_alphazero, or move shared code to a new file.
 
-    # These methods will be called by the agent/MCTS
-    def initial_inference(self, state: StateType, legal_actions: List[ActionType]) -> Tuple[torch.Tensor, Dict[ActionType, float], float]:
-        hidden_state = self.representation(state)
-        policy_dict, value = self.prediction(hidden_state, legal_actions)
-        return hidden_state, policy_dict, value
+Data collection is same as alphazero
 
-    def recurrent_inference(self, hidden_state: torch.Tensor, action: ActionType, legal_actions: List[ActionType]) -> Tuple[torch.Tensor, float, Dict[ActionType, float], float]:
-        next_hidden_state, reward = self.dynamics(hidden_state, action)
-        policy_dict, value = self.prediction(next_hidden_state, legal_actions)
-        return next_hidden_state, reward, policy_dict, value
-```
+---
+Unrolling loss calculation
+For a fixed number of steps, eg 5
 
-## 4. MCTS Algorithm Modifications (`algorithms/mcts.py`)
+Get initial state to hidden and it's policy and value,
+get loss for policy and loss for value
 
-The core of the MCTS search must be updated to use the learned model instead of the environment.
+Given the taken action, predict the next hidden state and its own policy and value and take the loss 
 
-1.  **`MCTSNode` State:**
-    -   The `MCTSNode` will no longer store a `StateWithKey`. Instead, it will store the **hidden state** vector.
-    -   It should also store the predicted reward for the action that led to this node.
+At this time we won't use reanalyse. We'll use it later.
 
-2.  **Search Process:**
-    -   **Root Node:** At the start of a search, the agent calls `MuZeroNet.initial_inference()` with the real environment state. This provides the root node's hidden state (`s_0`), policy priors, and value.
-    -   **Selection:** When traversing the tree, instead of calling `env.step()`, the MCTS will:
-        1.  Select an action `a_k` based on the UCB score (or PUCT).
-        2.  Retrieve the next node from the current node's children. This child node already contains the next hidden state `s_k`.
-    -   **Expansion & Evaluation:** When a leaf node is reached, instead of calling the environment, the agent will call `MuZeroNet.recurrent_inference()` with the leaf's hidden state and the selected action. This will:
-        1.  Compute the next hidden state `s_k` and reward `r_k` via the dynamics function `g`.
-        2.  Compute the policy `p_k` and value `v_k` for the new state via the prediction function `f`.
-        3.  A new `MCTSNode` is created with `s_k` and expanded with the policy priors `p_k`. The edge leading to it stores the reward `r_k`.
-
-3.  **Value and UCB Score:**
-    -   The value of an edge, `Q(s, a)`, must now incorporate the predicted reward: `Q(s, a) = r(s,a) + gamma * V(s')`.
-    -   The UCB score formula will use this updated `Q(s, a)`.
-
-This requires creating new MuZero-specific implementations of `SelectionStrategy`, `ExpansionStrategy`, and `EvaluationStrategy` that interact with the `MuZeroNet`.
-
-## 5. Training Process (`train.py` and `agents/muzero_agent.py`)
-
-The training loop needs to be updated to compute MuZero's unique loss function over unrolled trajectories.
-
-1.  **Data Collection:** Self-play remains the same. The agent uses the MuZero MCTS to play games, and we store trajectories of `(state, action, policy_target, reward)`. The `reward` will be 0 for all steps until the terminal state, where it is the game outcome.
-
-2.  **Loss Calculation (Unrolling):**
-    -   For each sample from the replay buffer, we perform a "training unroll" for a fixed number of steps (e.g., `K=5`).
-    -   **Step 0 (Initial state):**
-        -   `s_0 = h(state_0)`
-        -   `p_0, v_0 = f(s_0)`
-        -   Calculate loss: `L_0 = loss_value(v_0, z_0) + loss_policy(p_0, pi_0)` where `z_0` is the true discounted game outcome and `pi_0` is the MCTS policy target.
-    -   **Step k=1 to K (Recurrent steps):**
-        -   `r_k, s_k = g(s_{k-1}, a_k)` where `a_k` is the *actual action taken* in the game at that step.
-        -   `p_k, v_k = f(s_k)`
-        -   Calculate loss: `L_k = loss_value(v_k, z_k) + loss_policy(p_k, pi_k) + loss_reward(r_k, actual_reward_k)`.
-    -   **Total Loss:** The final loss is the sum of the initial loss and the average of the recurrent losses, summed over the unroll steps. Gradient scaling might be needed for the recurrent steps.
-
-3.  **`MuZeroAgent` Implementation:**
-    -   This agent will contain the `MuZeroNet` and its optimizer.
-    -   The `train_network` method will implement the unrolling and loss calculation logic described above.
-    -   It will need to sample full trajectories from the replay buffer, not just individual steps.
-
-## 6. Summary of Required Code Changes
-
--   **`models/networks.py`:**
-    -   Create `MuZeroNet` with `representation`, `dynamics`, and `prediction` functions.
--   **`algorithms/mcts.py`:**
-    -   Modify `MCTSNode` to store a hidden state and reward.
-    -   Create new MCTS strategy classes (`MuZeroSelection`, `MuZeroExpansion`) that call the `MuZeroNet`'s recurrent inference instead of `env.step()`.
--   **`agents/muzero_agent.py`:**
-    -   Implement `MuZeroAgent` to orchestrate the new network and MCTS.
-    -   Implement the `train_network` method with the unrolling logic.
--   **`train.py`:**
-    -   Update the data loading and training loop to support trajectory-based sampling and the new training logic in `MuZeroAgent`.
-    -   Ensure game logs (`.json` files) store enough information (full trajectories) for MuZero's training needs. The current format seems to be step-by-step, which is fine, but the data loader will need to reconstruct trajectories.
+`MuZeroAgent` Implementation has the unrolling and loss calculation logic described above.
+It will need to sample full trajectories from the replay buffer, not just individual steps.
