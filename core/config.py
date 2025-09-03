@@ -38,7 +38,8 @@ class AlphaZeroConfig:
     hidden_layer_size: int = 128  # Size for the MLP hidden layers
     num_hidden_layers: int = 2  # Number of hidden layers in the MLP
     replay_buffer_size: int = (
-        5_000 * 75
+        5_000
+        * 75
         # 128
         # * 2
         # * 75  # todo configure to be on avg 3 iterations of games

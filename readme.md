@@ -1,6 +1,18 @@
 On muzero difficulties
 https://aistudio.google.com/prompts/1trfIx7qtUauQZ-9WgecTgO6bP5RbP016
 
+#
+
+
+
+On adding symmetry
+Connect4 "x" is symmetrical by 0-width. I'd like that to be recorded in the schema.
+I'd then like, when a state is loaded for train/test data, that it randomly flip or not.
+Please end your message by clearly explaining the status after your changes.
+Note that legal moves do *not* need to correspond to columns like this, its only coincidence in connect4.
+ColumnActionType probably need to be replaced with a pydantic model, which for connect4 would only contain 'x' 
+
+#
 
 
 The goal is to create a universal board game engine which makes it easy (as it can be) to define any

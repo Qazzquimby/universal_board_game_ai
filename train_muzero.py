@@ -1,58 +1,115 @@
 import sys
+import json
 import time
-from typing import Union, List, Tuple
+import random
+from typing import Union, Tuple
 
 import numpy as np
 from tqdm import tqdm
 from loguru import logger
 
-from agents.mcts_agent import MCTSAgent, make_pure_mcts  # Keep for benchmark
-from core.config import AppConfig
-from environments.base import BaseEnvironment, StateType
-from agents.muzero_agent import MuZeroAgent  # TODO: need factory
-from agents.alphazero_agent import AlphaZeroAgent  # For type hinting until refactor
-from factories import (
-    get_environment,
-    get_agents,  # This will need to be adapted for MuZero
-)
+from agents.mcts_agent import MCTSAgent, make_pure_mcts
+from core.config import AppConfig, DATA_DIR
+from core.serialization import LOG_DIR, save_game_log
+from environments.base import BaseEnvironment, DataFrame
+from agents.muzero_agent import MuZeroAgent, make_pure_muzero
+from factories import get_environment
 from utils.plotting import plot_losses
 from utils.training_reporter import TrainingReporter
 
 
-# TODO: This is nearly identical to the one in train_alphazero.py
-# Refactoring opportunity: Move this to a shared module.
 def load_game_logs_into_buffer(agent: MuZeroAgent, env_name: str, buffer_limit: int):
-    # ... This function will need to be adapted for MuZero's buffer format
-    logger.warning("load_game_logs_into_buffer for MuZero not fully implemented.")
-    pass
+    """
+    Loads existing game logs from LOG_DIR into the agent's train and validation
+    replay buffers, splitting them to maintain persistence across runs.
+    """
+    loaded_games = 0
+    if not LOG_DIR.exists():
+        logger.info("Log directory not found. Starting with empty buffers.")
+        return
+
+    logger.info(f"Scanning {LOG_DIR} for existing '{env_name}' game logs...")
+    log_files = sorted(LOG_DIR.glob(f"{env_name}_game*.json"), reverse=True)
+
+    if not log_files:
+        logger.info("No existing game logs found for this environment.")
+        return
+
+    all_experiences = []
+    for filepath in tqdm(log_files, desc="Scanning Logs"):
+        if len(all_experiences) >= buffer_limit:
+            break
+
+        with open(filepath, "r") as f:
+            game_data = json.load(f)
+
+        loaded_games += 1
+        for step_data in game_data:
+            state_json = step_data.get("state")
+            policy_target_list = step_data.get("policy_target")
+            value_target = step_data.get("value_target")
+
+            if (
+                state_json is not None
+                and policy_target_list is not None
+                and value_target is not None
+            ):
+                state = {
+                    table_name: DataFrame(
+                        data=table_data.get("_data"), columns=table_data.get("columns")
+                    )
+                    for table_name, table_data in state_json.items()
+                }
+                legal_actions_df = state.get("legal_actions")
+                if legal_actions_df is None or legal_actions_df.is_empty():
+                    continue
+
+                legal_actions = [row[0] for row in legal_actions_df.rows()]
+                policy_target = np.array(policy_target_list, dtype=np.float32)
+
+                all_experiences.append(
+                    (state, policy_target, value_target, legal_actions)
+                )
+
+    agent.add_experiences_to_buffer(all_experiences)
+    loaded_steps = len(agent.train_replay_buffer) + len(agent.val_replay_buffer)
+
+    logger.info(
+        f"Loaded {loaded_steps} steps from {loaded_games} games into replay buffers. "
+        f"Train: {len(agent.train_replay_buffer)}, Val: {len(agent.val_replay_buffer)}"
+    )
 
 
-def run_training(config: AppConfig, env_name_override: str = None):
-    """Runs the MuZero training process."""
+def run_training_loop(config: AppConfig, env_name_override: str = None):
+    """Runs the MuZero training process (bootstrapped from AlphaZero training loop)."""
 
-    # TODO: This setup is nearly identical to train_alphazero.py
-    # Refactoring opportunity: abstract the main training loop.
     if env_name_override:
         config.env.name = env_name_override
 
     env = get_environment(config.env)
-    # agents = get_agents(env, config) # This needs to be adapted for MuZero
-    # For now, let's assume we have a way to create a MuZero agent.
-    # current_agent = ... a MuZeroAgent instance
-    current_agent: MuZeroAgent = None  # Placeholder
-    if not current_agent:
-        logger.error("MuZero agent creation not implemented yet. Exiting.")
-        sys.exit(1)
 
-    logger.info("Initializing with pure MCTS as the starting 'best' agent.")
-    best_agent = make_pure_mcts(num_simulations=config.mcts.num_simulations)
-    best_agent.temperature = 1.0
-    self_play_agent = best_agent
-    best_agent_name = f"MCTS_{config.mcts.num_simulations}"
+    muzero_agent = make_pure_muzero(
+        env=env,
+        config=config.alpha_zero,
+        training_config=config.training,
+        should_use_network=True,
+    )
+    mcts_agent = make_pure_mcts(num_simulations=config.mcts.num_simulations)
 
-    # load_game_logs_into_buffer(
-    #     current_agent, config.env.name, config.muzero.replay_buffer_size # TODO: Muzero config
-    # )
+    has_checkpoint = muzero_agent.load()
+
+    if has_checkpoint:
+        logger.info("Checkpoint found, starting with MuZero for self-play.")
+        self_play_agent = muzero_agent
+    else:
+        logger.info("No checkpoint, starting with pure MCTS for self-play.")
+        self_play_agent = mcts_agent
+
+    self_play_agent.temperature = 0.15
+
+    load_game_logs_into_buffer(
+        muzero_agent, config.env.name, config.alpha_zero.replay_buffer_size
+    )
 
     logger.info(
         f"Starting MuZero training for {config.training.num_iterations} iterations...\n"
@@ -61,106 +118,292 @@ def run_training(config: AppConfig, env_name_override: str = None):
 
     total_losses, value_losses, policy_losses = [], [], []
 
-    outer_loop_iterator = range(config.training.num_iterations)
     start_time = time.time()
-    # reporter = TrainingReporter(config, current_agent, start_time) # Reporter might need adaptation
+    reporter = TrainingReporter(config, muzero_agent, start_time)
 
-    for iteration in outer_loop_iterator:
-        # reporter.log_iteration_start(iteration)
+    for iteration in range(config.training.num_iterations):
+        reporter.log_iteration_start(iteration)
 
-        logger.info(f"Running self-play with '{best_agent_name}'...")
-        # TODO: Self-play for MuZero needs to store rewards at each step.
+        logger.info(f"Running self-play with '{type(self_play_agent).__name__}'...")
         all_experiences_iteration = run_self_play(
             agent=self_play_agent, env=env, config=config
         )
         add_results_to_buffer(
             iteration=iteration,
             all_experiences_iteration=all_experiences_iteration,
-            agent=current_agent,
+            agent=muzero_agent,
             config=config,
         )
 
         logger.info("Running learning step...")
-        metrics = current_agent.train_network()
+        metrics = muzero_agent.train_network()
         if metrics:
-            # ... update losses, log metrics
-            pass
+            total_losses.append(metrics.train.loss)
+            value_losses.append(metrics.train.value_loss)
+            policy_losses.append(metrics.train.policy_loss)
+            reporter.log_iteration_end(iteration=iteration, metrics=metrics)
 
-        # TODO: Evaluation logic is identical to AlphaZero's.
-        # Refactoring opportunity: move to shared module.
-        if (
-            config.evaluation.run_periodic_evaluation
-            and (iteration + 1) % config.evaluation.periodic_eval_frequency == 0
-        ):
-            # eval_results, tournament_experiences = run_eval_against_benchmark(...)
-            # ... logic to check for new best agent, save checkpoint, etc.
-            pass
+        if isinstance(self_play_agent, MCTSAgent):
+            eval_results = check_if_muzero_outperforms_mcts(
+                iteration=iteration,
+                reporter=reporter,
+                current_agent=muzero_agent,
+                mcts_agent=mcts_agent,
+                env=env,
+                config=config,
+            )
 
-    logger.info("\nTraining complete. Saving final agent state.")
-    current_agent.save()
+            if eval_results["win_rate"] > 0.6:
+                logger.info(
+                    f"MuZero outperformed MCTS with win rate: {eval_results['win_rate']:.2f}. "
+                    "Promoting to use MuZero for self-play."
+                )
+                self_play_agent = muzero_agent
+            else:
+                logger.info(
+                    f"MuZero did not outperform MCTS (win rate: {eval_results['win_rate']:.2f}). "
+                    "Continuing with MCTS for self-play."
+                )
+        else:
+            self_play_agent = muzero_agent
+
+        checkpoint_path = (
+            DATA_DIR / f"muzero_net_{config.env.name}_iter_{iteration + 1}.pth"
+        )
+        muzero_agent.save(checkpoint_path)
+        muzero_agent.save()
+        logger.info(f"Saved checkpoint to {checkpoint_path}")
 
     plot_losses(total_losses, value_losses, policy_losses)
+
     logger.info("\n--- MuZero Training Finished ---")
 
-    # reporter.finish()
+    reporter.finish()
 
 
-# TODO: This is very similar to train_alphazero.py.
-# The main difference for MuZero is that `game_history` must also include the reward at each step.
 def run_self_play(
     agent: Union[MuZeroAgent, MCTSAgent], env: BaseEnvironment, config: AppConfig
 ):
-    logger.info("Running self play for MuZero")
+    logger.info("Running self play")
+    if hasattr(agent, "network") and agent.network:
+        agent.network.eval()
+
     num_games_total = config.training.num_games_per_iteration
     all_experiences_iteration = []
 
     for _ in tqdm(range(num_games_total), desc="Self-Play Games"):
         game_env = env.copy()
-        game_env.reset()
-        # For MuZero, history needs to store (observation, action, reward, policy_target)
+        state_with_key = game_env.reset()
         game_history = []
+        agent.reset_game()
 
-        while not game_env.state.done:
-            # ... similar to AlphaZero's self-play loop ...
-            # action = agent.act(game_env, train=True)
-            # policy_target = agent.get_policy_target()
-            # observation = game_env.get_state_with_key().state
-            # action_result = game_env.step(action)
-            # reward = action_result.reward # Assuming reward per step is available
-            # game_history.append((observation, action, reward, policy_target))
-            pass  # placeholder
+        while not state_with_key.done:
+            state = state_with_key.state
+            legal_actions = game_env.get_legal_actions()
+            action = agent.act(game_env, train=True)
 
-        # final_outcome doesn't mean much for step-by-step reward storage
-        all_experiences_iteration.append(game_history)
+            if isinstance(agent, MuZeroAgent):
+                policy_target = agent.get_policy_target(legal_actions)
+            elif isinstance(agent, MCTSAgent):
+                policy_target = np.zeros(len(legal_actions), dtype=np.float32)
+                if not agent.root:
+                    raise RuntimeError("MCTSAgent has no root after act()")
+                action_visits = {
+                    edge_action: edge.num_visits
+                    for edge_action, edge in agent.root.edges.items()
+                }
+                total_visits = sum(action_visits.values())
+                if total_visits > 0:
+                    visit_probs = {
+                        act: visits / total_visits
+                        for act, visits in action_visits.items()
+                    }
+                    for i, act in enumerate(legal_actions):
+                        act_key = tuple(act) if isinstance(act, list) else act
+                        policy_target[i] = visit_probs.get(act_key, 0.0)
+            else:
+                raise TypeError(f"Unsupported agent type for self-play: {type(agent)}")
+
+            state_with_actions = state.copy()
+            if legal_actions:
+                action_data = [[a] for a in legal_actions]
+                state_with_actions["legal_actions"] = DataFrame(
+                    data=action_data, columns=["action_id"]
+                )
+            else:
+                state_with_actions["legal_actions"] = DataFrame(
+                    data=[], columns=["action_id"]
+                )
+
+            game_history.append((state_with_actions, action, policy_target))
+            action_result = game_env.step(action)
+            state_with_key = action_result.next_state_with_key
+
+        final_outcome = game_env.get_reward_for_player(player=0)
+        all_experiences_iteration.append((game_history, final_outcome))
     return all_experiences_iteration
 
 
-# TODO: This is similar to train_alphazero.py
-# For MuZero, it will take the game history (with rewards) and just add it to the buffer.
+def check_if_muzero_outperforms_mcts(
+    iteration, current_agent, mcts_agent, env, config, reporter=None
+):
+    logger.info("Evaluating MuZero against MCTS for promotion...")
+    original_num_games = config.evaluation.periodic_eval_num_games
+    config.evaluation.periodic_eval_num_games = 20
+    eval_results, tournament_experiences = run_eval_against_benchmark(
+        iteration=iteration,
+        reporter=reporter,
+        agent_in_training=current_agent,
+        benchmark_agent=mcts_agent,
+        benchmark_agent_name="MCTS",
+        config=config,
+        env=env,
+    )
+    config.evaluation.periodic_eval_num_games = original_num_games
+    add_results_to_buffer(
+        iteration=iteration,
+        all_experiences_iteration=tournament_experiences,
+        agent=current_agent,
+        config=config,
+    )
+    return eval_results
+
+
 def add_results_to_buffer(
     iteration: int,
     all_experiences_iteration: list,
     agent: MuZeroAgent,
     config: AppConfig,
 ):
-    logger.warning("add_results_to_buffer for MuZero not implemented.")
-    # for raw_history in all_experiences_iteration:
-    #   agent.add_experiences_to_buffer([raw_history]) # Add whole game trajectory
-    pass
+    total_experiences_added = 0
+    total_games_processed = 0
+    game_log_index_offset = iteration * config.training.num_games_per_iteration
+
+    logger.info(
+        f"Processing {len(all_experiences_iteration)} collected game results..."
+    )
+    for i, (raw_history, final_outcome) in enumerate(all_experiences_iteration):
+        if not raw_history:
+            logger.warning(f"Skipping game {i} with empty raw history.")
+            continue
+
+        episode_result = agent.process_finished_episode(raw_history, final_outcome)
+
+        agent.add_experiences_to_buffer(episode_result.buffer_experiences)
+        total_experiences_added += len(episode_result.buffer_experiences)
+
+        current_game_log_index = game_log_index_offset + total_games_processed + 1
+        save_game_log(
+            logged_history=episode_result.logged_history,
+            iteration=iteration + 1,
+            game_index=current_game_log_index,
+            env_name=config.env.name,
+        )
+        total_games_processed += 1
+
+    logger.info(
+        f"Processed {total_games_processed} games, adding {total_experiences_added} experiences to replay buffer."
+    )
 
 
-# TODO: This function is IDENTICAL to the one in train_alphazero.py.
-# It can be moved to a shared module without any changes.
 def run_eval_against_benchmark(
     iteration: int,
-    reporter: TrainingReporter,
-    current_agent: AlphaZeroAgent,  # Should be generic Agent
-    best_agent: Union[AlphaZeroAgent, MCTSAgent],  # Should be generic Agent
-    best_agent_name: str,
+    agent_in_training: MuZeroAgent,
+    benchmark_agent: Union[MuZeroAgent, MCTSAgent],
+    benchmark_agent_name: str,
     config: AppConfig,
     env: BaseEnvironment,
-) -> Tuple[dict, List[Tuple[StateType, np.ndarray, float]]]:
-    pass  # Not implementing here, just pointing out it's a refactor candidate.
+    reporter: TrainingReporter = None,
+):
+    logger.info(
+        f"\n--- Running Evaluation vs '{benchmark_agent_name}' (Iteration {iteration + 1}) ---"
+    )
+    agent_in_training.name = "MuZero"
+    benchmark_agent.name = benchmark_agent_name
+    if hasattr(agent_in_training, "network") and agent_in_training.network:
+        agent_in_training.network.eval()
+    benchmark_agent.temperature = 0.0
+    if hasattr(benchmark_agent, "network") and benchmark_agent.network:
+        benchmark_agent.network.eval()
+
+    num_games = config.evaluation.periodic_eval_num_games
+    wins = {agent_in_training.name: 0, benchmark_agent.name: 0, "draw": 0}
+    all_experiences = []
+
+    for game_num in tqdm(range(num_games), desc=f"Eval vs {benchmark_agent.name}"):
+        game_env = env.copy()
+        state_with_key = game_env.reset()
+        game_history = []
+
+        agents = {0: agent_in_training, 1: benchmark_agent}
+        if game_num % 2 == 1:
+            agents = {0: benchmark_agent, 1: agent_in_training}
+        agents[0].reset_game()
+        agents[1].reset_game()
+
+        while not state_with_key.done:
+            player = game_env.get_current_player()
+            agent_for_turn = agents[player]
+
+            state = state_with_key.state
+            legal_actions = game_env.get_legal_actions()
+            action = agent_for_turn.act(game_env, train=False)
+
+            if isinstance(agent_for_turn, MuZeroAgent):
+                policy_target = agent_for_turn.get_policy_target(legal_actions)
+            elif isinstance(agent_for_turn, MCTSAgent):
+                policy_target = np.zeros(len(legal_actions), dtype=np.float32)
+                if hasattr(agent_for_turn, "root") and agent_for_turn.root:
+                    action_visits = {
+                        k: v.num_visits for k, v in agent_for_turn.root.edges.items()
+                    }
+                    total_visits = sum(action_visits.values())
+                    if total_visits > 0:
+                        visit_probs = {
+                            k: v / total_visits for k, v in action_visits.items()
+                        }
+                        for i, act in enumerate(legal_actions):
+                            act_key = tuple(act) if isinstance(act, list) else act
+                            policy_target[i] = visit_probs.get(act_key, 0.0)
+
+            state_with_actions = state.copy()
+            if legal_actions:
+                action_data = [[a] for a in legal_actions]
+                state_with_actions["legal_actions"] = DataFrame(
+                    data=action_data, columns=["action_id"]
+                )
+            else:
+                state_with_actions["legal_actions"] = DataFrame(
+                    data=[], columns=["action_id"]
+                )
+            game_history.append((state_with_actions, action, policy_target))
+            action_result = game_env.step(action)
+            state_with_key = action_result.next_state_with_key
+
+        outcome = game_env.get_reward_for_player(player=0)
+        all_experiences.append((game_history, outcome))
+
+        winner = game_env.get_winning_player()
+        if winner is None:
+            wins["draw"] += 1
+        else:
+            winner_agent = agents[winner]
+            wins[winner_agent.name] += 1
+
+    eval_results = {
+        "wins": wins,
+        "total_games": num_games,
+        "win_rate": wins[agent_in_training.name] / num_games if num_games > 0 else 0,
+    }
+
+    if iteration > -1 and reporter:
+        reporter.log_evaluation_results(
+            eval_results=eval_results,
+            benchmark_agent_name=benchmark_agent_name,
+            iteration=iteration,
+        )
+    benchmark_agent.temperature = 1.0
+    return eval_results, all_experiences
 
 
 if __name__ == "__main__":
@@ -173,4 +416,4 @@ if __name__ == "__main__":
     logger.remove()
     logger.add(sys.stderr, level="INFO")
 
-    run_training(config, env_name_override=env_override)
+    run_training_loop(config, env_name_override=env_override)

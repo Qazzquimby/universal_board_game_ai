@@ -67,15 +67,12 @@ def load_game_logs_into_buffer(agent: AlphaZeroAgent, env_name: str, buffer_limi
                 if legal_actions_df is None or legal_actions_df.is_empty():
                     continue
 
-                # Reconstruct the list of legal actions from the DataFrame
                 legal_actions = [row[0] for row in legal_actions_df.rows()]
-
                 policy_target = np.array(policy_target_list, dtype=np.float32)
                 all_experiences.append(
                     (state, policy_target, value_target, legal_actions)
                 )
 
-    # Add to agent's buffers, which will handle shuffling, splitting, and capacity
     agent.add_experiences_to_buffer(all_experiences)
     loaded_steps = len(agent.train_replay_buffer) + len(agent.val_replay_buffer)
 
@@ -108,9 +105,7 @@ def run_training_loop(config: AppConfig, env_name_override: str = None):
         logger.info("No checkpoint, starting with pure MCTS for self-play.")
         self_play_agent = mcts_agent
 
-    self_play_agent.temperature = (
-        1.0  # Use temperature for exploration during self-play
-    )
+    self_play_agent.temperature = 0.15
 
     load_game_logs_into_buffer(
         current_agent, config.env.name, config.alpha_zero.replay_buffer_size
@@ -170,10 +165,8 @@ def run_training_loop(config: AppConfig, env_name_override: str = None):
                     "Continuing with MCTS for self-play."
                 )
         else:
-            # After training, the current agent is used for the next self-play iteration.
             self_play_agent = current_agent
 
-        # Save a checkpoint of the agent after every iteration.
         checkpoint_path = (
             DATA_DIR / f"alphazero_net_{config.env.name}_iter_{iteration + 1}.pth"
         )
@@ -221,12 +214,10 @@ def run_self_play(
                 }
                 total_visits = sum(action_visits.values())
                 if total_visits > 0:
-                    # Create a dictionary of visit probabilities
                     visit_probs = {
                         act: visits / total_visits
                         for act, visits in action_visits.items()
                     }
-                    # Populate policy_target based on the order of legal_actions
                     for i, act in enumerate(legal_actions):
                         act_key = tuple(act) if isinstance(act, list) else act
                         policy_target[i] = visit_probs.get(act_key, 0.0)
@@ -235,7 +226,6 @@ def run_self_play(
 
             state_with_actions = state.copy()
             if legal_actions:
-                # Assuming actions are simple (int or tuple) and can be in one column
                 action_data = [[a] for a in legal_actions]
                 state_with_actions["legal_actions"] = DataFrame(
                     data=action_data, columns=["action_id"]
@@ -287,9 +277,7 @@ def add_results_to_buffer(
 ):
     total_experiences_added = 0
     total_games_processed = 0
-    game_log_index_offset = (
-        iteration * config.training.num_games_per_iteration
-    )  # Base index for this iteration
+    game_log_index_offset = iteration * config.training.num_games_per_iteration
 
     logger.info(
         f"Processing {len(all_experiences_iteration)} collected game results..."
@@ -299,15 +287,11 @@ def add_results_to_buffer(
             logger.warning(f"Skipping game {i} with empty raw history.")
             continue
 
-        # Process the raw history using the agent to get buffer experiences and loggable history
         episode_result = agent.process_finished_episode(raw_history, final_outcome)
 
-        # Add processed experiences to the central replay buffer
         agent.add_experiences_to_buffer(episode_result.buffer_experiences)
         total_experiences_added += len(episode_result.buffer_experiences)
 
-        # Save the processed game log (now includes value targets)
-        # Use a unique game index across the entire training run
         current_game_log_index = game_log_index_offset + total_games_processed + 1
         save_game_log(
             logged_history=episode_result.logged_history,
@@ -350,7 +334,6 @@ def run_eval_against_benchmark(
         state_with_key = game_env.reset()
         game_history = []
 
-        # Alternate who goes first
         agents = {0: agent_in_training, 1: benchmark_agent}
         if game_num % 2 == 1:
             agents = {0: benchmark_agent, 1: agent_in_training}
@@ -412,7 +395,7 @@ def run_eval_against_benchmark(
         "win_rate": wins[agent_in_training.name] / num_games if num_games > 0 else 0,
     }
 
-    if iteration > -1 and reporter:  # Don't log for initial evaluation
+    if iteration > -1 and reporter:
         reporter.log_evaluation_results(
             eval_results=eval_results,
             benchmark_agent_name=benchmark_agent_name,
@@ -423,7 +406,6 @@ def run_eval_against_benchmark(
 
 
 def run_sanity_checks(env: BaseEnvironment, agent: AlphaZeroAgent):
-    """Runs network predictions on predefined sanity check states."""
     logger.info("\n--- Running Periodic Sanity Checks ---")
     sanity_states = env.get_sanity_check_states()
 
@@ -478,9 +460,8 @@ if __name__ == "__main__":
     env_override = None
 
     if len(sys.argv) > 1:
-        env_override = sys.argv[1]  # e.g., python train_alphazero.py Nim
+        env_override = sys.argv[1]
 
-    # Remove the default handler to prevent duplicate messages if re-adding stderr
     logger.remove()
     logger.add(sys.stderr, level="INFO")
 

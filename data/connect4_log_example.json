@@ -1,0 +1,164 @@
+[
+  {
+    "state": {
+      "pieces": {
+        "columns": [
+          "row",
+          "col",
+          "player_id"
+        ],
+        "_col_to_idx": {
+          "row": 0,
+          "col": 1,
+          "player_id": 2
+        },
+        "_data": []
+      },
+      "game": {
+        "columns": [
+          "current_player",
+          "done",
+          "winner"
+        ],
+        "_col_to_idx": {
+          "current_player": 0,
+          "done": 1,
+          "winner": 2
+        },
+        "_data": [
+          [
+            0,
+            false,
+            null
+          ]
+        ]
+      },
+      "legal_actions": {
+        "columns": [
+          "action_id"
+        ],
+        "_col_to_idx": {
+          "action_id": 0
+        },
+        "_data": [
+          [
+            0
+          ],
+          [
+            1
+          ],
+          [
+            2
+          ],
+          [
+            3
+          ],
+          [
+            4
+          ],
+          [
+            5
+          ],
+          [
+            6
+          ]
+        ]
+      }
+    },
+    "action": 1,
+    "policy_target": [
+      0.06303724646568298,
+      0.17478510737419128,
+      0.12034384161233902,
+      0.32091689109802246,
+      0.16045844554901123,
+      0.0916905477643013,
+      0.06876790523529053
+    ],
+    "value_target": -1.0
+  },
+  {
+    "state": {
+      "pieces": {
+        "columns": [
+          "row",
+          "col",
+          "player_id"
+        ],
+        "_col_to_idx": {
+          "row": 0,
+          "col": 1,
+          "player_id": 2
+        },
+        "_data": [
+          [
+            5,
+            1,
+            0
+          ]
+        ]
+      },
+      "game": {
+        "columns": [
+          "current_player",
+          "done",
+          "winner"
+        ],
+        "_col_to_idx": {
+          "current_player": 0,
+          "done": 1,
+          "winner": 2
+        },
+        "_data": [
+          [
+            1,
+            false,
+            null
+          ]
+        ]
+      },
+      "legal_actions": {
+        "columns": [
+          "action_id"
+        ],
+        "_col_to_idx": {
+          "action_id": 0
+        },
+        "_data": [
+          [
+            0
+          ],
+          [
+            1
+          ],
+          [
+            2
+          ],
+          [
+            3
+          ],
+          [
+            4
+          ],
+          [
+            5
+          ],
+          [
+            6
+          ]
+        ]
+      }
+    },
+    "action": 1,
+    "policy_target": [
+      0.12938596308231354,
+      0.04605263099074364,
+      0.1315789520740509,
+      0.24122807383537292,
+      0.17105263471603394,
+      0.22807016968727112,
+      0.05263157933950424
+    ],
+    "value_target": 1.0
+  }
+]
