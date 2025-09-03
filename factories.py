@@ -9,7 +9,6 @@ from agents.alphazero_agent import (
     AlphaZeroExpansion,
     AlphaZeroEvaluation,
 )
-from agents.random_agent import RandomAgent
 from core.agent_interface import Agent
 from core.config import (
     AppConfig,

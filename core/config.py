@@ -38,14 +38,15 @@ class AlphaZeroConfig:
     hidden_layer_size: int = 128  # Size for the MLP hidden layers
     num_hidden_layers: int = 2  # Number of hidden layers in the MLP
     replay_buffer_size: int = (
-        10_000 * 75  # 128 * 2 * 75  # todo configure to be on avg 3 iterations of games
+        5_000 * 75
+        # 128
+        # * 2
+        # * 75  # todo configure to be on avg 3 iterations of games
     )
     training_batch_size: int = 256
     # Weight for value loss (default 1.0, try increasing)
-    value_loss_weight: float = 1.0
+    value_loss_weight: float = 0.1
     temperature: float = 0.1
-    # Number of game steps before reducing temperature
-    temperature_decay_steps: int = 30
     # Parallel Self-Play & Batching
     num_self_play_workers: int = 2
     inference_batch_size: int = 32  # Max batch size for network inference
@@ -98,7 +99,7 @@ class MuZeroConfig:
 class TrainingConfig:
     # Specific to AlphaZero/MuZero training loops
     num_iterations: int = 1000  # Total training iterations
-    num_games_per_iteration: int = 10_000  # 128 * 2
+    num_games_per_iteration: int = 5_000  # 128 * 2
     # # Number of epochs (passes over replay buffer) per learning phase
     # num_epochs_per_iteration: int = 4
     # How often (in iterations) to run sanity checks (0=only at end, 1=every iteration)
