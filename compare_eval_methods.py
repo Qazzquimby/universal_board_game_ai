@@ -1,7 +1,7 @@
 import sys
 import time
 
-from agents.alphazero_agent import AlphaZeroAgent
+from agents.alphazero.alphazero_agent import AlphaZeroAgent
 from agents.mcts_agent import MCTSAgent
 from core.config import AppConfig
 from evaluation import run_test_games

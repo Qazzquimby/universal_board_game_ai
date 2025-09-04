@@ -6,7 +6,6 @@ from typing import List
 import torch
 from loguru import logger
 
-from agents.alphazero_agent import AlphaZeroAgent
 from core.config import AppConfig
 from environments.base import DataFrame, StateType
 from environments.connect4 import Connect4

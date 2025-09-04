@@ -4,7 +4,7 @@ from typing import Dict
 from loguru import logger
 
 import torch.optim as optim
-from agents.alphazero_agent import (
+from agents.alphazero.alphazero_agent import (
     AlphaZeroAgent,
     AlphaZeroExpansion,
     AlphaZeroEvaluation,

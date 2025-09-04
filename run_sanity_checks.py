@@ -3,7 +3,7 @@ from typing import Dict, Optional, Tuple
 
 from loguru import logger
 
-from agents.alphazero_agent import AlphaZeroAgent
+from agents.alphazero.alphazero_agent import AlphaZeroAgent
 from agents.mcts_agent import MCTSAgent
 from core.agent_interface import Agent
 from core.config import AppConfig

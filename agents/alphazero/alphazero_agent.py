@@ -6,8 +6,8 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 import torch.nn.functional as F
 import numpy as np
-from loguru import logger
 
+from agents.alphazero.alphazero_net import AlphaZeroNet
 from agents.base_learning_agent import (
     BaseLearningAgent,
     EpochMetrics,
@@ -29,8 +29,6 @@ from core.config import (
     AlphaZeroConfig,
     TrainingConfig,
 )
-from experiments.architectures.shared import TRAINING_DEVICE, INFERENCE_DEVICE
-from models.networks import AlphaZeroNet
 
 
 # Seems reusable by muzero

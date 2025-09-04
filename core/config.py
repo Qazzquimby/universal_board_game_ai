@@ -66,13 +66,6 @@ class AlphaZeroConfig:
     policy_model_params: Dict[str, Any] = field(
         default_factory=lambda: {"embedding_dim": 64}
     )
-    # --- Dynamic Simulations ---
-    dynamic_simulations_enabled: bool = True  # Set to True to enable early stopping
-    dynamic_simulations_min_visits: int = 30  # Min total visits before stopping early
-    dynamic_simulations_visit_delta: int = (
-        10000  # Required visit diff between best/second best
-    )
-    # todo use more mature early sim system.
     debug_mode: bool = True
     should_use_network: bool = True
 

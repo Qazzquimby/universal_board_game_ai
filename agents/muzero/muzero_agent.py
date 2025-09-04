@@ -1,12 +1,15 @@
-from torch import nn
+from torch import nn, optim
 from torch.utils.data import DataLoader
 
 from agents.base_learning_agent import BaseLearningAgent, EpochMetrics
+from agents.muzero.muzero_net import MuZeroNet
 from algorithms.mcts import (
     SelectionStrategy,
     ExpansionStrategy,
     EvaluationStrategy,
     BackpropagationStrategy,
+    UCB1Selection,
+    StandardBackpropagation,
 )
 from environments.base import BaseEnvironment, ActionType
 from core.config import AlphaZeroConfig, TrainingConfig, MuZeroConfig
@@ -24,7 +27,7 @@ class MuZeroAgent(BaseLearningAgent):
         network: nn.Module,
         optimizer,
         env: BaseEnvironment,
-        config: AlphaZeroConfig,
+        config: MuZeroConfig,
         training_config: TrainingConfig,
         model_name: str = "muzero",
     ):
@@ -68,10 +71,6 @@ def make_pure_muzero(
 ):
     # TODO: Create and return a MuZeroAgent, similar to make_pure_az.
     # This will involve creating a MuZeroNet and MuZero-specific MCTS strategies.
-    raise NotImplementedError(
-        "MuZero agent factory is not implemented yet. "
-        "Create a MuZeroNet and MCTS strategies first."
-    )
 
     params = config.state_model_params
     network = MuZeroNet(
@@ -85,8 +84,8 @@ def make_pure_muzero(
 
     return MuZeroAgent(
         selection_strategy=UCB1Selection(exploration_constant=config.cpuct),
-        expansion_strategy=AlphaZeroExpansion(network=network),
-        evaluation_strategy=AlphaZeroEvaluation(network=network),
+        expansion_strategy=MuZeroExpansion(network=network),
+        evaluation_strategy=MuZeroEvaluation(network=network),
         backpropagation_strategy=StandardBackpropagation(),
         network=network,
         optimizer=optimizer,

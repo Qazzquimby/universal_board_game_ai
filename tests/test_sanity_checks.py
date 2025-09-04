@@ -4,7 +4,7 @@ import numpy as np
 from core.config import AppConfig
 from environments.base import BaseEnvironment, SanityCheckState
 from agents.mcts_agent import MCTSAgent
-from agents.alphazero_agent import AlphaZeroAgent
+from agents.alphazero.alphazero_agent import AlphaZeroAgent
 from factories import get_environment
 
 # Helper to generate descriptive IDs

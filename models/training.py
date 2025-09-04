@@ -1,5 +1,3 @@
-import random
-import sys
 import json
 import time
 from typing import Union, Tuple
@@ -12,8 +10,8 @@ from agents.mcts_agent import MCTSAgent, make_pure_mcts
 from core.config import AppConfig, DATA_DIR
 from core.serialization import LOG_DIR, save_game_log
 from environments.base import BaseEnvironment, DataFrame
-from agents.alphazero_agent import AlphaZeroAgent, make_pure_az
-from agents.muzero_agent import MuZeroAgent, make_pure_muzero
+from agents.alphazero.alphazero_agent import AlphaZeroAgent, make_pure_az
+from agents.muzero.muzero_agent import make_pure_muzero
 from factories import get_environment
 from utils.plotting import plot_losses
 from utils.training_reporter import TrainingReporter
