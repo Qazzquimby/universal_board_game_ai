@@ -74,19 +74,10 @@ class MuZeroNet(BaseTokenizingNet):
         self.hidden_to_lstm_c = nn.Linear(embedding_dim, embedding_dim)
         self.start_action_token = nn.Parameter(torch.randn(1, embedding_dim))
 
-        # Wrong
-        # You generate encoded action token tensors. You do not try to generate game-rule-friendly action descriptions.
-        # Generate tokens of length action_dim, period.
-        # action_spec = self.network_spec["action_space"]
-        # self.action_component_names = action_spec["components"]
-        # self.action_component_heads = nn.ModuleDict()
-        # for comp_name in self.action_component_names:
-        #     cardinality = self.network_spec["cardinalities"][comp_name]
-        #     # Vocab size: values (cardinality+1) + padding (1) + stop token (1)
-        #     vocab_size = cardinality + 3
-        #     self.action_component_heads[comp_name] = nn.Linear(
-        #         embedding_dim, vocab_size
-        #     )
+        # A head to generate encoded action tokens from the LSTM's hidden state.
+        self.action_generation_head = nn.Linear(embedding_dim, embedding_dim)
+        # A head to predict whether to stop generating actions.
+        self.action_generation_stop_head = nn.Linear(embedding_dim, 1)
 
     def get_hidden_state_vae(self, state: StateType) -> Vae:
         """
@@ -105,14 +96,12 @@ class MuZeroNet(BaseTokenizingNet):
         return Vae(mu, log_var)
 
     def get_next_hidden_state_vae(
-        self, hidden_state: torch.Tensor, action: ActionType
+        self, hidden_state: torch.Tensor, action_token: torch.Tensor
     ) -> Vae:
         """
         Dynamics function (g): Predicts the distribution of the next hidden state
-        given a current hidden state and an action.
+        given a current hidden state and an encoded action token.
         """
-        action_token = self._action_to_token(action).unsqueeze(0)
-
         dynamics_input = torch.cat([hidden_state, action_token], dim=1)
         base_output = self.dynamics_network_base(dynamics_input)
 
@@ -123,13 +112,12 @@ class MuZeroNet(BaseTokenizingNet):
     def get_actions_for_hidden_state(
         self,
         hidden_state: torch.Tensor,
-        num_actions_to_sample: int = 10,
-    ) -> List[ActionType]:
+        max_actions: int = 10,
+    ) -> List[torch.Tensor]:
         """
-        Generates a list of candidate actions from a hidden state by sequentially
-        generating action components until a stop token is produced.
+        Generates a list of candidate encoded actions from a hidden state.
         """
-        actions = []
+        action_tokens = []
         # Use eval mode for generation to disable dropout etc.
         self.eval()
         with torch.no_grad():
@@ -137,56 +125,31 @@ class MuZeroNet(BaseTokenizingNet):
             h = self.hidden_to_lstm_h(hidden_state)
             c = self.hidden_to_lstm_c(hidden_state)
 
-            for _ in range(num_actions_to_sample):
-                action_components = []
-                # Start with the learnable start-of-action token
-                input_token_emb = self.start_action_token
-                current_h, current_c = h.clone(), c.clone()
+            # Start with the learnable start-of-action token
+            input_token_emb = self.start_action_token
 
-                for comp_name in self.action_component_names:
-                    current_h, current_c = self.action_decoder_lstm(
-                        input_token_emb, (current_h, current_c)
-                    )
+            for _ in range(max_actions):
+                h, c = self.action_decoder_lstm(input_token_emb, (h, c))
 
-                    head = self.action_component_heads[comp_name]
-                    logits = head(current_h)
+                stop_logit = self.action_generation_stop_head(h)
+                if torch.sigmoid(stop_logit) > 0.5:
+                    break
 
-                    # Sample from the distribution. Could use argmax for deterministic generation.
-                    dist = torch.distributions.Categorical(logits=logits)
-                    sampled_token_idx = dist.sample()
+                # Generate the next action token
+                next_action_token = self.action_generation_head(h)
+                action_tokens.append(next_action_token)
 
-                    cardinality = self.network_spec["cardinalities"][comp_name]
-                    # Values are 1..cardinality+1. 0 is pad. stop is cardinality+2
-                    stop_token_idx = cardinality + 2
+                # The generated token is the input for the next step
+                input_token_emb = next_action_token
 
-                    if sampled_token_idx == stop_token_idx:
-                        break  # End of action
+        return action_tokens
 
-                    # Convert from vocabulary index back to original component value
-                    # Vocab index is val + 1. So val is index - 1.
-                    component_value = sampled_token_idx.item() - 1
-                    action_components.append(component_value)
-
-                    # Prepare input for the next step
-                    input_token_emb = self.embedding_layers[comp_name](
-                        sampled_token_idx
-                    )
-
-                if action_components:
-                    # Format action based on number of components
-                    if len(action_components) == 1:
-                        actions.append(action_components[0])
-                    else:
-                        actions.append(tuple(action_components))
-
-        return list(set(actions))  # Return unique actions generated
-
-    # action torch.Tensor, not action type. It is an *encoded* action.
     def get_policy_and_value(
         self, hidden_state: torch.Tensor, candidate_actions: List[torch.Tensor]
-    ) -> Tuple[Dict[ActionType, float], float]:
+    ) -> Tuple[Dict[int, float], float]:
         """
-        Prediction function (f): Predicts policy and value from a hidden state.
+        Prediction function (f): Predicts policy and value from a hidden state
+        and a list of candidate encoded actions.
         """
         value = self.value_head(hidden_state).squeeze().cpu().item()
 
@@ -194,17 +157,16 @@ class MuZeroNet(BaseTokenizingNet):
             return {}, value
 
         # Score candidate actions to get a policy
-        action_tokens = torch.stack(
-            [self._action_to_token(a) for a in candidate_actions]
-        )
+        # candidate_actions is a list of tensors, each of shape (1, embedding_dim)
+        action_tokens = torch.cat(candidate_actions, dim=0)
+
         state_embedding_expanded = hidden_state.expand(len(candidate_actions), -1)
         policy_input = torch.cat([state_embedding_expanded, action_tokens], dim=1)
         scores = self.policy_head(policy_input).squeeze(-1)
         policy_probs = F.softmax(scores, dim=0)
 
-        policy_dict = {
-            action: prob.item() for action, prob in zip(candidate_actions, policy_probs)
-        }
+        # Policy dict maps action index to probability
+        policy_dict = {i: prob.item() for i, prob in enumerate(policy_probs)}
 
         return policy_dict, value
 
