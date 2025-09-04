@@ -11,6 +11,8 @@ import abc
 from dataclasses import dataclass, field
 
 import torch
+
+import torch
 import polars as pl
 from cachetools import LRUCache
 from loguru import logger
@@ -103,6 +105,7 @@ class Edge:
     prior: float
     num_visits: int = 0
     total_value: float = 0.0  # from perspective of player taking the action
+    child_node: Optional["MCTSNode"] = field(default=None, repr=False)
 
     @property
     def value(self) -> float:
