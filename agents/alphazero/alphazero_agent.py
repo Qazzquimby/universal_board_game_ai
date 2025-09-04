@@ -182,6 +182,55 @@ class AlphaZeroAgent(BaseLearningAgent):
 
         return total_loss, value_loss, policy_loss, policy_acc, value_mse
 
+    def _validate_epoch(self, val_loader: DataLoader) -> Optional[EpochMetrics]:
+        """Runs one epoch of validation and returns metrics."""
+        total_loss, total_policy_loss, total_value_loss = 0.0, 0.0, 0.0
+        total_policy_acc, total_value_mse = 0.0, 0.0
+        val_batches = 0
+        with torch.no_grad():
+            for batch_data in val_loader:
+                (
+                    state_df_batch,
+                    policy_targets_batch,
+                    value_targets_batch,
+                    legal_actions_batch,
+                ) = batch_data
+                state_tensor_batch = self._convert_state_df_to_tensors(state_df_batch)
+                policy_targets_batch = policy_targets_batch.to(self.device)
+                value_targets_batch = value_targets_batch.to(self.device)
+                policy_logits, value_preds = self.network(
+                    state_tensor_batch, legal_actions=legal_actions_batch
+                )
+                (
+                    batch_loss,
+                    value_loss,
+                    policy_loss,
+                    policy_acc,
+                    value_mse,
+                ) = self._calculate_loss(
+                    policy_logits,
+                    value_preds,
+                    policy_targets_batch,
+                    value_targets_batch,
+                )
+                total_loss += batch_loss.item()
+                total_value_loss += value_loss.item()
+                total_policy_loss += policy_loss.item()
+                total_policy_acc += policy_acc
+                total_value_mse += value_mse
+                val_batches += 1
+
+        if val_batches == 0:
+            return None
+
+        return EpochMetrics(
+            loss=total_loss / val_batches,
+            policy_loss=total_policy_loss / val_batches,
+            value_loss=total_value_loss / val_batches,
+            acc=total_policy_acc / len(val_loader.dataset),
+            mse=total_value_mse / val_batches,
+        )
+
     def _train_epoch(
         self, train_loader: DataLoader, epoch: int, max_epochs: int
     ) -> EpochMetrics:

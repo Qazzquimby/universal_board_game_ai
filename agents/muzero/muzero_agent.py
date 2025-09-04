@@ -37,6 +37,23 @@ DUMMY_STATE_WITH_KEY = StateWithKey.from_state(
 )
 
 
+class MuZeroNode(MCTSNode):
+    """Represents a node in the MCTS tree for MuZero."""
+
+    def __init__(
+        self,
+        player_idx: int,
+        hidden_state: torch.Tensor,
+        reward: float = 0.0,
+        state_with_key: Optional[StateWithKey] = None,
+    ):
+        # Use a dummy or provided state_with_key for MCTSNode compatibility
+        super().__init__(state_with_key or DUMMY_STATE_WITH_KEY)
+        self.hidden_state = hidden_state
+        self.reward = reward
+        self.player_idx = player_idx
+
+
 class MuZeroExpansion(ExpansionStrategy):
     def __init__(self, network: nn.Module):
         self.network = network
@@ -116,14 +133,18 @@ class MuZeroSelection(UCB1Selection):
                 current_node = edge.child_node
                 path.add(current_node, best_action)
             else:
-                next_node = MCTSNode(state_with_key=DUMMY_STATE_WITH_KEY)
                 (
                     next_hidden_state,
                     reward,
                 ) = self.network.dynamics(current_node.hidden_state, best_action)
-                next_node.hidden_state = next_hidden_state
-                next_node.reward = reward
-                next_node.player_idx = 1 - current_node.player_idx
+                # TODO: This assumes a two-player, alternating-turn game.
+                # For more complex games, the dynamics model should also predict the next player.
+                next_player_idx = 1 - current_node.player_idx
+                next_node = MuZeroNode(
+                    player_idx=next_player_idx,
+                    hidden_state=next_hidden_state,
+                    reward=reward,
+                )
                 edge.child_node = next_node
                 path.add(next_node, best_action)
                 return SelectionResult(path=path, leaf_env=sim_env)
@@ -163,9 +184,12 @@ class MuZeroAgent(BaseLearningAgent):
     def search(self, env: BaseEnvironment, train: bool = False):
         if self.root is None:
             state_with_key = env.get_state_with_key()
-            self.root = MCTSNode(state_with_key=state_with_key)
-            self.root.player_idx = env.get_current_player()
-            self.root.hidden_state = self.network.representation(state_with_key)
+            hidden_state = self.network.representation(state_with_key)
+            self.root = MuZeroNode(
+                player_idx=env.get_current_player(),
+                hidden_state=hidden_state,
+                state_with_key=state_with_key,
+            )
 
         for i in range(self.num_simulations):
             sim_env = env.copy()
@@ -276,6 +300,55 @@ class MuZeroAgent(BaseLearningAgent):
             value_loss=total_value_loss / train_batches,
             acc=total_policy_acc / len(train_loader.dataset),
             mse=total_value_mse / train_batches,
+        )
+
+    def _validate_epoch(self, val_loader: DataLoader) -> Optional[EpochMetrics]:
+        """Runs one epoch of validation and returns metrics."""
+        total_loss, total_policy_loss, total_value_loss = 0.0, 0.0, 0.0
+        total_policy_acc, total_value_mse = 0.0, 0.0
+        val_batches = 0
+        with torch.no_grad():
+            for batch_data in val_loader:
+                (
+                    state_df_batch,
+                    policy_targets_batch,
+                    value_targets_batch,
+                    legal_actions_batch,
+                ) = batch_data
+                state_tensor_batch = self._convert_state_df_to_tensors(state_df_batch)
+                policy_targets_batch = policy_targets_batch.to(self.device)
+                value_targets_batch = value_targets_batch.to(self.device)
+                policy_logits, value_preds = self.network(
+                    state_tensor_batch, legal_actions=legal_actions_batch
+                )
+                (
+                    batch_loss,
+                    value_loss,
+                    policy_loss,
+                    policy_acc,
+                    value_mse,
+                ) = self._calculate_loss(
+                    policy_logits,
+                    value_preds,
+                    policy_targets_batch,
+                    value_targets_batch,
+                )
+                total_loss += batch_loss.item()
+                total_value_loss += value_loss.item()
+                total_policy_loss += policy_loss.item()
+                total_policy_acc += policy_acc
+                total_value_mse += value_mse
+                val_batches += 1
+
+        if val_batches == 0:
+            return None
+
+        return EpochMetrics(
+            loss=total_loss / val_batches,
+            policy_loss=total_policy_loss / val_batches,
+            value_loss=total_value_loss / val_batches,
+            acc=total_policy_acc / len(val_loader.dataset),
+            mse=total_value_mse / val_batches,
         )
 
 

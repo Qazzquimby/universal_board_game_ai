@@ -448,8 +448,12 @@ class StandardBackpropagation(BackpropagationStrategy):
             node, action_to_node, parent_of_node = path.get_step_details(
                 steps_from_end=i
             )
-            state = node.state_with_key.state
-            current_player_index = _get_current_player_from_state(state)
+
+            current_player_index = getattr(
+                node,
+                "player_idx",
+                _get_current_player_from_state(node.state_with_key.state),
+            )
             node.num_visits += 1
             node.total_value += player_to_value.get(current_player_index, 0.0)
 
@@ -464,8 +468,11 @@ class StandardBackpropagation(BackpropagationStrategy):
                 edge_to_update = parent_of_node.edges[action_key]
                 edge_to_update.num_visits += 1
 
-                parent_state = parent_of_node.state_with_key.state
-                player_index = _get_current_player_from_state(parent_state)
+                player_index = getattr(
+                    parent_of_node,
+                    "player_idx",
+                    _get_current_player_from_state(parent_of_node.state_with_key.state),
+                )
 
                 value = player_to_value.get(player_index)
                 edge_to_update.total_value += value
