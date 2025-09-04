@@ -6,11 +6,9 @@ from typing import Optional
 
 import torch
 from torch import nn, optim
-from torch.utils.data import DataLoader
 import torch.nn.functional as F
-from tqdm import tqdm
 
-from agents.base_learning_agent import BaseLearningAgent, EpochMetrics
+from agents.base_learning_agent import BaseLearningAgent
 from agents.muzero.muzero_net import MuZeroNet
 from algorithms.mcts import (
     SelectionStrategy,
@@ -58,7 +56,7 @@ class MuZeroExpansion(ExpansionStrategy):
     def __init__(self, network: nn.Module):
         self.network = network
 
-    def expand(self, node: "MCTSNode", env: BaseEnvironment) -> None:
+    def expand(self, node: "MuZeroNode", env: BaseEnvironment) -> None:
         if node.is_expanded:
             return
 
@@ -80,7 +78,7 @@ class MuZeroEvaluation(EvaluationStrategy):
     def __init__(self, network: nn.Module):
         self.network = network
 
-    def evaluate(self, node: "MCTSNode", env: BaseEnvironment) -> float:
+    def evaluate(self, node: "MuZeroNode", env: BaseEnvironment) -> float:
         if node.hidden_state is None:
             if env.is_done:
                 return env.get_reward_for_player(player=env.get_current_player())
@@ -97,14 +95,14 @@ class MuZeroSelection(UCB1Selection):
 
     def select(
         self,
-        node: MCTSNode,
+        node: MuZeroNode,
         sim_env: BaseEnvironment,
         cache: "MCTSNodeCache",
         remaining_sims: int,
         contender_actions: Optional[set],
     ) -> SelectionResult:
         path = SearchPath(initial_node=node)
-        current_node: MCTSNode = node
+        current_node: MuZeroNode = node
 
         while current_node.is_expanded and current_node.edges:
             best_score = -float("inf")
@@ -137,7 +135,7 @@ class MuZeroSelection(UCB1Selection):
                     next_hidden_state,
                     reward,
                 ) = self.network.dynamics(current_node.hidden_state, best_action)
-                # TODO: This assumes a two-player, alternating-turn game.
+                # This assumes a two-player, alternating-turn game.
                 # For more complex games, the dynamics model should also predict the next player.
                 next_player_idx = 1 - current_node.player_idx
                 next_node = MuZeroNode(
@@ -238,118 +236,6 @@ class MuZeroAgent(BaseLearningAgent):
             else 0
         )
         return total_loss, value_loss, policy_loss, policy_acc, value_mse
-
-    def _train_epoch(
-        self, train_loader: DataLoader, epoch: int, max_epochs: int
-    ) -> "EpochMetrics":
-        total_loss, total_policy_loss, total_value_loss = 0.0, 0.0, 0.0
-        total_policy_acc, total_value_mse = 0.0, 0.0
-        train_batches = 0
-
-        train_iterator = (
-            tqdm(
-                train_loader,
-                desc=f"Epoch {epoch+1}/{max_epochs} (Train)",
-                leave=False,
-            )
-            if not self.config.debug_mode
-            else train_loader
-        )
-        for batch_data in train_iterator:
-            (
-                state_df_batch,
-                policy_targets_batch,
-                value_targets_batch,
-                legal_actions_batch,
-            ) = batch_data
-
-            state_tensor_batch = self._convert_state_df_to_tensors(state_df_batch)
-            policy_targets_batch = policy_targets_batch.to(self.device)
-            value_targets_batch = value_targets_batch.to(self.device)
-
-            self.optimizer.zero_grad()
-            policy_logits, value_preds = self.network(
-                state_tensor_batch, legal_actions=legal_actions_batch
-            )
-            (
-                batch_loss,
-                value_loss,
-                policy_loss,
-                policy_acc,
-                value_mse,
-            ) = self._calculate_loss(
-                policy_logits,
-                value_preds,
-                policy_targets_batch,
-                value_targets_batch,
-            )
-            batch_loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.network.parameters(), max_norm=1.0)
-            self.optimizer.step()
-
-            total_loss += batch_loss.item()
-            total_value_loss += value_loss.item()
-            total_policy_loss += policy_loss.item()
-            total_policy_acc += policy_acc
-            total_value_mse += value_mse
-            train_batches += 1
-
-        return EpochMetrics(
-            loss=total_loss / train_batches,
-            policy_loss=total_policy_loss / train_batches,
-            value_loss=total_value_loss / train_batches,
-            acc=total_policy_acc / len(train_loader.dataset),
-            mse=total_value_mse / train_batches,
-        )
-
-    def _validate_epoch(self, val_loader: DataLoader) -> Optional[EpochMetrics]:
-        """Runs one epoch of validation and returns metrics."""
-        total_loss, total_policy_loss, total_value_loss = 0.0, 0.0, 0.0
-        total_policy_acc, total_value_mse = 0.0, 0.0
-        val_batches = 0
-        with torch.no_grad():
-            for batch_data in val_loader:
-                (
-                    state_df_batch,
-                    policy_targets_batch,
-                    value_targets_batch,
-                    legal_actions_batch,
-                ) = batch_data
-                state_tensor_batch = self._convert_state_df_to_tensors(state_df_batch)
-                policy_targets_batch = policy_targets_batch.to(self.device)
-                value_targets_batch = value_targets_batch.to(self.device)
-                policy_logits, value_preds = self.network(
-                    state_tensor_batch, legal_actions=legal_actions_batch
-                )
-                (
-                    batch_loss,
-                    value_loss,
-                    policy_loss,
-                    policy_acc,
-                    value_mse,
-                ) = self._calculate_loss(
-                    policy_logits,
-                    value_preds,
-                    policy_targets_batch,
-                    value_targets_batch,
-                )
-                total_loss += batch_loss.item()
-                total_value_loss += value_loss.item()
-                total_policy_loss += policy_loss.item()
-                total_policy_acc += policy_acc
-                total_value_mse += value_mse
-                val_batches += 1
-
-        if val_batches == 0:
-            return None
-
-        return EpochMetrics(
-            loss=total_loss / val_batches,
-            policy_loss=total_policy_loss / val_batches,
-            value_loss=total_value_loss / val_batches,
-            acc=total_policy_acc / len(val_loader.dataset),
-            mse=total_value_mse / val_batches,
-        )
 
 
 def make_pure_muzero(

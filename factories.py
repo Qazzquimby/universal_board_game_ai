@@ -9,6 +9,7 @@ from agents.alphazero.alphazero_agent import (
     AlphaZeroExpansion,
     AlphaZeroEvaluation,
 )
+from agents.alphazero.alphazero_net import AlphaZeroNet
 from core.agent_interface import Agent
 from core.config import (
     AppConfig,
@@ -17,7 +18,6 @@ from core.config import (
 from environments.base import BaseEnvironment
 from environments.connect4 import Connect4
 from agents.mcts_agent import make_pure_mcts
-from models.networks import AlphaZeroNet
 from algorithms.mcts import UCB1Selection, StandardBackpropagation
 
 

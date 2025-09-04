@@ -231,15 +231,93 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
     ):
         pass
 
-    @abc.abstractmethod
+    def _run_epoch(
+        self,
+        loader: DataLoader,
+        is_training: bool,
+        epoch: Optional[int] = None,
+        max_epochs: Optional[int] = None,
+    ) -> Optional[EpochMetrics]:
+        """Runs a single epoch of training or validation."""
+        total_loss, total_policy_loss, total_value_loss = 0.0, 0.0, 0.0
+        total_policy_acc, total_value_mse = 0.0, 0.0
+        num_batches = 0
+
+        iterator = loader
+        if is_training and not self.config.debug_mode:
+            desc = f"Epoch {epoch + 1}/{max_epochs} (Train)"
+            iterator = tqdm(loader, desc=desc, leave=False)
+
+        context = torch.enable_grad() if is_training else torch.no_grad()
+        with context:
+            for batch_data in iterator:
+                (
+                    state_df_batch,
+                    policy_targets_batch,
+                    value_targets_batch,
+                    legal_actions_batch,
+                ) = batch_data
+
+                state_tensor_batch = self._convert_state_df_to_tensors(state_df_batch)
+                policy_targets_batch = policy_targets_batch.to(self.device)
+                value_targets_batch = value_targets_batch.to(self.device)
+
+                if is_training:
+                    self.optimizer.zero_grad()
+
+                policy_logits, value_preds = self.network(
+                    state_tensor_batch, legal_actions=legal_actions_batch
+                )
+                (
+                    batch_loss,
+                    value_loss,
+                    policy_loss,
+                    policy_acc,
+                    value_mse,
+                ) = self._calculate_loss(
+                    policy_logits,
+                    value_preds,
+                    policy_targets_batch,
+                    value_targets_batch,
+                )
+
+                if is_training:
+                    batch_loss.backward()
+                    torch.nn.utils.clip_grad_norm_(
+                        self.network.parameters(), max_norm=1.0
+                    )
+                    self.optimizer.step()
+
+                total_loss += batch_loss.item()
+                total_value_loss += value_loss.item()
+                total_policy_loss += policy_loss.item()
+                total_policy_acc += policy_acc
+                total_value_mse += value_mse
+                num_batches += 1
+
+        if num_batches == 0:
+            return None
+
+        return EpochMetrics(
+            loss=total_loss / num_batches,
+            policy_loss=total_policy_loss / num_batches,
+            value_loss=total_value_loss / num_batches,
+            acc=total_policy_acc / len(loader.dataset),
+            mse=total_value_mse / num_batches,
+        )
+
     def _train_epoch(
         self, train_loader: DataLoader, epoch: int, max_epochs: int
     ) -> EpochMetrics:
-        pass
+        """Runs one epoch of training and returns metrics."""
+        # _get_train_val_loaders ensures train_loader is not empty, so _run_epoch won't return None.
+        return self._run_epoch(
+            train_loader, is_training=True, epoch=epoch, max_epochs=max_epochs
+        )
 
-    @abc.abstractmethod
     def _validate_epoch(self, val_loader: DataLoader) -> Optional[EpochMetrics]:
-        pass
+        """Runs one epoch of validation and returns metrics."""
+        return self._run_epoch(val_loader, is_training=False)
 
     def _set_device_and_mode(self, training: bool):
         """Sets the device and mode (train/eval) for the network."""
