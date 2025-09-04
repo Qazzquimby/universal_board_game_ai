@@ -3,10 +3,6 @@ you can get a range over hidden state, sure, but the legal actions would be tota
 Could do (hidden state distribution) -> (specific hidden state) -> predict legal action set
 But that would be a lot of repeated work per simulation step, and with continuous action tokens it wouldn't repeat edges
 
-# MuZero Implementation Plan
-
-## 1. Introduction
-
 This document outlines the necessary steps to implement a proper MuZero agent within the existing codebase.
 
 The implementation will require three new core components, encapsulated within a new neural network architecture (`MuZeroNet`), and significant modifications to the MCTS algorithm.
@@ -15,7 +11,7 @@ The implementation will require three new core components, encapsulated within a
 - The action space is dynamic and potentially large; we cannot assume a fixed superset of actions.
 - Well its probably okay to repeat samples, maybe have 5 randomizations. "Progressive Widening"?
 - https://aistudio.google.com/prompts/1rWCyLuGL2ruG2XYIEn0p9lHwNxjv6U97
-
+Leave action generation as a stub for now
 
 
 hidden states should actually be a mean and std so we can generate stochastic states.
