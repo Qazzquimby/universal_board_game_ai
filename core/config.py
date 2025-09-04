@@ -139,7 +139,7 @@ class EvaluationConfig:
 class AppConfig:
     env: EnvConfig = field(default_factory=EnvConfig)
     mcts: MCTSConfig = field(default_factory=MCTSConfig)
-    alpha_zero: AlphaZeroConfig = field(default_factory=AlphaZeroConfig)
+    alphazero: AlphaZeroConfig = field(default_factory=AlphaZeroConfig)
     muzero: MuZeroConfig = field(default_factory=MuZeroConfig)  # Add MuZero config
     training: TrainingConfig = field(default_factory=TrainingConfig)
     evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)

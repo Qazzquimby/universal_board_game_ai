@@ -34,7 +34,7 @@ def get_agents(
     env: BaseEnvironment, config: AppConfig, load_all_az_iterations: bool = False
 ) -> Dict[str, Agent]:
     """Factory function to create agent instances for the given environment."""
-    az_config = config.alpha_zero
+    az_config = config.alphazero
     training_config = config.training
 
     agents = {}

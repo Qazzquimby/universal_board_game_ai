@@ -35,7 +35,7 @@ class TrainingReporter:
             f"Iteration {iteration + 1} complete. "
             f"Buffers: Train={train_buffer_size}/{self.agent.train_replay_buffer.maxlen}, "
             f"Val={val_buffer_size}/{self.agent.val_replay_buffer.maxlen} "
-            f"({total_buffer_size}/{self.config.alpha_zero.replay_buffer_size})"
+            f"({total_buffer_size}/{self.config.alphazero.replay_buffer_size})"
         )
         if metrics:
             logger.info(

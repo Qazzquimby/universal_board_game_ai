@@ -75,8 +75,8 @@ class TestSanityChecks:
         # Use higher simulation counts for MCTS sanity checks to improve reliability
         config.mcts.num_simulations = 1200  # Keep high for MCTS checks
         config.mcts.debug = False
-        config.alpha_zero.num_simulations = 1200  # Keep high for AZ checks
-        config.alpha_zero.debug_mode = False
+        config.alphazero.num_simulations = 1200  # Keep high for AZ checks
+        config.alphazero.debug_mode = False
         config.muzero.debug_mode = False
         return config
 
@@ -322,9 +322,9 @@ class TestSanityChecks:
     ):
         """Runs AlphaZero MCTS action selection sanity checks (with and without loading weights)."""
         config = self._get_config(env_name)
-        config.alpha_zero.should_use_network = load_weights
+        config.alphazero.should_use_network = load_weights
         env = get_environment(config.env)
-        agent = AlphaZeroAgent(env, config.alpha_zero, config.training)
+        agent = AlphaZeroAgent(env, config.alphazero, config.training)
         self._run_single_alphazero_mcts_check(agent, env, check_case)
 
     @pytest.mark.parametrize("env_name, check_case", AZ_NET_PARAMS)
@@ -333,12 +333,12 @@ class TestSanityChecks:
     ):
         """Runs AlphaZero direct network output sanity checks (assumes trying to load weights)."""
         config = self._get_config(env_name)
-        config.alpha_zero.should_use_network = (
+        config.alphazero.should_use_network = (
             True  # Always try to load for network eval check
         )
         env = get_environment(config.env)
         # Need training_config for agent init, even if not used in this check
-        agent = AlphaZeroAgent(env, config.alpha_zero, config.training)
+        agent = AlphaZeroAgent(env, config.alphazero, config.training)
         self._run_single_alphazero_network_check(agent, env, check_case)
 
 
