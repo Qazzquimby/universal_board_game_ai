@@ -13,7 +13,7 @@ class Vae:
         self.mu = mu  # average value
         self.log_var = log_var
 
-    def make_determinization(self) -> torch.Tensor:
+    def take_sample(self) -> torch.Tensor:
         std = torch.exp(0.5 * self.log_var)
         eps = torch.randn_like(std)
         return self.mu + eps * std
@@ -38,19 +38,18 @@ class MuZeroNet(BaseTokenizingNet):
             encoder_layer, num_layers=num_encoder_layers
         )
         self.game_token = nn.Parameter(torch.randn(1, 1, embedding_dim))
-        self.fc_hidden_state_mu = nn.Linear(embedding_dim, embedding_dim)
-        self.fc_hidden_state_log_var = nn.Linear(embedding_dim, embedding_dim)
 
         # get_next_hidden_state (dynamics, g)
         # It takes hidden_state + action_embedding -> next_hidden_state_vae
         # May need a more powerful model.
         action_embedding_dim = embedding_dim
-        hidden_state_dim = embedding_dim * 2
-        self.dynamics_network = nn.Sequential(
-            nn.Linear(embedding_dim + action_embedding_dim, hidden_state_dim),
+        dynamics_hidden_dim = embedding_dim * 2
+        self.dynamics_network_base = nn.Sequential(
+            nn.Linear(embedding_dim + action_embedding_dim, dynamics_hidden_dim),
             nn.ReLU(),
-            nn.Linear(hidden_state_dim, embedding_dim),
         )
+        self.dynamics_mu_head = nn.Linear(dynamics_hidden_dim, embedding_dim)
+        self.dynamics_log_var_head = nn.Linear(dynamics_hidden_dim, embedding_dim)
 
         # get_policy_and_value (prediction, f)
         self.value_head = nn.Sequential(nn.Linear(embedding_dim, 1), nn.Tanh())
@@ -61,14 +60,9 @@ class MuZeroNet(BaseTokenizingNet):
             nn.Linear(policy_input_dim, 64), nn.ReLU(), nn.Linear(64, 1)
         )
 
-        # get_actions_from_hidden_state
-        # A head to generate actions from a hidden state.
-        # todo, needs to generate a dynamic length list of tokens
-        # todo, with what data to train this?
-
     def get_hidden_state_vae(self, state: StateType) -> Vae:
         """
-        Representation function (h): Encodes a state into a stochastic hidden state.
+        Representation function (h): Encodes a state into a stochastic hidden state distribution.
         """
         state = self._apply_transforms(state)
         tokens = self._state_to_tokens(state)
@@ -78,23 +72,23 @@ class MuZeroNet(BaseTokenizingNet):
 
         transformer_output = self.transformer_encoder(sequence)
         game_token_output = transformer_output[:, 0, :]
-
-        mu = self.fc_hidden_state_mu(game_token_output)
-        log_var = self.fc_hidden_state_log_var(game_token_output)
-        return Vae(mu=mu, log_var=log_var)
+        return game_token_output
 
     def get_next_hidden_state_vae(
         self, hidden_state: torch.Tensor, action: ActionType
-    ) -> torch.Tensor:
+    ) -> Vae:
         """
-        Dynamics function (g): Transitions to the next hidden state given a current
-        hidden state and an action.
+        Dynamics function (g): Predicts the distribution of the next hidden state
+        given a current hidden state and an action.
         """
         action_token = self._action_to_token(action).unsqueeze(0)
 
         dynamics_input = torch.cat([hidden_state, action_token], dim=1)
-        next_hidden_state = self.dynamics_network(dynamics_input)
-        return next_hidden_state
+        base_output = self.dynamics_network_base(dynamics_input)
+
+        mu = self.dynamics_mu_head(base_output)
+        log_var = self.dynamics_log_var_head(base_output)
+        return Vae(mu, log_var)
 
     def get_actions_for_hidden_state(
         self, hidden_state: torch.Tensor
@@ -102,14 +96,15 @@ class MuZeroNet(BaseTokenizingNet):
         pass  # todo Generate a dynamic sized list of tokens given the hidden state
 
     def get_policy_and_value(
-        self, hidden_state: torch.Tensor
+        self, hidden_state: torch.Tensor, candidate_actions: List[torch.Tensor]
     ) -> Tuple[Dict[ActionType, float], float]:
         """
         Prediction function (f): Predicts policy and value from a hidden state.
         """
         value = self.value_head(hidden_state).squeeze().cpu().item()
 
-        # TODO actions should be stored alongside the hidden state and passed as a param
+        if not candidate_actions:
+            return {}, value
 
         # Score candidate actions to get a policy
         action_tokens = torch.stack(
@@ -128,6 +123,7 @@ class MuZeroNet(BaseTokenizingNet):
 
     def init_zero(self):
         # todo Initialize all weights to 0. Update as needed
+        # Stop deleting my comments and replacing them with docstrings with different meanings.
         nn.init.constant_(self.value_head[0].weight, 0)
         nn.init.constant_(self.value_head[0].bias, 0)
         nn.init.constant_(self.policy_head[-1].weight, 0)
