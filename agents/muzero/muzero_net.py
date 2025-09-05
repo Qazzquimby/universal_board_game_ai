@@ -170,6 +170,13 @@ class MuZeroNet(BaseTokenizingNet):
 
         return policy_dict, value
 
+    def forward(self, *args, **kwargs):
+        # todo
+        raise NotImplementedError(
+            "MuZeroNet does not support direct forward passes for training yet. "
+            "The training loop in BaseLearningAgent is not compatible."
+        )
+
     def init_zero(self):
         # todo Initialize all weights to 0. Update as needed
         # Stop deleting my comments and replacing them with docstrings with different meanings.

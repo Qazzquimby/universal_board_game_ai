@@ -1,6 +1,12 @@
+# don't delete.
 # Does not use Reward, only Policy and Value
-# Needs to generate a variable length list of action tokens for each hidden state VAE.
-# Hidden state VAE is a mean and std for generating specific hidden states for distribution
+# Hidden state is a Vae that can be sampled from. Need progressive widening.
+# Legal actions for hidden states come from a network prediction. Variable length list of encoded action tokens.
+
+# In muzero the root node and inner nodes are handled differently.
+# The root node uses the actual state and legal actions
+# The inner nodes derive both the hidden state and the encoded action tokens.
+# Transitioning from a hidden state tensor to the next hidden state vae is done with the encoded action, not the ActionType action.
 
 from typing import Optional
 
@@ -21,6 +27,7 @@ from algorithms.mcts import (
     SearchPath,
     SelectionResult,
     Edge,
+    MCTSNodeCache,
 )
 from environments.base import (
     BaseEnvironment,
@@ -42,13 +49,11 @@ class MuZeroNode(MCTSNode):
         self,
         player_idx: int,
         hidden_state: torch.Tensor,
-        reward: float = 0.0,
         state_with_key: Optional[StateWithKey] = None,
     ):
         # Use a dummy or provided state_with_key for MCTSNode compatibility
         super().__init__(state_with_key or DUMMY_STATE_WITH_KEY)
         self.hidden_state = hidden_state
-        self.reward = reward
         self.player_idx = player_idx
 
 
@@ -60,15 +65,24 @@ class MuZeroExpansion(ExpansionStrategy):
         if node.is_expanded:
             return
 
-        # NOTE: env.get_legal_actions() is only correct for the root node.
-        # For nodes deeper in the search tree, the environment state is not
-        # updated, and this could lead to incorrect legal move sets.
-        # A full MuZero implementation would require a dynamics model that
-        # also predicts legal moves or a way to derive them from hidden state.
-        legal_actions = env.get_legal_actions()
-        policy_dict, _ = self.network.predict(node.hidden_state, legal_actions)
+        # todo: env.get_legal_actions() is only correct for the root node.
+        # Nodes with hidden states need to get actions from the hidden state.
+        if not node.state_with_key:
+            legal_actions = env.get_legal_actions()
+            if not legal_actions:
+                node.is_expanded = True
+                return
+            action_tokens = [self.network._action_to_token(a) for a in legal_actions]
 
-        for action, prior in policy_dict.items():
+        else:
+            action_tokens = None  # todo
+        policy_dict, _ = self.network.get_policy_and_value(
+            node.hidden_state, action_tokens
+        )
+
+        # todo needs to handle internal nodes. legal actions would be not defined. Use index as key?
+        for action_idx, prior in policy_dict.items():
+            action = legal_actions[action_idx]
             action_key = tuple(action) if isinstance(action, list) else action
             node.edges[action_key] = Edge(prior=prior)
         node.is_expanded = True
@@ -84,7 +98,7 @@ class MuZeroEvaluation(EvaluationStrategy):
                 return env.get_reward_for_player(player=env.get_current_player())
             return 0.0
 
-        _, value = self.network.prediction(node.hidden_state)
+        _, value = self.network.get_policy_and_value(node.hidden_state, [])
         return float(value)
 
 
@@ -97,7 +111,7 @@ class MuZeroSelection(UCB1Selection):
         self,
         node: MuZeroNode,
         sim_env: BaseEnvironment,
-        cache: "MCTSNodeCache",
+        cache: MCTSNodeCache,
         remaining_sims: int,
         contender_actions: Optional[set],
     ) -> SelectionResult:
@@ -107,6 +121,8 @@ class MuZeroSelection(UCB1Selection):
         while current_node.is_expanded and current_node.edges:
             best_score = -float("inf")
             best_action: Optional[ActionType] = None
+
+            # todo actions should be encoded tokens, not ActionType?
 
             edges_to_consider = current_node.edges
             if current_node is node and contender_actions is not None:
@@ -127,21 +143,23 @@ class MuZeroSelection(UCB1Selection):
             assert best_action is not None
 
             edge = current_node.edges[best_action]
+            # todo, we want progressive widening to sample more over time.
             if edge.child_node:
                 current_node = edge.child_node
                 path.add(current_node, best_action)
             else:
-                (
-                    next_hidden_state,
-                    reward,
-                ) = self.network.dynamics(current_node.hidden_state, best_action)
+                action_token = self.network._action_to_token(best_action).unsqueeze(0)
+                next_hidden_state_vae = self.network.get_next_hidden_state_vae(
+                    current_node.hidden_state, action_token
+                )
+                next_hidden_state = next_hidden_state_vae.take_sample()
+
                 # This assumes a two-player, alternating-turn game.
                 # For more complex games, the dynamics model should also predict the next player.
                 next_player_idx = 1 - current_node.player_idx
                 next_node = MuZeroNode(
                     player_idx=next_player_idx,
                     hidden_state=next_hidden_state,
-                    reward=reward,
                 )
                 edge.child_node = next_node
                 path.add(next_node, best_action)
@@ -182,7 +200,9 @@ class MuZeroAgent(BaseLearningAgent):
     def search(self, env: BaseEnvironment, train: bool = False):
         if self.root is None:
             state_with_key = env.get_state_with_key()
-            hidden_state = self.network.representation(state_with_key)
+            # Note, even though this is the first hidden state, we still use a VAE to distribution over capture hidden information.
+            hidden_state_vae = self.network.get_hidden_state_vae(state_with_key.state)
+            hidden_state = hidden_state_vae.take_sample()
             self.root = MuZeroNode(
                 player_idx=env.get_current_player(),
                 hidden_state=hidden_state,
