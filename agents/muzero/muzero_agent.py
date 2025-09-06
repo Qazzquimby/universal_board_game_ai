@@ -11,7 +11,7 @@
 # Note that the root node also needs to use Vae and sampling for hidden info,
 # but the root node has a known set of legal actions
 
-from typing import Optional, List
+from typing import Optional, List, Tuple, Dict, Union
 
 import torch
 from torch import nn, optim
@@ -44,7 +44,7 @@ class MuZeroEdge(Edge):
     def __init__(self, prior: float):
         super().__init__(prior)
         # A single edge can lead to multiple outcomes (child nodes) due to stochastic dynamics.
-        self.child_nodes: List[MCTSNode] = []
+        self.child_nodes: List["MuZeroNode"] = []
 
 
 from core.config import MuZeroConfig, TrainingConfig
@@ -65,6 +65,7 @@ class MuZeroNode(MCTSNode):
     ):
         # Use a dummy or provided state_with_key for MCTSNode compatibility
         super().__init__(state_with_key or DUMMY_STATE_WITH_KEY)
+        self.edges: Dict[Union[ActionType, int], MuZeroEdge]
         self.hidden_state = hidden_state
         self.player_idx = player_idx
         self.action_tokens: Optional[List[torch.Tensor]] = None
@@ -131,6 +132,97 @@ class MuZeroSelection(UCB1Selection):
         super().__init__(exploration_constant)
         self.network = network
 
+    def _select_action_from_edges(
+        self, node: MCTSNode, contender_actions: Optional[set]
+    ) -> ActionType:
+        """Selects the best action from a node's edges based on UCB score."""
+        best_score = -float("inf")
+        best_action: Optional[ActionType] = None
+
+        edges_to_consider = node.edges
+        # At the root, we might have a restricted set of actions to consider.
+        if contender_actions is not None:
+            edges_to_consider = {
+                action: edge
+                for action, edge in node.edges.items()
+                if action in contender_actions
+            }
+
+        for action, edge in edges_to_consider.items():
+            score = self._score_edge(
+                edge=edge, parent_node_num_visits=node.num_visits
+            )
+            if score > best_score:
+                best_score = score
+                best_action = action
+
+        assert best_action is not None
+        return best_action
+
+    def _traverse_or_expand_edge(
+        self,
+        current_node: "MuZeroNode",
+        action: ActionType,
+    ) -> Tuple[MuZeroNode, bool]:
+        """
+        Handles progressive widening for a selected edge.
+
+        Either creates a new child node by sampling the dynamics model (terminating
+        the selection phase for this simulation) or traverses to an existing child
+        selected by a UCB-like formula.
+
+        Returns:
+            A tuple containing:
+            - The next MCTSNode in the path.
+            - A boolean indicating if the selection phase was terminated (True if a
+              new node was created).
+        """
+        edge: MuZeroEdge = current_node.edges[action]
+
+        # A simple formula for progressive widening.
+        child_limit = 1 + edge.num_visits // 5
+
+        if len(edge.child_nodes) < child_limit:
+            # Widen the edge by creating a new child node from a new dynamics sample.
+            is_root = current_node.state_with_key is not DUMMY_STATE_WITH_KEY
+            if is_root:
+                action_token = self.network._action_to_token(action).unsqueeze(0)
+            else:
+                action_token = current_node.action_tokens[action]
+
+            next_hidden_state_vae = self.network.get_next_hidden_state_vae(
+                current_node.hidden_state, action_token
+            )
+            next_hidden_state = next_hidden_state_vae.take_sample()
+
+            next_player_idx = 1 - current_node.player_idx
+            next_node = MuZeroNode(
+                player_idx=next_player_idx,
+                hidden_state=next_hidden_state,
+            )
+            edge.child_nodes.append(next_node)
+            return next_node, True  # Terminate selection
+        else:
+            # Select from existing children using a UCB-like formula.
+            best_child = None
+            best_score = -float("inf")
+            for child in edge.child_nodes:
+                # Negate Q-value as child's value is from opponent's perspective.
+                q_value = (
+                    -child.total_value / child.num_visits
+                    if child.num_visits > 0
+                    else 0.0
+                )
+                exploration_term = self.exploration_constant * (
+                    (edge.num_visits) ** 0.5 / (1 + child.num_visits)
+                )
+                score = q_value + exploration_term
+                if score > best_score:
+                    best_score = score
+                    best_child = child
+
+            return best_child, False  # Continue selection
+
     def select(
         self,
         node: MuZeroNode,
@@ -143,79 +235,19 @@ class MuZeroSelection(UCB1Selection):
         current_node: MuZeroNode = node
 
         while current_node.is_expanded and current_node.edges:
-            best_score = -float("inf")
-            best_action: Optional[ActionType] = None
+            # Only apply contender_actions at the root of the search.
+            contenders = contender_actions if current_node is node else None
+            best_action = self._select_action_from_edges(current_node, contenders)
 
-            edges_to_consider = current_node.edges
-            if current_node is node and contender_actions is not None:
-                edges_to_consider = {
-                    action: edge
-                    for action, edge in current_node.edges.items()
-                    if action in contender_actions
-                }
+            next_node, terminated = self._traverse_or_expand_edge(
+                current_node, best_action
+            )
 
-            for action, edge in edges_to_consider.items():
-                score = self._score_edge(
-                    edge=edge, parent_node_num_visits=current_node.num_visits
-                )
-                if score > best_score:
-                    best_score = score
-                    best_action = action
-
-            assert best_action is not None
-            edge: MuZeroEdge = current_node.edges[best_action]
-
-            # --- Progressive Widening ---
-            # A simple formula for the number of children to explore.
-            child_limit = 1 + edge.num_visits // 5
-
-            if len(edge.child_nodes) < child_limit:
-                # Create a new child node and terminate selection for this simulation.
-                is_root = current_node.state_with_key is not DUMMY_STATE_WITH_KEY
-                if is_root:
-                    action_token = self.network._action_to_token(best_action).unsqueeze(
-                        0
-                    )
-                else:
-                    action_token = current_node.action_tokens[best_action]
-
-                next_hidden_state_vae = self.network.get_next_hidden_state_vae(
-                    current_node.hidden_state, action_token
-                )
-                next_hidden_state = next_hidden_state_vae.take_sample()
-
-                next_player_idx = 1 - current_node.player_idx
-                next_node = MuZeroNode(
-                    player_idx=next_player_idx,
-                    hidden_state=next_hidden_state,
-                )
-                edge.child_nodes.append(next_node)
-                path.add(next_node, best_action)
+            path.add(next_node, best_action)
+            if terminated:
                 return SelectionResult(path=path, leaf_env=sim_env)
-            else:
-                # Select from existing children and continue traversal.
-                best_child = None
-                best_score = -float("inf")
-                for child in edge.child_nodes:
-                    # UCB selection among children. Negate Q-value as child's value
-                    # is from the opponent's perspective.
-                    q_value = (
-                        -child.total_value / child.num_visits
-                        if child.num_visits > 0
-                        else 0.0
-                    )
 
-                    exploration_term = self.exploration_constant * (
-                        (edge.num_visits) ** 0.5 / (1 + child.num_visits)
-                    )
-                    score = q_value + exploration_term
-
-                    if score > best_score:
-                        best_score = score
-                        best_child = child
-
-                current_node = best_child
-                path.add(current_node, best_action)
+            current_node = next_node
 
         return SelectionResult(path=path, leaf_env=sim_env)
 
