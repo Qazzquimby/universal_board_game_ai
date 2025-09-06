@@ -81,12 +81,13 @@ class MuZeroNet(BaseTokenizingNet):
 
     def get_hidden_state_vae(self, state: StateType) -> Vae:
         """
-        Representation function (h): Encodes a state into a stochastic hidden state distribution.
+        Representation function (h): Encodes a batch of states into a stochastic hidden state distribution.
         """
         state = self._apply_transforms(state)
         tokens = self._state_to_tokens(state)
 
-        game_token = self.game_token.expand(1, -1, -1)
+        batch_size = tokens.shape[0]
+        game_token = self.game_token.expand(batch_size, -1, -1)
         sequence = torch.cat([game_token, tokens], dim=1)
 
         transformer_output = self.transformer_encoder(sequence)
@@ -144,6 +145,64 @@ class MuZeroNet(BaseTokenizingNet):
 
         return action_tokens
 
+    def predict_from_hidden_state(
+        self,
+        hidden_state_batch: torch.Tensor,
+        candidate_actions_batch: List[List[ActionType]],
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Prediction function (f) for training: Predicts policy logits and value from a batch of hidden states
+        and candidate actions for each state.
+        """
+        device = self.get_device()
+        batch_size = hidden_state_batch.shape[0]
+
+        # --- Value Head ---
+        value_preds = self.value_head(hidden_state_batch).squeeze(-1)
+
+        # --- Policy Head ---
+        flat_action_tokens = []
+        batch_indices_for_policy = []
+        for i in range(batch_size):
+            if not candidate_actions_batch[i]:
+                continue
+            action_tokens = torch.stack(
+                [self._action_to_token(a) for a in candidate_actions_batch[i]]
+            )
+            flat_action_tokens.append(action_tokens)
+            batch_indices_for_policy.extend([i] * len(candidate_actions_batch[i]))
+
+        if not batch_indices_for_policy:
+            return torch.empty(batch_size, 0, device=device), value_preds
+
+        flat_action_tokens_tensor = torch.cat(flat_action_tokens, dim=0)
+        batch_indices_tensor = torch.tensor(
+            batch_indices_for_policy, device=device, dtype=torch.long
+        )
+
+        state_embs_for_policy = hidden_state_batch[batch_indices_tensor]
+
+        policy_input = torch.cat(
+            [state_embs_for_policy, flat_action_tokens_tensor], dim=1
+        )
+        scores = self.policy_head(policy_input).squeeze(-1)
+
+        scores_by_item = []
+        start_idx = 0
+        for i in range(batch_size):
+            num_actions = len(candidate_actions_batch[i])
+            if num_actions > 0:
+                scores_by_item.append(scores[start_idx : start_idx + num_actions])
+                start_idx += num_actions
+            else:
+                scores_by_item.append(torch.empty(0, device=device))
+
+        policy_logits = nn.utils.rnn.pad_sequence(
+            scores_by_item, batch_first=True, padding_value=-torch.inf
+        )
+
+        return policy_logits, value_preds
+
     def get_policy_and_value(
         self, hidden_state: torch.Tensor, candidate_actions: List[torch.Tensor]
     ) -> Tuple[Dict[int, float], float]:
@@ -171,23 +230,22 @@ class MuZeroNet(BaseTokenizingNet):
         return policy_dict, value
 
     def forward(
-        self, state_batch: Dict[str, torch.Tensor], legal_actions: torch.Tensor
+        self,
+        state_batch: Dict[str, torch.Tensor],
+        action_batch: torch.Tensor,
+        candidate_actions: List[List[List[ActionType]]],
     ):
         """
         Forward pass for training. Performs unrolling.
         - state_batch: A batch of initial observation tensors.
-        - legal_actions: A batch of action sequences for unrolling, with shape
-                         (batch_size, num_unroll_steps). Renamed internally to action_batch.
+        - action_batch: A batch of action sequences for unrolling, with shape
+                        (batch_size, num_unroll_steps).
+        - candidate_actions: A list of lists of lists of actions for policy prediction.
+                             Shape: (batch_size, num_unroll_steps + 1, num_actions)
         Returns:
         - A tuple of tensors containing predictions for each step:
           (unrolled_policies, unrolled_values).
         """
-        # TODO: The network's helper methods (get_hidden_state_vae, get_policy_and_value, etc.)
-        # are not designed for batch processing. They need to be updated to handle batches
-        # of states and hidden_states for this training forward pass to work correctly.
-        # The following implementation assumes batched versions of these methods exist.
-
-        action_batch = legal_actions
         num_unroll_steps = action_batch.shape[1]
 
         # 1. Representation (h):
@@ -200,15 +258,13 @@ class MuZeroNet(BaseTokenizingNet):
 
         # 2. Initial Prediction (f) and Unrolling Loop:
         for i in range(num_unroll_steps + 1):
-            # The `get_policy_and_value` returns a dict for MCTS. For training, we need logits.
-            # This logic should be factored into a batched method that returns tensors.
-            # Placeholder: Assume a way to get policy logits and value for the current hidden state `h`.
-            value = self.value_head(h)
-            # For policy, we need to handle variable candidate actions, which is complex in a batch.
-            # As a placeholder, we'll use a dummy policy logit tensor.
-            policy_logits = torch.randn(
-                h.shape[0], self.action_embedding.num_embeddings
-            ).to(self.get_device())
+            # Get candidate actions for the current unroll step for all items in the batch
+            candidate_actions_for_step = [
+                item_candidates[i] for item_candidates in candidate_actions
+            ]
+            policy_logits, value = self.predict_from_hidden_state(
+                h, candidate_actions_for_step
+            )
 
             unrolled_policy_logits.append(policy_logits)
             unrolled_values.append(value)
@@ -220,10 +276,22 @@ class MuZeroNet(BaseTokenizingNet):
                 h = next_h_vae.take_sample()
 
         # 4. Collate and return all predictions.
-        policies_tensor = torch.stack(unrolled_policy_logits, dim=1)
+        # Pad policies to the max number of actions over all unroll steps.
+        max_actions = 0
+        for p in unrolled_policy_logits:
+            if p.numel() > 0:
+                max_actions = max(max_actions, p.shape[1])
+
+        padded_policies = []
+        for p in unrolled_policy_logits:
+            pad_width = max_actions - p.shape[1]
+            padded_p = F.pad(p, (0, pad_width), "constant", value=-torch.inf)
+            padded_policies.append(padded_p)
+
+        policies_tensor = torch.stack(padded_policies, dim=1)
         values_tensor = torch.stack(unrolled_values, dim=1)
 
-        return policies_tensor, values_tensor.squeeze(-1)
+        return policies_tensor, values_tensor
 
     def init_zero(self):
         # todo Initialize all weights to 0. Update as needed
