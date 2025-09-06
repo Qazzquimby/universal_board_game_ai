@@ -8,7 +8,10 @@
 # The inner nodes derive both the hidden state and the encoded action tokens.
 # Transitioning from a hidden state tensor to the next hidden state vae is done with the encoded action, not the ActionType action.
 
-from typing import Optional
+# Note that the root node also needs to use Vae and sampling for hidden info,
+# but the root node has a known set of legal actions
+
+from typing import Optional, List
 
 import torch
 from torch import nn, optim
@@ -35,6 +38,15 @@ from environments.base import (
     StateWithKey,
     DataFrame,
 )
+
+
+class MuZeroEdge(Edge):
+    def __init__(self, prior: float):
+        super().__init__(prior)
+        # A single edge can lead to multiple outcomes (child nodes) due to stochastic dynamics.
+        self.child_nodes: List[MCTSNode] = []
+
+
 from core.config import MuZeroConfig, TrainingConfig
 
 DUMMY_STATE_WITH_KEY = StateWithKey.from_state(
@@ -55,6 +67,7 @@ class MuZeroNode(MCTSNode):
         super().__init__(state_with_key or DUMMY_STATE_WITH_KEY)
         self.hidden_state = hidden_state
         self.player_idx = player_idx
+        self.action_tokens: Optional[List[torch.Tensor]] = None
 
 
 class MuZeroExpansion(ExpansionStrategy):
@@ -65,26 +78,37 @@ class MuZeroExpansion(ExpansionStrategy):
         if node.is_expanded:
             return
 
-        # todo: env.get_legal_actions() is only correct for the root node.
-        # Nodes with hidden states need to get actions from the hidden state.
-        if not node.state_with_key:
+        legal_actions = None
+        # If root node, use real environment actions
+        if node.state_with_key is not DUMMY_STATE_WITH_KEY:
             legal_actions = env.get_legal_actions()
             if not legal_actions:
                 node.is_expanded = True
                 return
-            action_tokens = [self.network._action_to_token(a) for a in legal_actions]
+            node.action_tokens = [
+                self.network._action_to_token(a) for a in legal_actions
+            ]
+        else:  # If internal node, generate actions from hidden state
+            node.action_tokens = self.network.get_actions_for_hidden_state(
+                node.hidden_state
+            )
+            if not node.action_tokens:
+                node.is_expanded = True
+                return
 
-        else:
-            action_tokens = None  # todo
         policy_dict, _ = self.network.get_policy_and_value(
-            node.hidden_state, action_tokens
+            node.hidden_state, node.action_tokens
         )
 
-        # todo needs to handle internal nodes. legal actions would be not defined. Use index as key?
         for action_idx, prior in policy_dict.items():
-            action = legal_actions[action_idx]
-            action_key = tuple(action) if isinstance(action, list) else action
-            node.edges[action_key] = Edge(prior=prior)
+            # For root node, key edges by ActionType
+            if legal_actions:
+                action = legal_actions[action_idx]
+                action_key = tuple(action) if isinstance(action, list) else action
+            # For internal nodes, key edges by action index
+            else:
+                action_key = action_idx
+            node.edges[action_key] = MuZeroEdge(prior=prior)
         node.is_expanded = True
 
 
@@ -122,8 +146,6 @@ class MuZeroSelection(UCB1Selection):
             best_score = -float("inf")
             best_action: Optional[ActionType] = None
 
-            # todo actions should be encoded tokens, not ActionType?
-
             edges_to_consider = current_node.edges
             if current_node is node and contender_actions is not None:
                 edges_to_consider = {
@@ -141,29 +163,59 @@ class MuZeroSelection(UCB1Selection):
                     best_action = action
 
             assert best_action is not None
+            edge: MuZeroEdge = current_node.edges[best_action]
 
-            edge = current_node.edges[best_action]
-            # todo, we want progressive widening to sample more over time.
-            if edge.child_node:
-                current_node = edge.child_node
-                path.add(current_node, best_action)
-            else:
-                action_token = self.network._action_to_token(best_action).unsqueeze(0)
+            # --- Progressive Widening ---
+            # A simple formula for the number of children to explore.
+            child_limit = 1 + edge.num_visits // 5
+
+            if len(edge.child_nodes) < child_limit:
+                # Create a new child node and terminate selection for this simulation.
+                is_root = current_node.state_with_key is not DUMMY_STATE_WITH_KEY
+                if is_root:
+                    action_token = self.network._action_to_token(best_action).unsqueeze(
+                        0
+                    )
+                else:
+                    action_token = current_node.action_tokens[best_action]
+
                 next_hidden_state_vae = self.network.get_next_hidden_state_vae(
                     current_node.hidden_state, action_token
                 )
                 next_hidden_state = next_hidden_state_vae.take_sample()
 
-                # This assumes a two-player, alternating-turn game.
-                # For more complex games, the dynamics model should also predict the next player.
                 next_player_idx = 1 - current_node.player_idx
                 next_node = MuZeroNode(
                     player_idx=next_player_idx,
                     hidden_state=next_hidden_state,
                 )
-                edge.child_node = next_node
+                edge.child_nodes.append(next_node)
                 path.add(next_node, best_action)
                 return SelectionResult(path=path, leaf_env=sim_env)
+            else:
+                # Select from existing children and continue traversal.
+                best_child = None
+                best_score = -float("inf")
+                for child in edge.child_nodes:
+                    # UCB selection among children. Negate Q-value as child's value
+                    # is from the opponent's perspective.
+                    q_value = (
+                        -child.total_value / child.num_visits
+                        if child.num_visits > 0
+                        else 0.0
+                    )
+
+                    exploration_term = self.exploration_constant * (
+                        (edge.num_visits) ** 0.5 / (1 + child.num_visits)
+                    )
+                    score = q_value + exploration_term
+
+                    if score > best_score:
+                        best_score = score
+                        best_child = child
+
+                current_node = best_child
+                path.add(current_node, best_action)
 
         return SelectionResult(path=path, leaf_env=sim_env)
 
