@@ -502,9 +502,7 @@ class MuZeroAgent(BaseLearningAgent):
 
     def add_experiences_to_buffer(self, experiences: List[MuZeroExperience]):
         """Adds MuZero experiences to the replay buffer."""
-        super().add_experiences_to_buffer(
-            experiences=experiences
-        )
+        super().add_experiences_to_buffer(experiences=experiences)
 
     # TODO: The base agent's train_network() and _run_epoch() need to be adapted
     # to use this custom data loader and handle the MuZero batch format.

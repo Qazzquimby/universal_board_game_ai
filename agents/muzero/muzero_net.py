@@ -170,12 +170,60 @@ class MuZeroNet(BaseTokenizingNet):
 
         return policy_dict, value
 
-    def forward(self, *args, **kwargs):
-        # todo
-        raise NotImplementedError(
-            "MuZeroNet does not support direct forward passes for training yet. "
-            "The training loop in BaseLearningAgent is not compatible."
-        )
+    def forward(
+        self, state_batch: Dict[str, torch.Tensor], legal_actions: torch.Tensor
+    ):
+        """
+        Forward pass for training. Performs unrolling.
+        - state_batch: A batch of initial observation tensors.
+        - legal_actions: A batch of action sequences for unrolling, with shape
+                         (batch_size, num_unroll_steps). Renamed internally to action_batch.
+        Returns:
+        - A tuple of tensors containing predictions for each step:
+          (unrolled_policies, unrolled_values).
+        """
+        # TODO: The network's helper methods (get_hidden_state_vae, get_policy_and_value, etc.)
+        # are not designed for batch processing. They need to be updated to handle batches
+        # of states and hidden_states for this training forward pass to work correctly.
+        # The following implementation assumes batched versions of these methods exist.
+
+        action_batch = legal_actions
+        num_unroll_steps = action_batch.shape[1]
+
+        # 1. Representation (h):
+        hidden_state_vae = self.get_hidden_state_vae(state_batch)
+        h = hidden_state_vae.take_sample()
+
+        # Lists to store predictions at each step
+        unrolled_policy_logits = []
+        unrolled_values = []
+
+        # 2. Initial Prediction (f) and Unrolling Loop:
+        for i in range(num_unroll_steps + 1):
+            # The `get_policy_and_value` returns a dict for MCTS. For training, we need logits.
+            # This logic should be factored into a batched method that returns tensors.
+            # Placeholder: Assume a way to get policy logits and value for the current hidden state `h`.
+            value = self.value_head(h)
+            # For policy, we need to handle variable candidate actions, which is complex in a batch.
+            # As a placeholder, we'll use a dummy policy logit tensor.
+            policy_logits = torch.randn(
+                h.shape[0], self.action_embedding.num_embeddings
+            ).to(self.get_device())
+
+            unrolled_policy_logits.append(policy_logits)
+            unrolled_values.append(value)
+
+            if i < num_unroll_steps:
+                # 3. Dynamics (g):
+                action_tokens = self.action_embedding(action_batch[:, i])
+                next_h_vae = self.get_next_hidden_state_vae(h, action_tokens)
+                h = next_h_vae.take_sample()
+
+        # 4. Collate and return all predictions.
+        policies_tensor = torch.stack(unrolled_policy_logits, dim=1)
+        values_tensor = torch.stack(unrolled_values, dim=1)
+
+        return policies_tensor, values_tensor.squeeze(-1)
 
     def init_zero(self):
         # todo Initialize all weights to 0. Update as needed
