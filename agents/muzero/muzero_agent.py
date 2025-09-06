@@ -75,8 +75,16 @@ class MuZeroNode(MCTSNode):
         self.hidden_state = hidden_state
         self.player_idx = player_idx
         self.action_tokens: Optional[List[torch.Tensor]] = None
-        # For root node that acts as a container for samples
-        self.child_samples: List["MuZeroNode"] = []
+
+
+class MuZeroRootNode(MCTSNode):
+    """A special root node for MuZero that holds samples of hidden states."""
+
+    def __init__(self, player_idx: int, state_with_key: StateWithKey):
+        super().__init__(state_with_key)
+        self.edges: Dict[Union[ActionType, int], MuZeroEdge]
+        self.player_idx = player_idx
+        self.child_samples: List[MuZeroNode] = []
 
 
 class MuZeroExpansion(ExpansionStrategy):
@@ -285,15 +293,14 @@ class MuZeroAgent(BaseLearningAgent):
             training_config=training_config,
             model_name=model_name,
         )
+        self.root: Optional["MuZeroRootNode"] = None
 
     def search(self, env: BaseEnvironment, train: bool = False):
         if self.root is None:
             state_with_key = env.get_state_with_key()
             # The root node will act as a container for different hidden state samples.
-            self.root = MuZeroNode(
-                player_idx=env.get_current_player(),
-                hidden_state=torch.empty(0),  # Dummy, not used
-                state_with_key=state_with_key,
+            self.root = MuZeroRootNode(
+                player_idx=env.get_current_player(), state_with_key=state_with_key
             )
 
         for i in range(self.num_simulations):
@@ -373,7 +380,7 @@ class MuZeroAgent(BaseLearningAgent):
         # We don't set priors correctly here as they are not used after search.
         self.root.edges = dict(aggregated_edges)
 
-    def _expand_leaf(self, leaf_node: MCTSNode, leaf_env: BaseEnvironment, train: bool):
+    def _expand_leaf(self, leaf_node: "MuZeroNode", leaf_env: BaseEnvironment, train: bool):
         if not leaf_node.is_expanded and not leaf_env.is_done:
             self.expansion_strategy.expand(leaf_node, leaf_env)
 
