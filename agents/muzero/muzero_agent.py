@@ -89,17 +89,35 @@ def muzero_collate_fn(batch):
         if seq:
             actions_batch[i, : len(seq)] = torch.tensor(seq, dtype=torch.long)
 
+    # policy_target_seqs is a tuple of lists of tensors (policy vectors).
+    # First, pad each policy vector in each sequence to the max policy vector length in the batch.
     all_policies = [p for p_seq in policy_target_seqs for p in p_seq]
     if all_policies:
-        padded_policies = torch.nn.utils.rnn.pad_sequence(
+        padded_policy_vectors = torch.nn.utils.rnn.pad_sequence(
             all_policies, batch_first=True, padding_value=0.0
         )
-        num_unroll_steps = len(policy_target_seqs[0])
-        policy_targets_batch = padded_policies.view(len(batch), num_unroll_steps, -1)
+
+        # Reconstruct the sequences of padded policy vectors.
+        seq_lengths = [len(s) for s in policy_target_seqs]
+        padded_policy_seqs = []
+        current_idx = 0
+        for length in seq_lengths:
+            padded_policy_seqs.append(
+                padded_policy_vectors[current_idx : current_idx + length]
+            )
+            current_idx += length
+
+        # Pad the sequences of policy vectors to the max sequence length.
+        policy_targets_batch = torch.nn.utils.rnn.pad_sequence(
+            padded_policy_seqs, batch_first=True, padding_value=0.0
+        )
     else:
+        # Handle case with no policies (e.g., batch of terminal states).
         policy_targets_batch = torch.empty(len(batch), 0, 0)
 
-    value_targets_batch = torch.stack(list(value_target_seqs), 0)
+    value_targets_batch = torch.nn.utils.rnn.pad_sequence(
+        list(value_target_seqs), batch_first=True, padding_value=0.0
+    )
 
     # The 'legal_actions' part of the tuple in the base training loop will be our actions_batch.
     return batched_state, policy_targets_batch, value_targets_batch, actions_batch
@@ -465,8 +483,6 @@ class MuZeroAgent(BaseLearningAgent):
         game_history: List[Tuple[StateType, ActionType, np.ndarray]],
         final_outcome: float,
     ):
-        # todo this looks wrong to me
-        # Why are we discounting value? We are tracking end value, not immediate reward.
 
         experiences = []
         num_unroll_steps = self.config.num_unroll_steps
@@ -504,9 +520,6 @@ class MuZeroAgent(BaseLearningAgent):
         """Adds MuZero experiences to the replay buffer."""
         super().add_experiences_to_buffer(experiences=experiences)
 
-    # TODO: The base agent's train_network() and _run_epoch() need to be adapted
-    # to use this custom data loader and handle the MuZero batch format.
-    # This will likely require overriding them in this class.
     def _get_train_val_loaders(self) -> Tuple[DataLoader, DataLoader]:
         """Creates and returns training and validation data loaders for MuZero."""
         train_ds = MuZeroDataset(list(self.train_replay_buffer))
