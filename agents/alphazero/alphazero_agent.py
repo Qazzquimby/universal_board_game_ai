@@ -1,18 +1,15 @@
-from typing import List, Optional, Dict
+from typing import List, Dict, Tuple
 
 import torch
 from torch import optim, nn
-from torch.utils.data import DataLoader
-from tqdm import tqdm
 import torch.nn.functional as F
 import numpy as np
 
 from agents.alphazero.alphazero_net import AlphaZeroNet
 from agents.base_learning_agent import (
     BaseLearningAgent,
-    EpochMetrics,
 )
-from environments.base import BaseEnvironment, ActionType
+from environments.base import BaseEnvironment, ActionType, StateType
 from algorithms.mcts import (
     DummyAlphaZeroNet,
     MCTSNode,
@@ -190,6 +187,15 @@ class AlphaZeroAgent(BaseLearningAgent):
     def reset_turn(self) -> None:
         """Reset agent state (e.g., MCTS tree)."""
         self.root = None
+
+    def add_experiences_to_buffer(
+            self,
+            experiences: List[Tuple[StateType, np.ndarray, float, List[ActionType]]]
+    ):
+        """Adds experiences to the replay buffer, splitting between train and val."""
+        super().add_experiences_to_buffer(
+            experiences=experiences
+        )
 
 
 def make_pure_az(

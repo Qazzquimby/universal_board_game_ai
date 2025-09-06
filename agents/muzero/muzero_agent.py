@@ -12,13 +12,19 @@
 # but the root node has a known set of legal actions
 
 from typing import Optional, List, Tuple, Dict, Union
-from collections import defaultdict
+from collections import defaultdict, deque
+from dataclasses import dataclass
 
 import torch
 from torch import nn, optim
 import torch.nn.functional as F
+from torch.utils.data import Dataset, DataLoader
+import numpy as np
 
-from agents.base_learning_agent import BaseLearningAgent
+from agents.base_learning_agent import (
+    BaseLearningAgent,
+    az_collate_fn,
+)
 from agents.muzero.muzero_net import MuZeroNet
 from algorithms.mcts import (
     SelectionStrategy,
@@ -38,9 +44,66 @@ from environments.base import (
     ActionType,
     StateWithKey,
     DataFrame,
+    StateType,
 )
-
 from core.config import MuZeroConfig, TrainingConfig
+
+
+@dataclass
+class MuZeroExperience:
+    """Holds a trajectory of experience for MuZero training."""
+
+    # todo, rather than same sized lists better to have trajectory step class?
+
+    initial_state: StateType
+    actions: List[ActionType]
+    policy_targets: List[np.ndarray]
+    value_targets: List[float]
+
+
+class MuZeroDataset(Dataset):
+    def __init__(self, buffer: List[MuZeroExperience]):
+        self.buffer = buffer
+
+    def __len__(self):
+        return len(self.buffer)
+
+    def __getitem__(self, idx):
+        exp = self.buffer[idx]
+        policy_targets = [
+            torch.tensor(p, dtype=torch.float32) for p in exp.policy_targets
+        ]
+        value_targets = torch.tensor(exp.value_targets, dtype=torch.float32)
+        return exp.initial_state, exp.actions, policy_targets, value_targets
+
+
+def muzero_collate_fn(batch):
+    """Collates a batch of MuZero experiences."""
+    initial_states, action_seqs, policy_target_seqs, value_target_seqs = zip(*batch)
+
+    batched_state, _, _, _ = az_collate_fn([(s, [], 0.0, []) for s in initial_states])
+
+    max_action_len = max((len(seq) for seq in action_seqs), default=0)
+    actions_batch = torch.zeros((len(action_seqs), max_action_len), dtype=torch.long)
+    for i, seq in enumerate(action_seqs):
+        if seq:
+            actions_batch[i, : len(seq)] = torch.tensor(seq, dtype=torch.long)
+
+    all_policies = [p for p_seq in policy_target_seqs for p in p_seq]
+    if all_policies:
+        padded_policies = torch.nn.utils.rnn.pad_sequence(
+            all_policies, batch_first=True, padding_value=0.0
+        )
+        num_unroll_steps = len(policy_target_seqs[0])
+        policy_targets_batch = padded_policies.view(len(batch), num_unroll_steps, -1)
+    else:
+        policy_targets_batch = torch.empty(len(batch), 0, 0)
+
+    value_targets_batch = torch.stack(list(value_target_seqs), 0)
+
+    # The 'legal_actions' part of the tuple in the base training loop will be our actions_batch.
+    return batched_state, policy_targets_batch, value_targets_batch, actions_batch
+
 
 DUMMY_STATE_WITH_KEY = StateWithKey.from_state(
     {"game": DataFrame(data=[[0]], columns=["dummy"])}
@@ -294,6 +357,11 @@ class MuZeroAgent(BaseLearningAgent):
             model_name=model_name,
         )
         self.root: Optional["MuZeroRootNode"] = None
+        # MuZero requires its own replay buffer to store MuZeroExperience objects.
+        val_buffer_size = config.replay_buffer_size // 5
+        train_buffer_size = config.replay_buffer_size - val_buffer_size
+        self.train_replay_buffer = deque(maxlen=train_buffer_size)
+        self.val_replay_buffer = deque(maxlen=val_buffer_size)
 
     def search(self, env: BaseEnvironment, train: bool = False):
         if self.root is None:
@@ -380,7 +448,9 @@ class MuZeroAgent(BaseLearningAgent):
         # We don't set priors correctly here as they are not used after search.
         self.root.edges = dict(aggregated_edges)
 
-    def _expand_leaf(self, leaf_node: "MuZeroNode", leaf_env: BaseEnvironment, train: bool):
+    def _expand_leaf(
+        self, leaf_node: "MuZeroNode", leaf_env: BaseEnvironment, train: bool
+    ):
         if not leaf_node.is_expanded and not leaf_env.is_done:
             self.expansion_strategy.expand(leaf_node, leaf_env)
 
@@ -390,28 +460,112 @@ class MuZeroAgent(BaseLearningAgent):
         policy_result = self.get_policy_from_visits(temperature)
         return policy_result.chosen_action
 
+    def process_finished_episode(
+        self,
+        game_history: List[Tuple[StateType, ActionType, np.ndarray]],
+        final_outcome: float,
+    ):
+        # todo this looks wrong to me
+        # Why are we discounting value? We are tracking end value, not immediate reward.
+
+        experiences = []
+        num_unroll_steps = self.config.num_unroll_steps
+        for i in range(len(game_history)):
+            initial_state_info = game_history[i]
+            initial_state = initial_state_info[0]
+
+            actions = []
+            policy_targets = [initial_state_info[2]]
+            value_targets = []
+
+            # Calculate value targets with discounting
+            for j in range(i, len(game_history)):
+                player = game_history[j][0]["game"]["current_player"][0]
+                outcome = final_outcome if player == 0 else -final_outcome
+                value_targets.append(outcome * (self.config.discount_factor ** (j - i)))
+
+            for j in range(i, min(i + num_unroll_steps, len(game_history))):
+                actions.append(game_history[j][1])
+                # Policy target for the next state
+                if j + 1 < len(game_history):
+                    policy_targets.append(game_history[j + 1][2])
+
+            experiences.append(
+                MuZeroExperience(
+                    initial_state=initial_state,
+                    actions=actions,
+                    policy_targets=policy_targets,
+                    value_targets=value_targets,
+                )
+            )
+        self.add_experiences_to_buffer(experiences)
+
+    def add_experiences_to_buffer(self, experiences: List[MuZeroExperience]):
+        """Adds MuZero experiences to the replay buffer."""
+        super().add_experiences_to_buffer(
+            experiences=experiences
+        )
+
+    # TODO: The base agent's train_network() and _run_epoch() need to be adapted
+    # to use this custom data loader and handle the MuZero batch format.
+    # This will likely require overriding them in this class.
+    def _get_train_val_loaders(self) -> Tuple[DataLoader, DataLoader]:
+        """Creates and returns training and validation data loaders for MuZero."""
+        train_ds = MuZeroDataset(list(self.train_replay_buffer))
+        val_ds = MuZeroDataset(list(self.val_replay_buffer))
+        train_loader = DataLoader(
+            train_ds,
+            batch_size=self.config.training_batch_size,
+            shuffle=True,
+            collate_fn=muzero_collate_fn,
+        )
+        val_loader = DataLoader(
+            val_ds,
+            batch_size=self.config.training_batch_size,
+            shuffle=False,
+            collate_fn=muzero_collate_fn,
+        )
+        return train_loader, val_loader
+
     def _calculate_loss(
         self, policy_logits, value_preds, policy_targets, value_targets
     ):
-        value_loss = F.mse_loss(value_preds, value_targets.squeeze(-1))
-        log_probs = F.log_softmax(policy_logits, dim=1)
-        safe_log_probs = torch.where(log_probs == -torch.inf, 0.0, log_probs)
-        policy_loss_per_item = -torch.sum(policy_targets * safe_log_probs, dim=1)
-        policy_loss = policy_loss_per_item.mean()
+        """Calculates the MuZero loss over an unrolled trajectory."""
+        total_policy_loss = 0
+        total_value_loss = 0
+        num_steps = policy_logits.shape[1]
 
-        total_loss = (self.config.value_loss_weight * value_loss) + policy_loss
-        value_mse = value_loss.item()
-        predicted_indices = torch.argmax(policy_logits, dim=1)
-        target_indices = torch.argmax(policy_targets, dim=1)
-        has_legal_actions = torch.any(policy_logits != -torch.inf, dim=1)
-        num_valid_samples = has_legal_actions.sum().item()
+        for i in range(num_steps):
+            step_policy_logits = policy_logits[:, i, :]
+            step_value_preds = value_preds[:, i]
+            step_policy_targets = policy_targets[:, i, :]
+            step_value_targets = value_targets[:, i]
 
-        policy_acc = (
-            ((predicted_indices == target_indices)[has_legal_actions].sum().item())
-            if num_valid_samples > 0
-            else 0
+            # Value loss (MSE)
+            value_loss = F.mse_loss(step_value_preds, step_value_targets)
+
+            # Policy loss (Cross-Entropy)
+            log_probs = F.log_softmax(step_policy_logits, dim=1)
+            policy_loss = -torch.sum(step_policy_targets * log_probs, dim=1).mean()
+
+            total_value_loss += value_loss
+            total_policy_loss += policy_loss
+            # TODO: Add reward prediction loss and VAE KL-divergence loss if applicable.
+
+        total_loss = total_value_loss + total_policy_loss
+
+        # TODO: Accuracy and MSE metrics need to be re-evaluated for sequential data.
+        # Placeholder metrics for now.
+        policy_acc = 0.0
+        value_mse = (total_value_loss / num_steps).item()
+
+        return (
+            total_loss,
+            total_value_loss / num_steps,
+            total_policy_loss / num_steps,
+            policy_acc,
+            value_mse,
         )
-        return total_loss, value_loss, policy_loss, policy_acc, value_mse
 
 
 def make_pure_muzero(

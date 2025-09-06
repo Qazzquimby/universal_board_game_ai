@@ -3,14 +3,13 @@ import copy
 import random
 from collections import deque
 from pathlib import Path
-from typing import List, Tuple, Optional, Dict
+from typing import List, Tuple, Optional, Dict, Any
 from dataclasses import dataclass
 
 import torch
-from torch import optim, nn
+from torch import nn
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
-import torch.nn.functional as F
 import numpy as np
 from loguru import logger
 
@@ -195,7 +194,7 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
         )
 
     def add_experiences_to_buffer(
-        self, experiences: List[Tuple[StateType, np.ndarray, float, List[ActionType]]]
+        self, experiences: List[Any]
     ):
         """Adds experiences to the replay buffer, splitting between train and val."""
         random.shuffle(experiences)
@@ -373,6 +372,7 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
         self.network.cache = {}
         return best_metrics
 
+    # todo make this not rely on AZ collate fn, then remove override from muzero
     def _get_train_val_loaders(self) -> Tuple[DataLoader, DataLoader]:
         """Creates and returns training and validation data loaders."""
         if not self.network or not self.optimizer:
