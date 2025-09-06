@@ -145,14 +145,24 @@ class MuZeroNet(BaseTokenizingNet):
 
         return action_tokens
 
-    def predict_from_hidden_state(
+    def _get_policy_scores(
+        self, hidden_states: torch.Tensor, action_tokens: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Scores (hidden_state, action) pairs.
+        """
+        policy_input = torch.cat([hidden_states, action_tokens], dim=1)
+        scores = self.policy_head(policy_input).squeeze(-1)
+        return scores
+
+    def _predict_policy_and_value_from_tokens(
         self,
         hidden_state_batch: torch.Tensor,
-        candidate_actions_batch: List[List[ActionType]],
+        candidate_action_tokens_batch: List[List[torch.Tensor]],
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Prediction function (f) for training: Predicts policy logits and value from a batch of hidden states
-        and candidate actions for each state.
+        Prediction function (f) core logic: Predicts policy logits and value from a batch of hidden states
+        and a batch of candidate action tokens.
         """
         device = self.get_device()
         batch_size = hidden_state_batch.shape[0]
@@ -163,14 +173,16 @@ class MuZeroNet(BaseTokenizingNet):
         # --- Policy Head ---
         flat_action_tokens = []
         batch_indices_for_policy = []
+        num_actions_per_item = []
         for i in range(batch_size):
-            if not candidate_actions_batch[i]:
+            actions = candidate_action_tokens_batch[i]
+            num_actions_per_item.append(len(actions))
+            if not actions:
                 continue
-            action_tokens = torch.stack(
-                [self._action_to_token(a) for a in candidate_actions_batch[i]]
-            )
+            # candidate_action_tokens_batch[i] is a list of tensors.
+            action_tokens = torch.stack(actions)
             flat_action_tokens.append(action_tokens)
-            batch_indices_for_policy.extend([i] * len(candidate_actions_batch[i]))
+            batch_indices_for_policy.extend([i] * len(actions))
 
         if not batch_indices_for_policy:
             return torch.empty(batch_size, 0, device=device), value_preds
@@ -182,15 +194,13 @@ class MuZeroNet(BaseTokenizingNet):
 
         state_embs_for_policy = hidden_state_batch[batch_indices_tensor]
 
-        policy_input = torch.cat(
-            [state_embs_for_policy, flat_action_tokens_tensor], dim=1
+        scores = self._get_policy_scores(
+            state_embs_for_policy, flat_action_tokens_tensor
         )
-        scores = self.policy_head(policy_input).squeeze(-1)
 
         scores_by_item = []
         start_idx = 0
-        for i in range(batch_size):
-            num_actions = len(candidate_actions_batch[i])
+        for num_actions in num_actions_per_item:
             if num_actions > 0:
                 scores_by_item.append(scores[start_idx : start_idx + num_actions])
                 start_idx += num_actions
@@ -203,6 +213,25 @@ class MuZeroNet(BaseTokenizingNet):
 
         return policy_logits, value_preds
 
+    def get_policy_and_value_batched(
+        self,
+        hidden_state_batch: torch.Tensor,
+        candidate_actions_batch: List[List[ActionType]],
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Prediction function (f) for training: Predicts policy logits and value from a batch of hidden states
+        and candidate actions for each state.
+        """
+        # Tokenize actions for each item in the batch
+        candidate_action_tokens_batch = [
+            [self._action_to_token(a) for a in actions]
+            for actions in candidate_actions_batch
+        ]
+
+        return self._predict_policy_and_value_from_tokens(
+            hidden_state_batch, candidate_action_tokens_batch
+        )
+
     def get_policy_and_value(
         self, hidden_state: torch.Tensor, candidate_actions: List[torch.Tensor]
     ) -> Tuple[Dict[int, float], float]:
@@ -210,22 +239,24 @@ class MuZeroNet(BaseTokenizingNet):
         Prediction function (f): Predicts policy and value from a hidden state
         and a list of candidate encoded actions.
         """
-        value = self.value_head(hidden_state).squeeze().cpu().item()
+        hidden_state_batch = hidden_state.unsqueeze(0)
+        # The candidate_actions are already tokenized.
+        candidate_action_tokens_batch = [candidate_actions]
 
-        if not candidate_actions:
-            return {}, value
+        policy_logits, value_preds = self._predict_policy_and_value_from_tokens(
+            hidden_state_batch, candidate_action_tokens_batch
+        )
 
-        # Score candidate actions to get a policy
-        # candidate_actions is a list of tensors, each of shape (1, embedding_dim)
-        action_tokens = torch.cat(candidate_actions, dim=0)
+        value = value_preds.squeeze().cpu().item()
 
-        state_embedding_expanded = hidden_state.expand(len(candidate_actions), -1)
-        policy_input = torch.cat([state_embedding_expanded, action_tokens], dim=1)
-        scores = self.policy_head(policy_input).squeeze(-1)
-        policy_probs = F.softmax(scores, dim=0)
+        policy_dict = {}
+        if candidate_actions:
+            # We have a batch of 1, so squeeze out the batch dimension.
+            policy_logits_single = policy_logits.squeeze(0)
+            policy_probs = F.softmax(policy_logits_single, dim=0)
 
-        # Policy dict maps action index to probability
-        policy_dict = {i: prob.item() for i, prob in enumerate(policy_probs)}
+            # Policy dict maps action index to probability
+            policy_dict = {i: prob.item() for i, prob in enumerate(policy_probs)}
 
         return policy_dict, value
 
@@ -262,7 +293,7 @@ class MuZeroNet(BaseTokenizingNet):
             candidate_actions_for_step = [
                 item_candidates[i] for item_candidates in candidate_actions
             ]
-            policy_logits, value = self.predict_from_hidden_state(
+            policy_logits, value = self.get_policy_and_value_batched(
                 h, candidate_actions_for_step
             )
 
