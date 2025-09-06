@@ -50,15 +50,21 @@ from core.config import MuZeroConfig, TrainingConfig
 
 
 @dataclass
+class MuZeroTrainingStep:
+    """A single step of experience for MuZero training."""
+
+    policy_target: np.ndarray
+    value_target: float
+    action: Optional[ActionType] = None
+    # Action taken from this step's state. None for the last state in unroll.
+
+
+@dataclass
 class MuZeroExperience:
     """Holds a trajectory of experience for MuZero training."""
 
-    # todo, rather than same sized lists better to have trajectory step class?
-
     initial_state: StateType
-    actions: List[ActionType]
-    policy_targets: List[np.ndarray]
-    value_targets: List[float]
+    steps: List[MuZeroTrainingStep]
 
 
 class MuZeroDataset(Dataset):
@@ -70,11 +76,14 @@ class MuZeroDataset(Dataset):
 
     def __getitem__(self, idx):
         exp = self.buffer[idx]
+        actions = [step.action for step in exp.steps if step.action is not None]
         policy_targets = [
-            torch.tensor(p, dtype=torch.float32) for p in exp.policy_targets
+            torch.tensor(step.policy_target, dtype=torch.float32) for step in exp.steps
         ]
-        value_targets = torch.tensor(exp.value_targets, dtype=torch.float32)
-        return exp.initial_state, exp.actions, policy_targets, value_targets
+        value_targets = torch.tensor(
+            [step.value_target for step in exp.steps], dtype=torch.float32
+        )
+        return exp.initial_state, actions, policy_targets, value_targets
 
 
 def muzero_collate_fn(batch):
@@ -490,29 +499,38 @@ class MuZeroAgent(BaseLearningAgent):
             initial_state_info = game_history[i]
             initial_state = initial_state_info[0]
 
-            actions = []
-            policy_targets = [initial_state_info[2]]
-            value_targets = []
-
-            # Calculate value targets with discounting
+            # Calculate value targets with discounting for the entire rest of the episode
+            full_value_targets = []
             for j in range(i, len(game_history)):
                 player = game_history[j][0]["game"]["current_player"][0]
                 outcome = final_outcome if player == 0 else -final_outcome
-                value_targets.append(outcome * (self.config.discount_factor ** (j - i)))
+                full_value_targets.append(
+                    outcome * (self.config.discount_factor ** (j - i))
+                )
 
+            actions = []
+            policy_targets = [initial_state_info[2]]
             for j in range(i, min(i + num_unroll_steps, len(game_history))):
                 actions.append(game_history[j][1])
                 # Policy target for the next state
                 if j + 1 < len(game_history):
                     policy_targets.append(game_history[j + 1][2])
 
-            experiences.append(
-                MuZeroExperience(
-                    initial_state=initial_state,
-                    actions=actions,
-                    policy_targets=policy_targets,
-                    value_targets=value_targets,
+            # Value targets should match policy targets for training steps
+            value_targets = full_value_targets[: len(policy_targets)]
+
+            steps = []
+            for k in range(len(policy_targets)):
+                action = actions[k] if k < len(actions) else None
+                steps.append(
+                    MuZeroTrainingStep(
+                        policy_target=policy_targets[k],
+                        value_target=value_targets[k],
+                        action=action,
+                    )
                 )
+            experiences.append(
+                MuZeroExperience(initial_state=initial_state, steps=steps)
             )
         self.add_experiences_to_buffer(experiences)
 
@@ -561,11 +579,11 @@ class MuZeroAgent(BaseLearningAgent):
 
             total_value_loss += value_loss
             total_policy_loss += policy_loss
-            # TODO: Add reward prediction loss and VAE KL-divergence loss if applicable.
+            # TODO: Do we need VAE KL-divergence loss, or will policy+value loss handle it downstream?
 
         total_loss = total_value_loss + total_policy_loss
 
-        # TODO: Accuracy and MSE metrics need to be re-evaluated for sequential data.
+        # low priority: Accuracy and MSE metrics need to be re-evaluated for sequential data.
         # Placeholder metrics for now.
         policy_acc = 0.0
         value_mse = (total_value_loss / num_steps).item()
