@@ -12,6 +12,7 @@
 # but the root node has a known set of legal actions
 
 from typing import Optional, List, Tuple, Dict, Union
+from collections import defaultdict
 
 import torch
 from torch import nn, optim
@@ -39,19 +40,24 @@ from environments.base import (
     DataFrame,
 )
 
+from core.config import MuZeroConfig, TrainingConfig
+
+DUMMY_STATE_WITH_KEY = StateWithKey.from_state(
+    {"game": DataFrame(data=[[0]], columns=["dummy"])}
+)
+
+
+def _calculate_child_limit(num_visits: int) -> int:
+    """A simple formula for progressive widening. More visits allow more children."""
+    # This formula allows for a new child for roughly every 5 visits.
+    return 1 + num_visits // 5
+
 
 class MuZeroEdge(Edge):
     def __init__(self, prior: float):
         super().__init__(prior)
         # A single edge can lead to multiple outcomes (child nodes) due to stochastic dynamics.
         self.child_nodes: List["MuZeroNode"] = []
-
-
-from core.config import MuZeroConfig, TrainingConfig
-
-DUMMY_STATE_WITH_KEY = StateWithKey.from_state(
-    {"game": DataFrame(data=[[0]], columns=["dummy"])}
-)
 
 
 class MuZeroNode(MCTSNode):
@@ -69,6 +75,8 @@ class MuZeroNode(MCTSNode):
         self.hidden_state = hidden_state
         self.player_idx = player_idx
         self.action_tokens: Optional[List[torch.Tensor]] = None
+        # For root node that acts as a container for samples
+        self.child_samples: List["MuZeroNode"] = []
 
 
 class MuZeroExpansion(ExpansionStrategy):
@@ -149,9 +157,7 @@ class MuZeroSelection(UCB1Selection):
             }
 
         for action, edge in edges_to_consider.items():
-            score = self._score_edge(
-                edge=edge, parent_node_num_visits=node.num_visits
-            )
+            score = self._score_edge(edge=edge, parent_node_num_visits=node.num_visits)
             if score > best_score:
                 best_score = score
                 best_action = action
@@ -179,8 +185,7 @@ class MuZeroSelection(UCB1Selection):
         """
         edge: MuZeroEdge = current_node.edges[action]
 
-        # A simple formula for progressive widening.
-        child_limit = 1 + edge.num_visits // 5
+        child_limit = _calculate_child_limit(edge.num_visits)
 
         if len(edge.child_nodes) < child_limit:
             # Widen the edge by creating a new child node from a new dynamics sample.
@@ -284,19 +289,38 @@ class MuZeroAgent(BaseLearningAgent):
     def search(self, env: BaseEnvironment, train: bool = False):
         if self.root is None:
             state_with_key = env.get_state_with_key()
-            # Note, even though this is the first hidden state, we still use a VAE to distribution over capture hidden information.
-            hidden_state_vae = self.network.get_hidden_state_vae(state_with_key.state)
-            hidden_state = hidden_state_vae.take_sample()
+            # The root node will act as a container for different hidden state samples.
             self.root = MuZeroNode(
                 player_idx=env.get_current_player(),
-                hidden_state=hidden_state,
+                hidden_state=torch.empty(0),  # Dummy, not used
                 state_with_key=state_with_key,
             )
 
         for i in range(self.num_simulations):
+            # Progressive widening at the root.
+            child_limit = _calculate_child_limit(self.root.num_visits)
+            if len(self.root.child_samples) < child_limit:
+                hidden_state_vae = self.network.get_hidden_state_vae(
+                    self.root.state_with_key.state
+                )
+                hidden_state = hidden_state_vae.take_sample()
+                new_sample_node = MuZeroNode(
+                    player_idx=self.root.player_idx,
+                    hidden_state=hidden_state,
+                    state_with_key=self.root.state_with_key,
+                )
+                self.root.child_samples.append(new_sample_node)
+
+            # Select a root sample for this simulation using UCB.
+            best_sample_node = self._select_root_sample()
+
             sim_env = env.copy()
             selection_result = self.selection_strategy.select(
-                self.root, sim_env, self.node_cache, self.num_simulations - i, None
+                best_sample_node,
+                sim_env,
+                self.node_cache,
+                self.num_simulations - i,
+                None,
             )
 
             leaf_node = selection_result.leaf_node
@@ -304,9 +328,50 @@ class MuZeroAgent(BaseLearningAgent):
 
             self._expand_leaf(leaf_node, leaf_env, train)
             value = self.evaluation_strategy.evaluate(leaf_node, leaf_env)
+
+            # Backpropagate through the path, including the main root.
+            selection_result.path.nodes.insert(0, self.root)
             self.backpropagation_strategy.backpropagate(
                 selection_result.path, {0: value, 1: -value}
             )
+
+        # After simulations, aggregate edges from samples to the root for policy selection.
+        self._aggregate_root_edges()
+
+    def _select_root_sample(self) -> MuZeroNode:
+        """Selects a root sample using a UCB formula."""
+        exploration_constant = self.selection_strategy.exploration_constant
+        best_sample = None
+        best_score = -float("inf")
+
+        for sample_node in self.root.child_samples:
+            q_value = (
+                sample_node.total_value / sample_node.num_visits
+                if sample_node.num_visits > 0
+                else 0.0
+            )
+            exploration_term = exploration_constant * (
+                (self.root.num_visits) ** 0.5 / (1 + sample_node.num_visits)
+            )
+            score = q_value + exploration_term
+            if score > best_score:
+                best_score = score
+                best_sample = sample_node
+
+        return best_sample
+
+    def _aggregate_root_edges(self):
+        """Aggregates edges from all root samples into the main root node."""
+        self.root.edges = {}
+        aggregated_edges = defaultdict(lambda: MuZeroEdge(prior=0.0))
+
+        for sample_node in self.root.child_samples:
+            for action, edge in sample_node.edges.items():
+                aggregated_edges[action].num_visits += edge.num_visits
+                aggregated_edges[action].total_value += edge.total_value
+
+        # We don't set priors correctly here as they are not used after search.
+        self.root.edges = dict(aggregated_edges)
 
     def _expand_leaf(self, leaf_node: MCTSNode, leaf_env: BaseEnvironment, train: bool):
         if not leaf_node.is_expanded and not leaf_env.is_done:
