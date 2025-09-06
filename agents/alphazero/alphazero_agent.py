@@ -179,7 +179,6 @@ class AlphaZeroAgent(BaseLearningAgent):
 
         return total_loss, value_loss, policy_loss, policy_acc, value_mse
 
-
     def reset_game(self) -> None:
         self.network.cache = {}
         self.node_cache = MCTSNodeCache()
@@ -189,13 +188,10 @@ class AlphaZeroAgent(BaseLearningAgent):
         self.root = None
 
     def add_experiences_to_buffer(
-            self,
-            experiences: List[Tuple[StateType, np.ndarray, float, List[ActionType]]]
+        self, experiences: List[Tuple[StateType, np.ndarray, float, List[ActionType]]]
     ):
         """Adds experiences to the replay buffer, splitting between train and val."""
-        super().add_experiences_to_buffer(
-            experiences=experiences
-        )
+        super().add_experiences_to_buffer(experiences=experiences)
 
 
 def make_pure_az(

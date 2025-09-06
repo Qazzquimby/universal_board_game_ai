@@ -193,9 +193,7 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
             buffer_experiences=buffer_experiences, logged_history=logged_history
         )
 
-    def add_experiences_to_buffer(
-        self, experiences: List[Any]
-    ):
+    def add_experiences_to_buffer(self, experiences: List[Any]):
         """Adds experiences to the replay buffer, splitting between train and val."""
         random.shuffle(experiences)
         for exp in experiences:
