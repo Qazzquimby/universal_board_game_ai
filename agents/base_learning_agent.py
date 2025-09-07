@@ -1,5 +1,6 @@
 import abc
 import copy
+import json
 import random
 from collections import deque
 from pathlib import Path
@@ -14,6 +15,7 @@ import numpy as np
 from loguru import logger
 
 from agents.mcts_agent import BaseMCTSAgent
+from core.serialization import LOG_DIR
 from environments.base import BaseEnvironment, StateType, ActionType, DataFrame
 from algorithms.mcts import (
     SelectionStrategy,
@@ -68,8 +70,6 @@ def az_collate_fn(batch):
     value_targets = torch.stack(list(value_targets), 0)
 
     return batched_state, policy_targets, value_targets, legal_actions_batch
-
-
 
 
 @dataclass
@@ -227,9 +227,54 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
         pass
 
     @abc.abstractmethod
-    def load_game_logs(self, env_name: str, buffer_limit: int):
-        """Loads game logs into the agent's replay buffers."""
+    def _process_game_log_data(self, game_data: List[Dict]) -> List[Any]:
+        """Processes data from a single game log file into a list of experiences."""
         pass
+
+    def load_game_logs(self, env_name: str, buffer_limit: int):
+        """
+        Loads existing game logs from LOG_DIR into the agent's train and validation
+        replay buffers.
+        """
+        loaded_games = 0
+        if not LOG_DIR.exists():
+            logger.info("Log directory not found. Starting with empty buffers.")
+            return
+
+        logger.info(f"Scanning {LOG_DIR} for existing '{env_name}' game logs...")
+        log_files = sorted(LOG_DIR.glob(f"{env_name}_game*.json"), reverse=True)
+
+        if not log_files:
+            logger.info("No existing game logs found for this environment.")
+            return
+
+        all_experiences = []
+        for filepath in tqdm(log_files, desc="Scanning Logs"):
+            if len(all_experiences) >= buffer_limit:
+                break
+
+            with open(filepath, "r") as f:
+                try:
+                    game_data = json.load(f)
+                except json.JSONDecodeError:
+                    logger.warning(f"Could not decode JSON from {filepath}. Skipping.")
+                    continue
+
+            loaded_games += 1
+            if not game_data:
+                continue
+
+            experiences_from_game = self._process_game_log_data(game_data)
+            if experiences_from_game:
+                all_experiences.extend(experiences_from_game)
+
+        self.add_experiences_to_buffer(all_experiences)
+        loaded_steps = len(self.train_replay_buffer) + len(self.val_replay_buffer)
+
+        logger.info(
+            f"Loaded {loaded_steps} experience objects from {loaded_games} games into replay buffers. "
+            f"Train: {len(self.train_replay_buffer)}, Val: {len(self.val_replay_buffer)}"
+        )
 
     def _run_epoch(
         self,
