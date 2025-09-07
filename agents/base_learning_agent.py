@@ -167,31 +167,45 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
         Processes the history of a completed episode to generate training data.
         Assigns the final outcome to all steps and prepares data for buffer and logging.
         """
-        buffer_experiences = []
-        logged_history = []
         if not game_history:
             logger.warning("process_finished_episode called with empty history.")
             return EpisodeResult(buffer_experiences=[], logged_history=[])
 
-        for state_at_step, action_taken, policy_target in game_history:
-            legal_actions_df = state_at_step.get("legal_actions")
+        value_targets = []
+        for state, _, _ in game_history:
+            player = state["game"]["current_player"][0]
+            value = final_outcome if player == 0 else -final_outcome
+            value_targets.append(value)
+
+        logged_history = []
+        for i, (state, action, policy) in enumerate(game_history):
+            logged_history.append((state, action, policy, value_targets[i]))
+
+        buffer_experiences = self._create_buffer_experiences(
+            game_history, value_targets
+        )
+        return EpisodeResult(
+            buffer_experiences=buffer_experiences, logged_history=logged_history
+        )
+
+    def _create_buffer_experiences(
+        self,
+        game_history: List[Tuple[StateType, ActionType, np.ndarray]],
+        value_targets: List[float],
+    ) -> List[Any]:
+        """Creates experiences for the replay buffer."""
+        experiences = []
+        for i, (state, _, policy) in enumerate(game_history):
+            legal_actions_df = state.get("legal_actions")
             if legal_actions_df is None or legal_actions_df.is_empty():
                 continue
 
             legal_actions = [row[0] for row in legal_actions_df.rows()]
-            player_at_step = state_at_step["game"]["current_player"][0]
-            value_target = final_outcome if player_at_step == 0 else -final_outcome
-
-            transformed_state = self.network._apply_transforms(state_at_step)
-            buffer_experiences.append(
-                (transformed_state, policy_target, value_target, legal_actions)
+            transformed_state = self.network._apply_transforms(state)
+            experiences.append(
+                (transformed_state, policy, value_targets[i], legal_actions)
             )
-            logged_history.append(
-                (state_at_step, action_taken, policy_target, value_target)
-            )
-        return EpisodeResult(
-            buffer_experiences=buffer_experiences, logged_history=logged_history
-        )
+        return experiences
 
     def add_experiences_to_buffer(self, experiences: List[Any]):
         """Adds experiences to the replay buffer, splitting between train and val."""

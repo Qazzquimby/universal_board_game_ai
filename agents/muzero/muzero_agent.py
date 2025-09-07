@@ -359,6 +359,8 @@ class MuZeroSelection(UCB1Selection):
 class MuZeroAgent(BaseLearningAgent):
     """Agent implementing the MuZero algorithm."""
 
+    config: MuZeroConfig
+
     def __init__(
         self,
         selection_strategy: SelectionStrategy,
@@ -384,7 +386,6 @@ class MuZeroAgent(BaseLearningAgent):
             training_config=training_config,
             model_name=model_name,
         )
-        self.config: MuZeroConfig
         self.root: Optional["MuZeroRootNode"] = None
         # MuZero requires its own replay buffer to store MuZeroExperience objects.
         val_buffer_size = config.replay_buffer_size // 5
@@ -455,7 +456,7 @@ class MuZeroAgent(BaseLearningAgent):
                 else 0.0
             )
             exploration_term = exploration_constant * (
-                (self.root.num_visits) ** 0.5 / (1 + sample_node.num_visits)
+                self.root.num_visits**0.5 / (1 + sample_node.num_visits)
             )
             score = q_value + exploration_term
             if score > best_score:
@@ -489,56 +490,46 @@ class MuZeroAgent(BaseLearningAgent):
         policy_result = self.get_policy_from_visits(temperature)
         return policy_result.chosen_action
 
-    def process_finished_episode(
+    def _create_buffer_experiences(
         self,
         game_history: List[Tuple[StateType, ActionType, np.ndarray]],
-        final_outcome: float,
-    ) -> EpisodeResult:
-
-        experiences = []
+        value_targets: List[float],
+    ) -> List[MuZeroExperience]:
+        """Creates MuZeroExperience objects for the replay buffer."""
+        muzero_experiences = []
         num_unroll_steps = self.config.num_unroll_steps
+
         for i in range(len(game_history)):
-            initial_state_info = game_history[i]
-            initial_state = initial_state_info[0]
-
-            # Calculate value targets with discounting for the entire rest of the episode
-            full_value_targets = []
-            for j in range(i, len(game_history)):
-                player = game_history[j][0]["game"]["current_player"][0]
-                outcome = final_outcome if player == 0 else -final_outcome
-                full_value_targets.append(
-                    outcome * (self.config.discount_factor ** (j - i))
-                )
-
-            actions = []
-            policy_targets = [initial_state_info[2]]
-            for j in range(i, min(i + num_unroll_steps, len(game_history))):
-                actions.append(game_history[j][1])
-                # Policy target for the next state
-                if j + 1 < len(game_history):
-                    policy_targets.append(game_history[j + 1][2])
-
-            # Value targets should match policy targets for training steps
-            value_targets = full_value_targets[: len(policy_targets)]
+            initial_state, _, _ = game_history[i]
+            transformed_initial_state = self.network._apply_transforms(initial_state)
 
             steps = []
-            for k in range(len(policy_targets)):
-                action = actions[k] if k < len(actions) else None
+            # The number of targets for policy and value is num_unroll_steps + 1
+            # It includes the initial state (i) and num_unroll_steps future states.
+            for k in range(num_unroll_steps + 1):
+                step_idx = i + k
+                if step_idx >= len(game_history):
+                    break
+
+                _, action, policy_target = game_history[step_idx]
+                value_target = value_targets[step_idx]
+
+                # The action is the one taken from the state at step_idx.
+                # For the last policy/value target, there's no subsequent action in the unroll window.
+                action_for_step = action if k < num_unroll_steps else None
+
                 steps.append(
                     MuZeroTrainingStep(
-                        policy_target=policy_targets[k],
-                        value_target=value_targets[k],
-                        action=action,
+                        policy_target=policy_target,
+                        value_target=value_target,
+                        action=action_for_step,
                     )
                 )
-            experiences.append(
-                MuZeroExperience(initial_state=initial_state, steps=steps)
-            )
-        self.add_experiences_to_buffer(experiences)
 
-    def add_experiences_to_buffer(self, experiences: List[MuZeroExperience]):
-        """Adds MuZero experiences to the replay buffer."""
-        super().add_experiences_to_buffer(experiences=experiences)
+            muzero_experiences.append(
+                MuZeroExperience(initial_state=transformed_initial_state, steps=steps)
+            )
+        return muzero_experiences
 
     def _get_train_val_loaders(self) -> Tuple[DataLoader, DataLoader]:
         """Creates and returns training and validation data loaders for MuZero."""
