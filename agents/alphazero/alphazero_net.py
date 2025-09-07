@@ -75,9 +75,7 @@ class AlphaZeroNet(BaseTokenizingNet):
                 return {}, value
 
             # Score legal actions
-            action_tokens = torch.stack(
-                [self._action_to_token(a) for a in legal_actions]
-            )
+            action_tokens = self._actions_to_tokens(legal_actions)
             state_embedding_expanded = game_embedding.expand(len(legal_actions), -1)
             policy_input = torch.cat([state_embedding_expanded, action_tokens], dim=1)
             scores = self.policy_head(policy_input).squeeze(-1)
@@ -142,9 +140,7 @@ class AlphaZeroNet(BaseTokenizingNet):
         for i in range(batch_size):
             if not legal_actions[i]:
                 continue
-            action_tokens = torch.stack(
-                [self._action_to_token(a) for a in legal_actions[i]]
-            )
+            action_tokens = self._actions_to_tokens(legal_actions[i])
             flat_action_tokens.append(action_tokens)
             batch_indices_for_policy.extend([i] * len(legal_actions[i]))
 

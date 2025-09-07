@@ -146,23 +146,36 @@ class BaseTokenizingNet(nn.Module):
 
         return token_sequences, batch_size
 
-    def _action_to_token(self, action: ActionType) -> torch.Tensor:
-        """Converts a single action into an embedding token."""
+    def _actions_to_tokens(self, actions: List[ActionType]) -> torch.Tensor:
+        """Converts a batch of actions into embedding tokens."""
         device = self.get_device()
-        action_embedding = torch.zeros(1, self.embedding_dim, device=device)
+        if not actions:
+            return torch.empty(0, self.embedding_dim, device=device)
+
         action_spec = self.network_spec["action_space"]
         action_components = action_spec["components"]
+        batch_size = len(actions)
+        action_embeddings = torch.zeros(batch_size, self.embedding_dim, device=device)
 
-        # Handle simple actions (like int for Connect4)
-        if not isinstance(action, (list, tuple)):
-            action = [action]
+        # Normalize actions to be list of lists, e.g. [1, 2] -> [[1], [2]]
+        if not isinstance(actions[0], (list, tuple)):
+            normalized_actions = [[a] for a in actions]
+        else:
+            normalized_actions = actions
+
+        # Transpose for batch processing: [[a1,b1], [a2,b2]] -> [[a1,a2], [b1,b2]]
+        transposed_actions = list(zip(*normalized_actions))
 
         for i, comp_name in enumerate(action_components):
-            val = action[i]
+            vals = transposed_actions[i]
             # Add 1 to shift values for padding_idx=0
-            val_tensor = torch.tensor([val + 1], device=device, dtype=torch.long)
-            action_embedding += self.embedding_layers[comp_name](val_tensor)
-        return action_embedding.squeeze(0)  # (dim,)
+            val_tensor = torch.tensor(vals, device=device, dtype=torch.long) + 1
+            action_embeddings += self.embedding_layers[comp_name](val_tensor)
+        return action_embeddings
+
+    def _action_to_token(self, action: ActionType) -> torch.Tensor:
+        """Converts a single action into an embedding token."""
+        return self._actions_to_tokens([action]).squeeze(0)
 
     def get_device(self):
         return next(self.parameters()).device

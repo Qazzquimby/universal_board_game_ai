@@ -223,7 +223,7 @@ class MuZeroNet(BaseTokenizingNet):
         """
         # Tokenize actions for each item in the batch
         candidate_action_tokens_batch = [
-            [self._action_to_token(a) for a in actions]
+            list(self._actions_to_tokens(actions))
             for actions in candidate_actions_batch
         ]
 
@@ -280,7 +280,7 @@ class MuZeroNet(BaseTokenizingNet):
 
         # 1. Representation (h):
         hidden_state_vae = self.get_hidden_state_vae(state_batch)
-        h = hidden_state_vae.take_sample()
+        hidden_state_tensor = hidden_state_vae.take_sample()
 
         # Lists to store predictions at each step
         unrolled_policy_logits = []
@@ -293,7 +293,7 @@ class MuZeroNet(BaseTokenizingNet):
                 item_candidates[i] for item_candidates in candidate_actions
             ]
             policy_logits, value = self.get_policy_and_value_batched(
-                h, candidate_actions_for_step
+                hidden_state_tensor, candidate_actions_for_step
             )
 
             unrolled_policy_logits.append(policy_logits)
@@ -301,9 +301,11 @@ class MuZeroNet(BaseTokenizingNet):
 
             if i < num_unroll_steps:
                 # 3. Dynamics (g):
-                action_tokens = self.action_embedding(action_batch[:, i])
-                next_h_vae = self.get_next_hidden_state_vae(h, action_tokens)
-                h = next_h_vae.take_sample()
+                action_tokens = self._actions_to_tokens(action_batch[:, i].tolist())
+                next_h_vae = self.get_next_hidden_state_vae(
+                    hidden_state_tensor, action_tokens
+                )
+                hidden_state_tensor = next_h_vae.take_sample()
 
         # 4. Collate and return all predictions.
         # Pad policies to the max number of actions over all unroll steps.
