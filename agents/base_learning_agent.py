@@ -39,7 +39,7 @@ class BaseCollation:
     legal_actions_batch: Tuple[ActionType]
 
 
-def _get_batched_state(state_dicts) -> Dict:
+def _get_batched_state(state_dicts: Dict[str, DataFrame]) -> Dict:
     batched_state = {}
     if state_dicts:
         # Get table names from the first sample, assuming all samples have the same tables.
@@ -67,13 +67,15 @@ def _get_batched_state(state_dicts) -> Dict:
     return batched_state
 
 
-def base_collate_fn(batch) -> BaseCollation:
+def base_collate_fn(
+    batch: Tuple[Dict, torch.Tensor, torch.Tensor, List[ActionType]]
+) -> BaseCollation:
     """
     Custom collate function to handle batches of experiences, where states are
     dictionaries of DataFrames.
     """
     state_dicts, policy_targets, value_targets, legal_actions_batch = zip(*batch)
-    batched_state = _get_batched_state(batch)
+    batched_state = _get_batched_state(state_dicts=state_dicts)
 
     # Pad the policy targets to have the same length.
     policy_targets = nn.utils.rnn.pad_sequence(
@@ -178,7 +180,7 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
 
     def process_finished_episode(
         self,
-        game_history: List[Tuple[StateType, ActionType, np.ndarray]],
+        game_history: List[GameHistoryStep],
         final_outcome: float,
     ) -> EpisodeResult:
         """
@@ -190,14 +192,21 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
             return EpisodeResult(buffer_experiences=[], logged_history=[])
 
         value_targets = []
-        for state, _, _ in game_history:
-            player = state["game"]["current_player"][0]
+        for game_history_step in game_history:
+            player = game_history_step.state["game"]["current_player"][0]
             value = final_outcome if player == 0 else -final_outcome
             value_targets.append(value)
 
         logged_history = []
-        for i, (state, action, policy) in enumerate(game_history):
-            logged_history.append((state, action, policy, value_targets[i]))
+        for i, game_history_step in enumerate(game_history):
+            logged_history.append(
+                (
+                    game_history_step.state,
+                    game_history_step.action,
+                    game_history_step.policy,
+                    value_targets[i],
+                )
+            )
 
         buffer_experiences = self._create_buffer_experiences(
             game_history, value_targets

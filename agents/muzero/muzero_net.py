@@ -83,7 +83,6 @@ class MuZeroNet(BaseTokenizingNet):
         """
         Representation function (h): Encodes a batch of states into a stochastic hidden state distribution.
         """
-        state = self._apply_transforms(state)
         tokens = self._state_to_tokens(state)
 
         batch_size = tokens.shape[0]

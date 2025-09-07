@@ -58,7 +58,7 @@ class AlphaZeroNet(BaseTokenizingNet):
         value = self.value_head(game_token_output)
         return game_token_output, value
 
-    def predict(
+    def predict_single(
         self, state_with_key: StateWithKey, legal_actions: List[ActionType]
     ) -> Tuple[Dict[ActionType, float], float]:
         """
@@ -90,7 +90,9 @@ class AlphaZeroNet(BaseTokenizingNet):
             return policy_dict, value
 
     def forward(
-        self, state_batch: dict, legal_actions: List[List[ActionType]]
+        self,
+        state_batch: Dict[str, torch.Tensor],
+        legal_actions: List[List[ActionType]],
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Performs a forward pass for a batch of states during training.

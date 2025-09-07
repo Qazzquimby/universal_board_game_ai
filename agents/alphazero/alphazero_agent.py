@@ -127,17 +127,17 @@ class AlphaZeroAgent(BaseLearningAgent):
     ) -> List[AlphaZeroExperience]:
         """Creates AlphaZeroExperience objects for the replay buffer."""
         experiences = []
-        for i, (state, _, policy) in enumerate(game_history):
-            legal_actions_df = state.get("legal_actions")
+        for i, game_history in enumerate(game_history):
+            legal_actions_df = game_history.state.get("legal_actions")
             if legal_actions_df is None or legal_actions_df.is_empty():
                 continue
 
             legal_actions = [row[0] for row in legal_actions_df.rows()]
-            transformed_state = self.network._apply_transforms(state)
+            transformed_state = self.network._apply_transforms(game_history.state)
             experiences.append(
                 AlphaZeroExperience(
                     state=transformed_state,
-                    policy_target=policy,
+                    policy_target=game_history.policy,
                     value_target=value_targets[i],
                     legal_actions=legal_actions,
                 )

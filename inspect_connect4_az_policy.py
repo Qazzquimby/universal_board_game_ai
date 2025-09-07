@@ -146,7 +146,7 @@ class Connect4InspectorApp:
             return
 
         with torch.no_grad():
-            policy_dict, value = self.network.predict(
+            policy_dict, value = self.network.predict_single(
                 temp_env.get_state_with_key(), legal_actions
             )
 

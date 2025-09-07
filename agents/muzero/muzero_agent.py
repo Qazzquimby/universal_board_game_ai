@@ -547,7 +547,7 @@ class MuZeroAgent(BaseLearningAgent):
 
                 steps.append(
                     MuZeroTrainingStep(
-                        policy_target=game_history_step.policy_target,
+                        policy_target=game_history_step.policy,
                         value_target=value_target,
                         legal_actions=game_history_step.legal_actions,
                         action=action_for_step,
