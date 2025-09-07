@@ -647,9 +647,9 @@ class MuZeroAgent(BaseLearningAgent):
                     self.optimizer.zero_grad()
 
                 policy_logits, value_preds = self.network(
-                    batch_data.batched_state,
-                    action_batch,
-                    candidate_actions=batch_data.candidate_actions,
+                    state_batch=batch_data.batched_state,
+                    action_history_batch=action_batch,
+                    legal_actions_batch=batch_data.candidate_actions,
                 )
                 loss_statistics = self._calculate_loss(
                     policy_logits,
@@ -707,6 +707,7 @@ class MuZeroAgent(BaseLearningAgent):
             log_probs = F.log_softmax(step_policy_logits, dim=1)
             policy_loss = -torch.sum(step_policy_targets * log_probs, dim=1).mean()
             total_policy_loss += policy_loss
+            # step_policy_logits has an inf value
 
             # TODO: Do we need VAE KL-divergence loss, or will policy+value loss handle it downstream?
 

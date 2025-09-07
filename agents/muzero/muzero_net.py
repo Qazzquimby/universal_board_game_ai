@@ -1,4 +1,4 @@
-from typing import Tuple, Dict, List, Optional
+from typing import Tuple, Dict, List
 
 import torch
 import torch.nn as nn
@@ -6,6 +6,7 @@ import torch.nn.functional as F
 
 from environments.base import BaseEnvironment, StateType, ActionType
 from models.networks import BaseTokenizingNet
+
 
 # Don't delete
 # Hidden state vae is a distribution for sampling hidden state tensors from, for stochasticity.
@@ -262,8 +263,8 @@ class MuZeroNet(BaseTokenizingNet):
     def forward(
         self,
         state_batch: Dict[str, "DataFrame"],
-        action_batch: torch.Tensor,
-        candidate_actions: List[List[List[ActionType]]],
+        action_history_batch: torch.Tensor,
+        legal_actions_batch: List[List[List[ActionType]]],
     ):
         """
         Forward pass for training. Performs unrolling.
@@ -276,11 +277,17 @@ class MuZeroNet(BaseTokenizingNet):
         - A tuple of tensors containing predictions for each step:
           (unrolled_policies, unrolled_values).
         """
-        num_unroll_steps = action_batch.shape[1]
+        num_unroll_steps = action_history_batch.shape[1]
 
         # 1. Representation (h):
         hidden_state_vae = self.get_hidden_state_vae(state_batch)
         hidden_state_tensor = hidden_state_vae.take_sample()
+
+        # If we get a single state but a batch of action sequences,
+        # expand the hidden state to match the batch size for unrolling.
+        batch_size = action_history_batch.shape[0]
+        if hidden_state_tensor.shape[0] == 1 and batch_size > 1:
+            hidden_state_tensor = hidden_state_tensor.expand(batch_size, -1)
 
         # Lists to store predictions at each step
         unrolled_policy_logits = []
@@ -289,11 +296,15 @@ class MuZeroNet(BaseTokenizingNet):
         # 2. Initial Prediction (f) and Unrolling Loop:
         for i in range(num_unroll_steps + 1):
             # Get candidate actions for the current unroll step for all items in the batch
-            candidate_actions_for_step = [
-                item_candidates[i] for item_candidates in candidate_actions
-            ]
+            legal_actions_for_step_batch = []
+            for legal_actions_for_turns in legal_actions_batch:
+                if len(legal_actions_for_turns) > i:
+                    legal_actions_for_turn = legal_actions_for_turns[i]
+                else:
+                    legal_actions_for_turn = []
+                legal_actions_for_step_batch.append(legal_actions_for_turn)
             policy_logits, value = self.get_policy_and_value_batched(
-                hidden_state_tensor, candidate_actions_for_step
+                hidden_state_tensor, legal_actions_for_step_batch
             )
 
             unrolled_policy_logits.append(policy_logits)
@@ -301,7 +312,9 @@ class MuZeroNet(BaseTokenizingNet):
 
             if i < num_unroll_steps:
                 # 3. Dynamics (g):
-                action_tokens = self._actions_to_tokens(action_batch[:, i].tolist())
+                action_tokens = self._actions_to_tokens(
+                    action_history_batch[:, i].tolist()
+                )
                 next_h_vae = self.get_next_hidden_state_vae(
                     hidden_state_tensor, action_tokens
                 )
@@ -323,7 +336,7 @@ class MuZeroNet(BaseTokenizingNet):
         policies_tensor = torch.stack(padded_policies, dim=1)
         values_tensor = torch.stack(unrolled_values, dim=1)
 
-        return policies_tensor, values_tensor
+        return policies_tensor, values_tensor  # check for inf in policies
 
     def init_zero(self):
         # todo Initialize all weights to 0. Update as needed
