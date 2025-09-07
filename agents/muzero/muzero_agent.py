@@ -14,6 +14,7 @@
 from typing import Optional, List, Tuple, Dict, Union
 from collections import defaultdict, deque
 from dataclasses import dataclass
+import json
 
 import torch
 from loguru import logger
@@ -21,6 +22,7 @@ from torch import nn, optim
 import torch.nn.functional as F
 from torch.utils.data import Dataset
 import numpy as np
+from tqdm import tqdm
 
 from agents.base_learning_agent import (
     BaseLearningAgent,
@@ -48,6 +50,7 @@ from environments.base import (
     StateType,
 )
 from core.config import MuZeroConfig, TrainingConfig
+from core.serialization import LOG_DIR
 
 
 @dataclass
@@ -535,11 +538,73 @@ class MuZeroAgent(BaseLearningAgent):
         return muzero_collate_fn
 
     def load_game_logs(self, env_name: str, buffer_limit: int):
-        """Loads game logs into the agent's replay buffers."""
-        # TODO: Implement game log loading for MuZero.
-        # This will require changes to the logging format to store unrolled trajectories.
-        logger.warning(
-            "Game log loading not yet implemented for MuZero. Starting with an empty buffer."
+        """
+        Loads existing game logs from LOG_DIR into the agent's train and validation
+        replay buffers.
+        """
+        loaded_games = 0
+        if not LOG_DIR.exists():
+            logger.info("Log directory not found. Starting with empty buffers.")
+            return
+
+        logger.info(f"Scanning {LOG_DIR} for existing '{env_name}' game logs...")
+        log_files = sorted(LOG_DIR.glob(f"{env_name}_game*.json"), reverse=True)
+
+        if not log_files:
+            logger.info("No existing game logs found for this environment.")
+            return
+
+        all_experiences = []
+        for filepath in tqdm(log_files, desc="Scanning Logs"):
+            if len(all_experiences) >= buffer_limit:
+                break
+
+            with open(filepath, "r") as f:
+                game_data = json.load(f)
+
+            loaded_games += 1
+
+            if not game_data:
+                continue
+
+            game_history = []
+            value_targets = []
+            for step_data in game_data:
+                state_json = step_data.get("state")
+                action = step_data.get("action")
+                policy_target_list = step_data.get("policy_target")
+                value_target = step_data.get("value_target")
+
+                if (
+                    state_json is not None
+                    and action is not None
+                    and policy_target_list is not None
+                    and value_target is not None
+                ):
+                    state = {
+                        table_name: DataFrame(
+                            data=table_data.get("_data"),
+                            columns=table_data.get("columns"),
+                        )
+                        for table_name, table_data in state_json.items()
+                    }
+                    policy_target = np.array(policy_target_list, dtype=np.float32)
+
+                    game_history.append((state, action, policy_target))
+                    value_targets.append(value_target)
+
+            if game_history:
+                muzero_experiences = self._create_buffer_experiences(
+                    game_history, value_targets
+                )
+                all_experiences.extend(muzero_experiences)
+
+        self.add_experiences_to_buffer(all_experiences)
+        loaded_steps = len(self.train_replay_buffer) + len(self.val_replay_buffer)
+
+        logger.info(
+            f"Loaded {loaded_steps} experience objects from {loaded_games} games into replay buffers. "
+            f"Train: {len(self.train_replay_buffer)}, Val: {len(self.val_replay_buffer)}"
         )
 
     def _calculate_loss(
