@@ -18,66 +18,6 @@ from utils.plotting import plot_losses
 from utils.training_reporter import TrainingReporter
 
 
-def load_game_logs_into_buffer(agent, env_name: str, buffer_limit: int):
-    """
-    Loads existing game logs from LOG_DIR into the agent's train and validation
-    replay buffers, splitting them to maintain persistence across runs.
-    """
-    loaded_games = 0
-    if not LOG_DIR.exists():
-        logger.info("Log directory not found. Starting with empty buffers.")
-        return
-
-    logger.info(f"Scanning {LOG_DIR} for existing '{env_name}' game logs...")
-    log_files = sorted(LOG_DIR.glob(f"{env_name}_game*.json"), reverse=True)
-
-    if not log_files:
-        logger.info("No existing game logs found for this environment.")
-        return
-
-    all_experiences = []
-    temp_env = agent.env.copy()
-    for filepath in tqdm(log_files, desc="Scanning Logs"):
-        if len(all_experiences) >= buffer_limit:
-            break
-
-        with open(filepath, "r") as f:
-            game_data = json.load(f)
-
-        loaded_games += 1
-        for step_data in game_data:
-            state_json = step_data.get("state")
-            policy_target_list = step_data.get("policy_target")
-            value_target = step_data.get("value_target")
-
-            if (
-                state_json is not None
-                and policy_target_list is not None
-                and value_target is not None
-            ):
-                state = {
-                    table_name: DataFrame(
-                        data=table_data.get("_data"), columns=table_data.get("columns")
-                    )
-                    for table_name, table_data in state_json.items()
-                }
-                legal_actions_df = state.get("legal_actions")
-                if legal_actions_df is None or legal_actions_df.is_empty():
-                    continue
-
-                legal_actions = [row[0] for row in legal_actions_df.rows()]
-                policy_target = np.array(policy_target_list, dtype=np.float32)
-                all_experiences.append(
-                    (state, policy_target, value_target, legal_actions)
-                )
-
-    agent.add_experiences_to_buffer(all_experiences)
-    loaded_steps = len(agent.train_replay_buffer) + len(agent.val_replay_buffer)
-
-    logger.info(
-        f"Loaded {loaded_steps} steps from {loaded_games} games into replay buffers. "
-        f"Train: {len(agent.train_replay_buffer)}, Val: {len(agent.val_replay_buffer)}"
-    )
 
 
 def run_training_loop(
@@ -119,8 +59,8 @@ def run_training_loop(
 
     self_play_agent.temperature = 0.15
 
-    load_game_logs_into_buffer(
-        current_agent, config.env.name, config.alphazero.replay_buffer_size
+    current_agent.load_game_logs(
+        config.env.name, current_agent.config.replay_buffer_size
     )
 
     logger.info(

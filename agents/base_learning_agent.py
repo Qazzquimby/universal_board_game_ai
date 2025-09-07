@@ -70,29 +70,13 @@ def az_collate_fn(batch):
     return batched_state, policy_targets, value_targets, legal_actions_batch
 
 
-class ReplayBufferDataset(Dataset):
-    def __init__(self, buffer: deque):
-        self.buffer_list = list(buffer)
-
-    def __len__(self):
-        return len(self.buffer_list)
-
-    def __getitem__(self, idx):
-        state_dict, policy_target, value_target, legal_actions = self.buffer_list[idx]
-
-        return (
-            state_dict,
-            torch.tensor(policy_target, dtype=torch.float32),
-            torch.tensor([value_target], dtype=torch.float32),
-            legal_actions,
-        )
 
 
 @dataclass
 class EpisodeResult:
     """Holds the results of a finished self-play episode."""
 
-    buffer_experiences: List[Tuple[StateType, np.ndarray, float, List[ActionType]]]
+    buffer_experiences: List[Any]
     logged_history: List[Tuple[StateType, ActionType, np.ndarray, float]]
 
 
@@ -188,24 +172,14 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
             buffer_experiences=buffer_experiences, logged_history=logged_history
         )
 
+    @abc.abstractmethod
     def _create_buffer_experiences(
         self,
         game_history: List[Tuple[StateType, ActionType, np.ndarray]],
         value_targets: List[float],
     ) -> List[Any]:
         """Creates experiences for the replay buffer."""
-        experiences = []
-        for i, (state, _, policy) in enumerate(game_history):
-            legal_actions_df = state.get("legal_actions")
-            if legal_actions_df is None or legal_actions_df.is_empty():
-                continue
-
-            legal_actions = [row[0] for row in legal_actions_df.rows()]
-            transformed_state = self.network._apply_transforms(state)
-            experiences.append(
-                (transformed_state, policy, value_targets[i], legal_actions)
-            )
-        return experiences
+        pass
 
     def add_experiences_to_buffer(self, experiences: List[Any]):
         """Adds experiences to the replay buffer, splitting between train and val."""
@@ -250,6 +224,11 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
     @abc.abstractmethod
     def _get_collate_fn(self) -> callable:
         """Returns the collate function for the DataLoader."""
+        pass
+
+    @abc.abstractmethod
+    def load_game_logs(self, env_name: str, buffer_limit: int):
+        """Loads game logs into the agent's replay buffers."""
         pass
 
     def _run_epoch(

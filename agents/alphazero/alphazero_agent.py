@@ -1,3 +1,5 @@
+import json
+from dataclasses import dataclass
 from typing import List, Dict, Tuple
 from collections import deque
 
@@ -6,14 +8,15 @@ from torch.utils.data import Dataset
 from torch import optim, nn
 import torch.nn.functional as F
 import numpy as np
+from tqdm import tqdm
+from loguru import logger
 
 from agents.alphazero.alphazero_net import AlphaZeroNet
 from agents.base_learning_agent import (
     BaseLearningAgent,
-    ReplayBufferDataset,
     az_collate_fn,
 )
-from environments.base import BaseEnvironment, ActionType, StateType
+from environments.base import BaseEnvironment, ActionType, StateType, DataFrame
 from algorithms.mcts import (
     DummyAlphaZeroNet,
     MCTSNode,
@@ -30,6 +33,7 @@ from core.config import (
     AlphaZeroConfig,
     TrainingConfig,
 )
+from core.serialization import LOG_DIR
 
 
 # Seems reusable by muzero
@@ -62,6 +66,31 @@ class AlphaZeroExpansion(ExpansionStrategy):
         node.is_expanded = True
 
 
+@dataclass
+class AlphaZeroExperience:
+    state: StateType
+    policy_target: np.ndarray
+    value_target: float
+    legal_actions: List[ActionType]
+
+
+class AlphaZeroDataset(Dataset):
+    def __init__(self, buffer: deque):
+        self.buffer_list = list(buffer)
+
+    def __len__(self):
+        return len(self.buffer_list)
+
+    def __getitem__(self, idx):
+        exp = self.buffer_list[idx]
+        return (
+            exp.state,
+            torch.tensor(exp.policy_target, dtype=torch.float32),
+            torch.tensor([exp.value_target], dtype=torch.float32),
+            exp.legal_actions,
+        )
+
+
 class AlphaZeroAgent(BaseLearningAgent):
     """Agent implementing the AlphaZero algorithm."""
 
@@ -91,9 +120,33 @@ class AlphaZeroAgent(BaseLearningAgent):
             model_name=model_name,
         )
 
+    def _create_buffer_experiences(
+        self,
+        game_history: List[Tuple[StateType, ActionType, np.ndarray]],
+        value_targets: List[float],
+    ) -> List[AlphaZeroExperience]:
+        """Creates AlphaZeroExperience objects for the replay buffer."""
+        experiences = []
+        for i, (state, _, policy) in enumerate(game_history):
+            legal_actions_df = state.get("legal_actions")
+            if legal_actions_df is None or legal_actions_df.is_empty():
+                continue
+
+            legal_actions = [row[0] for row in legal_actions_df.rows()]
+            transformed_state = self.network._apply_transforms(state)
+            experiences.append(
+                AlphaZeroExperience(
+                    state=transformed_state,
+                    policy_target=policy,
+                    value_target=value_targets[i],
+                    legal_actions=legal_actions,
+                )
+            )
+        return experiences
+
     def _get_dataset(self, buffer: deque) -> Dataset:
         """Creates a dataset from a replay buffer."""
-        return ReplayBufferDataset(buffer)
+        return AlphaZeroDataset(buffer)
 
     def _get_collate_fn(self) -> callable:
         """Returns the collate function for the DataLoader."""
@@ -191,6 +244,72 @@ class AlphaZeroAgent(BaseLearningAgent):
 
         return total_loss, value_loss, policy_loss, policy_acc, value_mse
 
+    def load_game_logs(self, env_name: str, buffer_limit: int):
+        """
+        Loads existing game logs from LOG_DIR into the agent's train and validation
+        replay buffers, splitting them to maintain persistence across runs.
+        """
+        loaded_games = 0
+        if not LOG_DIR.exists():
+            logger.info("Log directory not found. Starting with empty buffers.")
+            return
+
+        logger.info(f"Scanning {LOG_DIR} for existing '{env_name}' game logs...")
+        log_files = sorted(LOG_DIR.glob(f"{env_name}_game*.json"), reverse=True)
+
+        if not log_files:
+            logger.info("No existing game logs found for this environment.")
+            return
+
+        all_experiences = []
+        for filepath in tqdm(log_files, desc="Scanning Logs"):
+            if len(all_experiences) >= buffer_limit:
+                break
+
+            with open(filepath, "r") as f:
+                game_data = json.load(f)
+
+            loaded_games += 1
+            for step_data in game_data:
+                state_json = step_data.get("state")
+                policy_target_list = step_data.get("policy_target")
+                value_target = step_data.get("value_target")
+
+                if (
+                    state_json is not None
+                    and policy_target_list is not None
+                    and value_target is not None
+                ):
+                    state = {
+                        table_name: DataFrame(
+                            data=table_data.get("_data"),
+                            columns=table_data.get("columns"),
+                        )
+                        for table_name, table_data in state_json.items()
+                    }
+                    legal_actions_df = state.get("legal_actions")
+                    if legal_actions_df is None or legal_actions_df.is_empty():
+                        continue
+
+                    legal_actions = [row[0] for row in legal_actions_df.rows()]
+                    policy_target = np.array(policy_target_list, dtype=np.float32)
+                    all_experiences.append(
+                        AlphaZeroExperience(
+                            state=state,
+                            policy_target=policy_target,
+                            value_target=value_target,
+                            legal_actions=legal_actions,
+                        )
+                    )
+
+        self.add_experiences_to_buffer(all_experiences)
+        loaded_steps = len(self.train_replay_buffer) + len(self.val_replay_buffer)
+
+        logger.info(
+            f"Loaded {loaded_steps} steps from {loaded_games} games into replay buffers. "
+            f"Train: {len(self.train_replay_buffer)}, Val: {len(self.val_replay_buffer)}"
+        )
+
     def reset_game(self) -> None:
         self.network.cache = {}
         self.node_cache = MCTSNodeCache()
@@ -199,9 +318,7 @@ class AlphaZeroAgent(BaseLearningAgent):
         """Reset agent state (e.g., MCTS tree)."""
         self.root = None
 
-    def add_experiences_to_buffer(
-        self, experiences: List[Tuple[StateType, np.ndarray, float, List[ActionType]]]
-    ):
+    def add_experiences_to_buffer(self, experiences: List[AlphaZeroExperience]):
         """Adds experiences to the replay buffer, splitting between train and val."""
         super().add_experiences_to_buffer(experiences=experiences)
 

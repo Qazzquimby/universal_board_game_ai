@@ -16,6 +16,7 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 
 import torch
+from loguru import logger
 from torch import nn, optim
 import torch.nn.functional as F
 from torch.utils.data import Dataset
@@ -532,6 +533,14 @@ class MuZeroAgent(BaseLearningAgent):
     def _get_collate_fn(self) -> callable:
         """Returns the collate function for the DataLoader for MuZero."""
         return muzero_collate_fn
+
+    def load_game_logs(self, env_name: str, buffer_limit: int):
+        """Loads game logs into the agent's replay buffers."""
+        # TODO: Implement game log loading for MuZero.
+        # This will require changes to the logging format to store unrolled trajectories.
+        logger.warning(
+            "Game log loading not yet implemented for MuZero. Starting with an empty buffer."
+        )
 
     def _calculate_loss(
         self, policy_logits, value_preds, policy_targets, value_targets
