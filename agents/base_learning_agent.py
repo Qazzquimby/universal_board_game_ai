@@ -125,6 +125,14 @@ class LossStatistics:
     value_mse: float
 
 
+@dataclass
+class GameHistoryStep:
+    state: StateType
+    action: ActionType
+    policy: np.ndarray
+    legal_actions: List[ActionType]  # Only used by muzero for training
+
+
 class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
     """Base agent for MCTS-based learning agents like AlphaZero and MuZero."""
 
@@ -201,7 +209,7 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
     @abc.abstractmethod
     def _create_buffer_experiences(
         self,
-        game_history: List[Tuple[StateType, ActionType, np.ndarray]],
+        game_history: List[GameHistoryStep],
         value_targets: List[float],
     ) -> List[Any]:
         """Creates experiences for the replay buffer."""

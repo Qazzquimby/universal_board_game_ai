@@ -13,6 +13,7 @@ from agents.base_learning_agent import (
     BaseLearningAgent,
     base_collate_fn,
     LossStatistics,
+    GameHistoryStep,
 )
 from environments.base import BaseEnvironment, ActionType, StateType, DataFrame
 from algorithms.mcts import (
@@ -121,7 +122,7 @@ class AlphaZeroAgent(BaseLearningAgent):
 
     def _create_buffer_experiences(
         self,
-        game_history: List[Tuple[StateType, ActionType, np.ndarray]],
+        game_history: List[GameHistoryStep],
         value_targets: List[float],
     ) -> List[AlphaZeroExperience]:
         """Creates AlphaZeroExperience objects for the replay buffer."""

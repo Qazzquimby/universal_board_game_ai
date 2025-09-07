@@ -1,4 +1,20 @@
-import json
+import time
+from typing import Union, Tuple, List
+
+import numpy as np
+from tqdm import tqdm
+from loguru import logger
+
+from agents.base_learning_agent import BaseLearningAgent, GameHistoryStep
+from agents.mcts_agent import MCTSAgent, make_pure_mcts
+from core.config import AppConfig, DATA_DIR
+from core.serialization import save_game_log
+from environments.base import BaseEnvironment, DataFrame
+from agents.alphazero.alphazero_agent import AlphaZeroAgent, make_pure_az
+from agents.muzero.muzero_agent import make_pure_muzero, MuZeroAgent
+from factories import get_environment
+from utils.plotting import plot_losses
+from utils.training_reporter import TrainingReporter
 import time
 from typing import Union, Tuple
 
@@ -9,15 +25,13 @@ from loguru import logger
 from agents.base_learning_agent import BaseLearningAgent
 from agents.mcts_agent import MCTSAgent, make_pure_mcts
 from core.config import AppConfig, DATA_DIR
-from core.serialization import LOG_DIR, save_game_log
+from core.serialization import save_game_log
 from environments.base import BaseEnvironment, DataFrame
 from agents.alphazero.alphazero_agent import AlphaZeroAgent, make_pure_az
-from agents.muzero.muzero_agent import make_pure_muzero
+from agents.muzero.muzero_agent import make_pure_muzero, MuZeroAgent
 from factories import get_environment
 from utils.plotting import plot_losses
 from utils.training_reporter import TrainingReporter
-
-
 
 
 def run_training_loop(
@@ -136,8 +150,10 @@ def run_training_loop(
 
 
 def run_self_play(
-    agent: Union[AlphaZeroAgent, MCTSAgent], env: BaseEnvironment, config: AppConfig
-):
+    agent: Union[AlphaZeroAgent, MuZeroAgent, MCTSAgent],
+    env: BaseEnvironment,
+    config: AppConfig,
+) -> List[Tuple[List[GameHistoryStep], float]]:
     logger.info("Running self play")
     if hasattr(agent, "network") and agent.network:
         agent.network.eval()
@@ -157,6 +173,8 @@ def run_self_play(
             action = agent.act(game_env, train=True)
 
             if isinstance(agent, AlphaZeroAgent):
+                policy_target = agent.get_policy_target(legal_actions)
+            elif isinstance(agent, MuZeroAgent):
                 policy_target = agent.get_policy_target(legal_actions)
             elif isinstance(agent, MCTSAgent):
                 policy_target = np.zeros(len(legal_actions), dtype=np.float32)
@@ -189,7 +207,14 @@ def run_self_play(
                     data=[], columns=["action_id"]
                 )
 
-            game_history.append((state_with_actions, action, policy_target))
+            game_history.append(
+                GameHistoryStep(
+                    state=state_with_actions,
+                    action=action,
+                    policy=policy_target,
+                    legal_actions=legal_actions,
+                )
+            )
             action_result = game_env.step(action)
             state_with_key = action_result.next_state_with_key
 

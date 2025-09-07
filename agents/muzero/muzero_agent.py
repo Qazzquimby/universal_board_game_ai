@@ -27,6 +27,7 @@ from agents.base_learning_agent import (
     LossStatistics,
     _get_batched_state,
     EpochMetrics,
+    GameHistoryStep,
 )
 from agents.muzero.muzero_net import MuZeroNet
 from algorithms.mcts import (
@@ -517,16 +518,17 @@ class MuZeroAgent(BaseLearningAgent):
 
     def _create_buffer_experiences(
         self,
-        game_history: List[Tuple[StateType, ActionType, np.ndarray, List[ActionType]]],
+        game_history: List[GameHistoryStep],
         value_targets: List[float],
     ) -> List[MuZeroExperience]:
         """Creates MuZeroExperience objects for the replay buffer."""
         muzero_experiences = []
         num_unroll_steps = self.config.num_unroll_steps
 
-        for i in range(len(game_history)):
-            initial_state, _, _, _ = game_history[i]
-            transformed_initial_state = self.network._apply_transforms(initial_state)
+        for i, game_history_step in enumerate(game_history):
+            transformed_initial_state = self.network._apply_transforms(
+                game_history_step.state
+            )
 
             steps = []
             # The number of targets for policy and value is num_unroll_steps + 1
@@ -535,19 +537,19 @@ class MuZeroAgent(BaseLearningAgent):
                 step_idx = i + k
                 if step_idx >= len(game_history):
                     break
-
-                _, action, policy_target, legal_actions = game_history[step_idx]
                 value_target = value_targets[step_idx]
 
                 # The action is the one taken from the state at step_idx.
                 # For the last policy/value target, there's no subsequent action in the unroll window.
-                action_for_step = action if k < num_unroll_steps else None
+                action_for_step = (
+                    game_history_step.action if k < num_unroll_steps else None
+                )
 
                 steps.append(
                     MuZeroTrainingStep(
-                        policy_target=policy_target,
+                        policy_target=game_history_step.policy_target,
                         value_target=value_target,
-                        legal_actions=legal_actions,
+                        legal_actions=game_history_step.legal_actions,
                         action=action_for_step,
                     )
                 )
@@ -565,13 +567,15 @@ class MuZeroAgent(BaseLearningAgent):
         """Returns the collate function for the DataLoader for MuZero."""
         return muzero_collate_fn
 
-    def _process_game_log_data(self, game_data: List[Dict]) -> List["MuZeroExperience"]:
+    def _process_game_log_data(
+        self, game_data: List[Dict[str, DataFrame]]
+    ) -> List["MuZeroExperience"]:
         """Processes data from a single game log file into a list of experiences."""
         if not game_data:
             return []
 
-        game_history = []
-        value_targets = []
+        game_history: List[GameHistoryStep] = []
+        value_targets: List[float] = []
         for step_data in game_data:
             state_json = step_data.get("state")
             action = step_data.get("action")
@@ -600,8 +604,14 @@ class MuZeroAgent(BaseLearningAgent):
                     legal_actions = [
                         row[action_id_idx] for row in legal_actions_df._data
                     ]
+                game_history_step = GameHistoryStep(
+                    state=state,
+                    action=action,
+                    policy=policy_target,
+                    legal_actions=legal_actions,
+                )
 
-                game_history.append((state, action, policy_target, legal_actions))
+                game_history.append(game_history_step)
                 value_targets.append(value_target)
 
         if game_history:
