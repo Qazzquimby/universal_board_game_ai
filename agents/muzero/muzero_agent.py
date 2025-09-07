@@ -18,15 +18,15 @@ from dataclasses import dataclass
 import torch
 from torch import nn, optim
 import torch.nn.functional as F
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, DataLoader
 import numpy as np
+from tqdm import tqdm
 
 from agents.base_learning_agent import (
     BaseLearningAgent,
-    base_collate_fn,
     LossStatistics,
     _get_batched_state,
-    BaseCollation,
+    EpochMetrics,
 )
 from agents.muzero.muzero_net import MuZeroNet
 from algorithms.mcts import (
@@ -58,6 +58,7 @@ class MuZeroTrainingStep:
 
     policy_target: np.ndarray
     value_target: float
+    legal_actions: List[ActionType]
     action: Optional[ActionType] = None
     # Action taken from this step's state. None for the last state in unroll.
 
@@ -86,7 +87,14 @@ class MuZeroDataset(Dataset):
         value_targets = torch.tensor(
             [step.value_target for step in exp.steps], dtype=torch.float32
         )
-        return exp.initial_state, actions, policy_targets, value_targets
+        legal_actions_per_step = [step.legal_actions for step in exp.steps]
+        return (
+            exp.initial_state,
+            actions,
+            policy_targets,
+            value_targets,
+            legal_actions_per_step,
+        )
 
 
 @dataclass
@@ -94,12 +102,19 @@ class MuZeroCollation:
     batched_state: Dict[str, DataFrame]
     policy_targets: torch.Tensor
     value_targets: torch.Tensor
-    legal_actions_batch: torch.Tensor  # tensor rather than ActionType because encoded
+    action_batch: torch.Tensor  # tensor rather than ActionType because encoded
+    candidate_actions: List[List[List[ActionType]]]
 
 
 def muzero_collate_fn(batch):
     """Collates a batch of MuZero experiences."""
-    initial_states, action_seqs, policy_target_seqs, value_target_seqs = zip(*batch)
+    (
+        initial_states,
+        action_seqs,
+        policy_target_seqs,
+        value_target_seqs,
+        candidate_actions_seqs,
+    ) = zip(*batch)
     batched_state = _get_batched_state(state_dicts=initial_states)
 
     max_action_len = max((len(seq) for seq in action_seqs), default=0)
@@ -143,7 +158,8 @@ def muzero_collate_fn(batch):
         batched_state=batched_state,
         policy_targets=policy_targets_batch,
         value_targets=value_targets_batch,
-        legal_actions_batch=actions_batch,
+        action_batch=actions_batch,
+        candidate_actions=list(candidate_actions_seqs),
     )
 
 
@@ -501,7 +517,7 @@ class MuZeroAgent(BaseLearningAgent):
 
     def _create_buffer_experiences(
         self,
-        game_history: List[Tuple[StateType, ActionType, np.ndarray]],
+        game_history: List[Tuple[StateType, ActionType, np.ndarray, List[ActionType]]],
         value_targets: List[float],
     ) -> List[MuZeroExperience]:
         """Creates MuZeroExperience objects for the replay buffer."""
@@ -509,7 +525,7 @@ class MuZeroAgent(BaseLearningAgent):
         num_unroll_steps = self.config.num_unroll_steps
 
         for i in range(len(game_history)):
-            initial_state, _, _ = game_history[i]
+            initial_state, _, _, _ = game_history[i]
             transformed_initial_state = self.network._apply_transforms(initial_state)
 
             steps = []
@@ -520,7 +536,7 @@ class MuZeroAgent(BaseLearningAgent):
                 if step_idx >= len(game_history):
                     break
 
-                _, action, policy_target = game_history[step_idx]
+                _, action, policy_target, legal_actions = game_history[step_idx]
                 value_target = value_targets[step_idx]
 
                 # The action is the one taken from the state at step_idx.
@@ -531,6 +547,7 @@ class MuZeroAgent(BaseLearningAgent):
                     MuZeroTrainingStep(
                         policy_target=policy_target,
                         value_target=value_target,
+                        legal_actions=legal_actions,
                         action=action_for_step,
                     )
                 )
@@ -576,12 +593,88 @@ class MuZeroAgent(BaseLearningAgent):
                 }
                 policy_target = np.array(policy_target_list, dtype=np.float32)
 
-                game_history.append((state, action, policy_target))
+                legal_actions_df = state.get("legal_actions")
+                legal_actions = []
+                if legal_actions_df and not legal_actions_df.is_empty():
+                    action_id_idx = legal_actions_df._col_to_idx["action_id"]
+                    legal_actions = [
+                        row[action_id_idx] for row in legal_actions_df._data
+                    ]
+
+                game_history.append((state, action, policy_target, legal_actions))
                 value_targets.append(value_target)
 
         if game_history:
             return self._create_buffer_experiences(game_history, value_targets)
         return []
+
+    def _run_epoch(
+        self,
+        loader: DataLoader,
+        is_training: bool,
+        epoch: Optional[int] = None,
+        max_epochs: Optional[int] = None,
+    ) -> Optional[EpochMetrics]:
+        """Runs a single epoch of training or validation for MuZero."""
+        total_loss, total_policy_loss, total_value_loss = 0.0, 0.0, 0.0
+        total_policy_acc, total_value_mse = 0.0, 0.0
+        num_batches = 0
+
+        iterator = loader
+        if is_training and not self.config.debug_mode:
+            desc = f"Epoch {epoch + 1}/{max_epochs} (Train)"
+            iterator = tqdm(loader, desc=desc, leave=False)
+
+        context = torch.enable_grad() if is_training else torch.no_grad()
+        with context:
+            for batch_data in iterator:
+                batch_data: MuZeroCollation
+                state_tensor_batch = self._convert_state_df_to_tensors(
+                    batch_data.batched_state
+                )
+                policy_targets_batch = batch_data.policy_targets.to(self.device)
+                value_targets_batch = batch_data.value_targets.to(self.device)
+                action_batch = batch_data.action_batch.to(self.device)
+
+                if is_training:
+                    self.optimizer.zero_grad()
+
+                policy_logits, value_preds = self.network(
+                    state_tensor_batch,
+                    action_batch,
+                    candidate_actions=batch_data.candidate_actions,
+                )
+                loss_statistics = self._calculate_loss(
+                    policy_logits,
+                    value_preds,
+                    policy_targets_batch,
+                    value_targets_batch,
+                )
+
+                if is_training:
+                    loss_statistics.batch_loss.backward()
+                    torch.nn.utils.clip_grad_norm_(
+                        self.network.parameters(), max_norm=1.0
+                    )
+                    self.optimizer.step()
+
+                total_loss += loss_statistics.batch_loss.item()
+                total_value_loss += loss_statistics.value_loss.item()
+                total_policy_loss += loss_statistics.policy_loss.item()
+                total_policy_acc += loss_statistics.policy_acc
+                total_value_mse += loss_statistics.value_mse
+                num_batches += 1
+
+        if num_batches == 0:
+            return None
+
+        return EpochMetrics(
+            loss=total_loss / num_batches,
+            policy_loss=total_policy_loss / num_batches,
+            value_loss=total_value_loss / num_batches,
+            acc=total_policy_acc / len(loader.dataset),
+            mse=total_value_mse / num_batches,
+        )
 
     def _calculate_loss(
         self, policy_logits, value_preds, policy_targets, value_targets
@@ -601,13 +694,13 @@ class MuZeroAgent(BaseLearningAgent):
 
             # Value loss (MSE)
             value_loss = F.mse_loss(step_value_preds, step_value_targets)
+            total_value_loss += value_loss
 
             # Policy loss (Cross-Entropy)
             log_probs = F.log_softmax(step_policy_logits, dim=1)
             policy_loss = -torch.sum(step_policy_targets * log_probs, dim=1).mean()
-
-            total_value_loss += value_loss
             total_policy_loss += policy_loss
+
             # TODO: Do we need VAE KL-divergence loss, or will policy+value loss handle it downstream?
 
         total_loss = total_value_loss + total_policy_loss
