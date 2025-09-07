@@ -18,13 +18,12 @@ from dataclasses import dataclass
 import torch
 from torch import nn, optim
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset
 import numpy as np
 
 from agents.base_learning_agent import (
     BaseLearningAgent,
     az_collate_fn,
-    EpisodeResult,
 )
 from agents.muzero.muzero_net import MuZeroNet
 from algorithms.mcts import (
@@ -154,6 +153,8 @@ class MuZeroEdge(Edge):
 class MuZeroNode(MCTSNode):
     """Represents a node in the MCTS tree for MuZero."""
 
+    edges: Dict[Union[ActionType, int], MuZeroEdge]
+
     def __init__(
         self,
         player_idx: int,
@@ -162,7 +163,6 @@ class MuZeroNode(MCTSNode):
     ):
         # Use a dummy or provided state_with_key for MCTSNode compatibility
         super().__init__(state_with_key or DUMMY_STATE_WITH_KEY)
-        self.edges: Dict[Union[ActionType, int], MuZeroEdge]
         self.hidden_state = hidden_state
         self.player_idx = player_idx
         self.action_tokens: Optional[List[torch.Tensor]] = None
@@ -387,11 +387,6 @@ class MuZeroAgent(BaseLearningAgent):
             model_name=model_name,
         )
         self.root: Optional["MuZeroRootNode"] = None
-        # MuZero requires its own replay buffer to store MuZeroExperience objects.
-        val_buffer_size = config.replay_buffer_size // 5
-        train_buffer_size = config.replay_buffer_size - val_buffer_size
-        self.train_replay_buffer = deque(maxlen=train_buffer_size)
-        self.val_replay_buffer = deque(maxlen=val_buffer_size)
 
     def search(self, env: BaseEnvironment, train: bool = False):
         if self.root is None:
@@ -433,9 +428,8 @@ class MuZeroAgent(BaseLearningAgent):
 
             self._expand_leaf(leaf_node, leaf_env, train)
             value = self.evaluation_strategy.evaluate(leaf_node, leaf_env)
+            # todo check path that root is included
 
-            # Backpropagate through the path, including the main root.
-            selection_result.path.nodes.insert(0, self.root)
             self.backpropagation_strategy.backpropagate(
                 selection_result.path, {0: value, 1: -value}
             )
@@ -531,23 +525,13 @@ class MuZeroAgent(BaseLearningAgent):
             )
         return muzero_experiences
 
-    def _get_train_val_loaders(self) -> Tuple[DataLoader, DataLoader]:
-        """Creates and returns training and validation data loaders for MuZero."""
-        train_ds = MuZeroDataset(list(self.train_replay_buffer))
-        val_ds = MuZeroDataset(list(self.val_replay_buffer))
-        train_loader = DataLoader(
-            train_ds,
-            batch_size=self.config.training_batch_size,
-            shuffle=True,
-            collate_fn=muzero_collate_fn,
-        )
-        val_loader = DataLoader(
-            val_ds,
-            batch_size=self.config.training_batch_size,
-            shuffle=False,
-            collate_fn=muzero_collate_fn,
-        )
-        return train_loader, val_loader
+    def _get_dataset(self, buffer: deque) -> Dataset:
+        """Creates a dataset from a replay buffer for MuZero."""
+        return MuZeroDataset(list(buffer))
+
+    def _get_collate_fn(self) -> callable:
+        """Returns the collate function for the DataLoader for MuZero."""
+        return muzero_collate_fn
 
     def _calculate_loss(
         self, policy_logits, value_preds, policy_targets, value_targets

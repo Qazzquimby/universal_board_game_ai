@@ -8,7 +8,7 @@ USE_CUDA_FOR_INFERENCE = False
 
 
 GAMES_PER_TRAINING_LOOP = 1
-
+MCTS_SIMULATIONS = 20  # 400
 
 # --- Environment Configuration ---
 @dataclass
@@ -29,22 +29,31 @@ class EnvConfig:
 class MCTSConfig:
     exploration_constant: float = 1.41
     discount_factor: float = 1.0  # Discount within the search tree
-    num_simulations: int = 400
+    num_simulations: int = MCTS_SIMULATIONS
+
+
+TRAINING_BATCH_SIZE = 32  # 256
 
 
 @dataclass
 class SomethingZeroConfig:
-    num_simulations: int = 400  # MCTS simulations per move
+    num_simulations: int = MCTS_SIMULATIONS  # MCTS simulations per move
     cpuct: float = 1.0  # Exploration constant in PUCT formula
     learning_rate: float = 0.001
     weight_decay: float = 0.0001
 
-    replay_buffer_size: int = (
-        GAMES_PER_TRAINING_LOOP
-        * 75
-        # 128
-        # * 2
-        # * 75  # todo configure to be on avg 3 iterations of games
+    training_batch_size: int = TRAINING_BATCH_SIZE
+    replay_buffer_size: int = max(
+        [
+            TRAINING_BATCH_SIZE,
+            (
+                GAMES_PER_TRAINING_LOOP
+                * 75
+                # 128
+                # * 2
+                # * 75  # todo configure to be on avg 3 iterations of games
+            ),
+        ]
     )
 
     temperature: float = 0.1
@@ -53,9 +62,8 @@ class SomethingZeroConfig:
 
 @dataclass
 class AlphaZeroConfig(SomethingZeroConfig):
-    training_batch_size: int = 256
     # Weight for value loss (default 1.0, try increasing)
-    value_loss_weight: float = 0.1
+    value_loss_weight: float = 0.5
 
     # Parallel Self-Play & Batching
     num_self_play_workers: int = 2
@@ -81,7 +89,7 @@ class AlphaZeroConfig(SomethingZeroConfig):
 
 @dataclass
 class MuZeroConfig(SomethingZeroConfig):
-    batch_size: int = 32
+    training_batch_size: int = 32
     num_unroll_steps: int = 5  # Number of game steps to simulate in dynamics (k)
     td_steps: int = 10  # Number of steps for n-step return calculation
     value_loss_weight: float = 0.25  # Weight for value loss component

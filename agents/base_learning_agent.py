@@ -242,6 +242,16 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
     ):
         pass
 
+    @abc.abstractmethod
+    def _get_dataset(self, buffer: deque) -> Dataset:
+        """Creates a dataset from a replay buffer."""
+        pass
+
+    @abc.abstractmethod
+    def _get_collate_fn(self) -> callable:
+        """Returns the collate function for the DataLoader."""
+        pass
+
     def _run_epoch(
         self,
         loader: DataLoader,
@@ -349,7 +359,8 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
             logger.warning(e)
             return None
 
-        max_epochs, patience = 100, 10
+        max_epochs = 100
+        patience = 10
         best_val_loss, epochs_no_improve = float("inf"), 0
         best_model_state, best_metrics = None, None
 
@@ -384,29 +395,31 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
         self.network.cache = {}
         return best_metrics
 
-    # todo make this not rely on AZ collate fn, then remove override from muzero
     def _get_train_val_loaders(self) -> Tuple[DataLoader, DataLoader]:
         """Creates and returns training and validation data loaders."""
         if not self.network or not self.optimizer:
             raise ValueError("Network or optimizer not initialized.")
         if len(self.train_replay_buffer) < self.config.training_batch_size:
-            raise ValueError("Not enough training data for one batch.")
+            raise ValueError(
+                f"Not enough training data for one batch. Have {len(self.train_replay_buffer)}. Need {self.config.training_batch_size}"
+            )
         if not self.val_replay_buffer:
             raise ValueError("Validation buffer is empty.")
 
-        train_ds = ReplayBufferDataset(self.train_replay_buffer)
-        val_ds = ReplayBufferDataset(self.val_replay_buffer)
+        train_ds = self._get_dataset(self.train_replay_buffer)
+        val_ds = self._get_dataset(self.val_replay_buffer)
+        collate_fn = self._get_collate_fn()
         train_loader = DataLoader(
             train_ds,
             batch_size=self.config.training_batch_size,
             shuffle=True,
-            collate_fn=az_collate_fn,
+            collate_fn=collate_fn,
         )
         val_loader = DataLoader(
             val_ds,
             batch_size=self.config.training_batch_size,
             shuffle=False,
-            collate_fn=az_collate_fn,
+            collate_fn=collate_fn,
         )
         return train_loader, val_loader
 

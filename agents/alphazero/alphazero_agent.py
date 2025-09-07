@@ -1,6 +1,8 @@
 from typing import List, Dict, Tuple
+from collections import deque
 
 import torch
+from torch.utils.data import Dataset
 from torch import optim, nn
 import torch.nn.functional as F
 import numpy as np
@@ -8,6 +10,8 @@ import numpy as np
 from agents.alphazero.alphazero_net import AlphaZeroNet
 from agents.base_learning_agent import (
     BaseLearningAgent,
+    ReplayBufferDataset,
+    az_collate_fn,
 )
 from environments.base import BaseEnvironment, ActionType, StateType
 from algorithms.mcts import (
@@ -86,6 +90,14 @@ class AlphaZeroAgent(BaseLearningAgent):
             training_config=training_config,
             model_name=model_name,
         )
+
+    def _get_dataset(self, buffer: deque) -> Dataset:
+        """Creates a dataset from a replay buffer."""
+        return ReplayBufferDataset(buffer)
+
+    def _get_collate_fn(self) -> callable:
+        """Returns the collate function for the DataLoader."""
+        return az_collate_fn
 
     # todo share this. Search is what differs
     def act(self, env: BaseEnvironment, train: bool = False) -> ActionType:
