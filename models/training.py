@@ -6,6 +6,7 @@ import numpy as np
 from tqdm import tqdm
 from loguru import logger
 
+from agents.base_learning_agent import BaseLearningAgent
 from agents.mcts_agent import MCTSAgent, make_pure_mcts
 from core.config import AppConfig, DATA_DIR
 from core.serialization import LOG_DIR, save_game_log
@@ -17,7 +18,7 @@ from utils.plotting import plot_losses
 from utils.training_reporter import TrainingReporter
 
 
-def load_game_logs_into_buffer(agent: AlphaZeroAgent, env_name: str, buffer_limit: int):
+def load_game_logs_into_buffer(agent, env_name: str, buffer_limit: int):
     """
     Loads existing game logs from LOG_DIR into the agent's train and validation
     replay buffers, splitting them to maintain persistence across runs.
@@ -285,7 +286,7 @@ def check_if_agent_outperforms_mcts(
 def add_results_to_buffer(
     iteration: int,
     all_experiences_iteration: list,
-    agent: AlphaZeroAgent,
+    agent: BaseLearningAgent,
     config: AppConfig,
 ):
     total_experiences_added = 0

@@ -7,6 +7,9 @@ import wandb
 USE_CUDA_FOR_INFERENCE = False
 
 
+GAMES_PER_TRAINING_LOOP = 1
+
+
 # --- Environment Configuration ---
 @dataclass
 class EnvConfig:
@@ -30,31 +33,37 @@ class MCTSConfig:
 
 
 @dataclass
-class AlphaZeroConfig:
+class SomethingZeroConfig:
     num_simulations: int = 400  # MCTS simulations per move
     cpuct: float = 1.0  # Exploration constant in PUCT formula
-    learning_rate: float = 0.01
+    learning_rate: float = 0.001
     weight_decay: float = 0.0001
-    hidden_layer_size: int = 128  # Size for the MLP hidden layers
-    num_hidden_layers: int = 2  # Number of hidden layers in the MLP
+
     replay_buffer_size: int = (
-        5_000
+        GAMES_PER_TRAINING_LOOP
         * 75
         # 128
         # * 2
         # * 75  # todo configure to be on avg 3 iterations of games
     )
+
+    temperature: float = 0.1
+    debug_mode: bool = True
+
+
+@dataclass
+class AlphaZeroConfig(SomethingZeroConfig):
     training_batch_size: int = 256
     # Weight for value loss (default 1.0, try increasing)
     value_loss_weight: float = 0.1
-    temperature: float = 0.1
+
     # Parallel Self-Play & Batching
     num_self_play_workers: int = 2
     inference_batch_size: int = 32  # Max batch size for network inference
     # --- Dirichlet Noise for Exploration during Self-Play ---
     dirichlet_alpha: float = 0.3  # Shape parameter for noise (typical value 0.3)
     dirichlet_epsilon: float = 0.25  # Weight of noise vs. priors (typical value 0.25)
-    # --- AutoGraphNet model parameters ---
+
     state_model_params: Dict[str, Any] = field(
         default_factory=lambda: {
             "embedding_dim": 64,
@@ -66,26 +75,28 @@ class AlphaZeroConfig:
     policy_model_params: Dict[str, Any] = field(
         default_factory=lambda: {"embedding_dim": 64}
     )
-    debug_mode: bool = True
+
     should_use_network: bool = True
 
 
 @dataclass
-class MuZeroConfig:
-    # Inherit/share some params with AlphaZero? Or keep separate? Let's keep separate for now.
-    num_simulations: int = 20  # Reduced default for MuZero as it's more complex per sim
-    cpuct: float = 1.0
-    learning_rate: float = 0.001
-    weight_decay: float = 0.0001
-    hidden_state_size: int = 128  # Size of the latent state in dynamics/prediction
-    replay_buffer_size: int = 10000
-    batch_size: int = 32  # Smaller batch size might be needed due to unrolling
+class MuZeroConfig(SomethingZeroConfig):
+    batch_size: int = 32
     num_unroll_steps: int = 5  # Number of game steps to simulate in dynamics (k)
     td_steps: int = 10  # Number of steps for n-step return calculation
     value_loss_weight: float = 0.25  # Weight for value loss component
     reward_loss_weight: float = 1.0  # Weight for reward loss component (often 1.0)
     policy_loss_weight: float = 1.0  # Weight for policy loss component (often 1.0)
     debug_mode: bool = False
+    discount_factor: float = 0.99
+    state_model_params: Dict[str, Any] = field(
+        default_factory=lambda: {
+            "embedding_dim": 64,
+            "num_heads": 4,
+            "num_encoder_layers": 2,
+            "dropout": 0.1,
+        }
+    )
 
 
 # --- Training Configuration ---
@@ -93,7 +104,7 @@ class MuZeroConfig:
 class TrainingConfig:
     # Specific to AlphaZero/MuZero training loops
     num_iterations: int = 1000  # Total training iterations
-    num_games_per_iteration: int = 5_000  # 128 * 2
+    num_games_per_iteration: int = GAMES_PER_TRAINING_LOOP  # 128 * 2
     # # Number of epochs (passes over replay buffer) per learning phase
     # num_epochs_per_iteration: int = 4
     # How often (in iterations) to run sanity checks (0=only at end, 1=every iteration)

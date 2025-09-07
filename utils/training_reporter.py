@@ -4,7 +4,8 @@ from typing import Optional
 import wandb
 from loguru import logger
 
-from agents.alphazero.alphazero_agent import AlphaZeroAgent, BestEpochMetrics
+from agents.alphazero.alphazero_agent import AlphaZeroAgent
+from agents.base_learning_agent import BestEpochMetrics
 from core.config import AppConfig
 
 

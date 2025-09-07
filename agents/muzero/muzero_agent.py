@@ -24,6 +24,7 @@ import numpy as np
 from agents.base_learning_agent import (
     BaseLearningAgent,
     az_collate_fn,
+    EpisodeResult,
 )
 from agents.muzero.muzero_net import MuZeroNet
 from algorithms.mcts import (
@@ -383,6 +384,7 @@ class MuZeroAgent(BaseLearningAgent):
             training_config=training_config,
             model_name=model_name,
         )
+        self.config: MuZeroConfig
         self.root: Optional["MuZeroRootNode"] = None
         # MuZero requires its own replay buffer to store MuZeroExperience objects.
         val_buffer_size = config.replay_buffer_size // 5
@@ -491,7 +493,7 @@ class MuZeroAgent(BaseLearningAgent):
         self,
         game_history: List[Tuple[StateType, ActionType, np.ndarray]],
         final_outcome: float,
-    ):
+    ) -> EpisodeResult:
 
         experiences = []
         num_unroll_steps = self.config.num_unroll_steps

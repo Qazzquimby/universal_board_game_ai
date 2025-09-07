@@ -23,9 +23,9 @@ from algorithms.mcts import (
 )
 from experiments.architectures.shared import INFERENCE_DEVICE, TRAINING_DEVICE
 from core.config import (
-    AlphaZeroConfig,
     DATA_DIR,
     TrainingConfig,
+    SomethingZeroConfig,
 )
 
 
@@ -127,7 +127,7 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
         network: nn.Module,
         optimizer,
         env: BaseEnvironment,
-        config: AlphaZeroConfig,
+        config: SomethingZeroConfig,
         training_config: TrainingConfig,
         model_name: str,
     ):
