@@ -11,7 +11,8 @@ import numpy as np
 from agents.alphazero.alphazero_net import AlphaZeroNet
 from agents.base_learning_agent import (
     BaseLearningAgent,
-    az_collate_fn,
+    base_collate_fn,
+    LossStatistics,
 )
 from environments.base import BaseEnvironment, ActionType, StateType, DataFrame
 from algorithms.mcts import (
@@ -148,7 +149,7 @@ class AlphaZeroAgent(BaseLearningAgent):
 
     def _get_collate_fn(self) -> callable:
         """Returns the collate function for the DataLoader."""
-        return az_collate_fn
+        return base_collate_fn
 
     # todo share this. Search is what differs
     def act(self, env: BaseEnvironment, train: bool = False) -> ActionType:
@@ -240,7 +241,13 @@ class AlphaZeroAgent(BaseLearningAgent):
         else:
             policy_acc = 0
 
-        return total_loss, value_loss, policy_loss, policy_acc, value_mse
+        return LossStatistics(
+            batch_loss=total_loss,
+            value_loss=value_loss,
+            policy_loss=policy_loss,
+            policy_acc=policy_acc,
+            value_mse=value_mse,
+        )
 
     def _process_game_log_data(
         self, game_data: List[Dict]

@@ -23,7 +23,10 @@ import numpy as np
 
 from agents.base_learning_agent import (
     BaseLearningAgent,
-    az_collate_fn,
+    base_collate_fn,
+    LossStatistics,
+    _get_batched_state,
+    BaseCollation,
 )
 from agents.muzero.muzero_net import MuZeroNet
 from algorithms.mcts import (
@@ -86,11 +89,18 @@ class MuZeroDataset(Dataset):
         return exp.initial_state, actions, policy_targets, value_targets
 
 
+@dataclass
+class MuZeroCollation:
+    batched_state: Dict[str, DataFrame]
+    policy_targets: torch.Tensor
+    value_targets: torch.Tensor
+    legal_actions_batch: torch.Tensor  # tensor rather than ActionType because encoded
+
+
 def muzero_collate_fn(batch):
     """Collates a batch of MuZero experiences."""
     initial_states, action_seqs, policy_target_seqs, value_target_seqs = zip(*batch)
-
-    batched_state, _, _, _ = az_collate_fn([(s, [], 0.0, []) for s in initial_states])
+    batched_state = _get_batched_state(state_dicts=initial_states)
 
     max_action_len = max((len(seq) for seq in action_seqs), default=0)
     actions_batch = torch.zeros((len(action_seqs), max_action_len), dtype=torch.long)
@@ -129,7 +139,12 @@ def muzero_collate_fn(batch):
     )
 
     # The 'legal_actions' part of the tuple in the base training loop will be our actions_batch.
-    return batched_state, policy_targets_batch, value_targets_batch, actions_batch
+    return MuZeroCollation(
+        batched_state=batched_state,
+        policy_targets=policy_targets_batch,
+        value_targets=value_targets_batch,
+        legal_actions_batch=actions_batch,
+    )
 
 
 DUMMY_STATE_WITH_KEY = StateWithKey.from_state(
@@ -572,6 +587,8 @@ class MuZeroAgent(BaseLearningAgent):
         self, policy_logits, value_preds, policy_targets, value_targets
     ):
         """Calculates the MuZero loss over an unrolled trajectory."""
+        # todo I dont think this runs on a batched input yet? value_loss is int.
+
         total_policy_loss = 0
         total_value_loss = 0
         num_steps = policy_logits.shape[1]
@@ -600,12 +617,12 @@ class MuZeroAgent(BaseLearningAgent):
         policy_acc = 0.0
         value_mse = (total_value_loss / num_steps).item()
 
-        return (
-            total_loss,
-            total_value_loss / num_steps,
-            total_policy_loss / num_steps,
-            policy_acc,
-            value_mse,
+        return LossStatistics(
+            batch_loss=total_loss,
+            value_loss=total_value_loss,
+            policy_loss=total_policy_loss,
+            policy_acc=policy_acc,
+            value_mse=value_mse,
         )
 
 

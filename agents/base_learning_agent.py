@@ -31,13 +31,15 @@ from core.config import (
 )
 
 
-def az_collate_fn(batch):
-    """
-    Custom collate function to handle batches of experiences, where states are
-    dictionaries of DataFrames.
-    """
-    state_dicts, policy_targets, value_targets, legal_actions_batch = zip(*batch)
+@dataclass
+class BaseCollation:
+    batched_state: Dict[str, DataFrame]
+    policy_targets: torch.Tensor
+    value_targets: torch.Tensor
+    legal_actions_batch: Tuple[ActionType]
 
+
+def _get_batched_state(state_dicts) -> Dict:
     batched_state = {}
     if state_dicts:
         # Get table names from the first sample, assuming all samples have the same tables.
@@ -62,6 +64,16 @@ def az_collate_fn(batch):
                 for df in all_dfs_for_table[1:]:
                     concatenated_df = concatenated_df.concat(df)
                 batched_state[table_name] = concatenated_df
+    return batched_state
+
+
+def base_collate_fn(batch) -> BaseCollation:
+    """
+    Custom collate function to handle batches of experiences, where states are
+    dictionaries of DataFrames.
+    """
+    state_dicts, policy_targets, value_targets, legal_actions_batch = zip(*batch)
+    batched_state = _get_batched_state(batch)
 
     # Pad the policy targets to have the same length.
     policy_targets = nn.utils.rnn.pad_sequence(
@@ -69,7 +81,12 @@ def az_collate_fn(batch):
     )
     value_targets = torch.stack(list(value_targets), 0)
 
-    return batched_state, policy_targets, value_targets, legal_actions_batch
+    return BaseCollation(
+        batched_state=batched_state,
+        policy_targets=policy_targets,
+        value_targets=value_targets,
+        legal_actions_batch=legal_actions_batch,
+    )
 
 
 @dataclass
@@ -97,6 +114,15 @@ class BestEpochMetrics:
 
     train: EpochMetrics
     val: EpochMetrics
+
+
+@dataclass
+class LossStatistics:
+    batch_loss: torch.Tensor
+    value_loss: torch.Tensor
+    policy_loss: torch.Tensor
+    policy_acc: float
+    value_mse: float
 
 
 class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
@@ -213,7 +239,7 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
     @abc.abstractmethod
     def _calculate_loss(
         self, policy_logits, value_preds, policy_targets, value_targets
-    ):
+    ) -> LossStatistics:
         pass
 
     @abc.abstractmethod
@@ -296,30 +322,20 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
         context = torch.enable_grad() if is_training else torch.no_grad()
         with context:
             for batch_data in iterator:
-                (
-                    state_df_batch,
-                    policy_targets_batch,
-                    value_targets_batch,
-                    legal_actions_batch,
-                ) = batch_data
-
-                state_tensor_batch = self._convert_state_df_to_tensors(state_df_batch)
-                policy_targets_batch = policy_targets_batch.to(self.device)
-                value_targets_batch = value_targets_batch.to(self.device)
+                batch_data: BaseCollation
+                state_tensor_batch = self._convert_state_df_to_tensors(
+                    batch_data.batched_state
+                )
+                policy_targets_batch = batch_data.policy_targets.to(self.device)
+                value_targets_batch = batch_data.value_targets.to(self.device)
 
                 if is_training:
                     self.optimizer.zero_grad()
 
                 policy_logits, value_preds = self.network(
-                    state_tensor_batch, legal_actions=legal_actions_batch
+                    state_tensor_batch, legal_actions=batch_data.legal_actions_batch
                 )
-                (
-                    batch_loss,
-                    value_loss,
-                    policy_loss,
-                    policy_acc,
-                    value_mse,
-                ) = self._calculate_loss(
+                loss_statistics = self._calculate_loss(
                     policy_logits,
                     value_preds,
                     policy_targets_batch,
@@ -327,17 +343,17 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
                 )
 
                 if is_training:
-                    batch_loss.backward()
+                    loss_statistics.batch_loss.backward()
                     torch.nn.utils.clip_grad_norm_(
                         self.network.parameters(), max_norm=1.0
                     )
                     self.optimizer.step()
 
-                total_loss += batch_loss.item()
-                total_value_loss += value_loss.item()
-                total_policy_loss += policy_loss.item()
-                total_policy_acc += policy_acc
-                total_value_mse += value_mse
+                total_loss += loss_statistics.batch_loss.item()
+                total_value_loss += loss_statistics.value_loss.item()
+                total_policy_loss += loss_statistics.policy_loss.item()
+                total_policy_acc += loss_statistics.policy_acc
+                total_value_mse += loss_statistics.value_mse
                 num_batches += 1
 
         if num_batches == 0:
