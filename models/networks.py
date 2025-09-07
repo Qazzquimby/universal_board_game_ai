@@ -1,7 +1,9 @@
 import torch
 import torch.nn as nn
 
-from environments.base import BaseEnvironment, StateType, ActionType
+from typing import Dict, List, Tuple
+
+from environments.base import BaseEnvironment, StateType, ActionType, DataFrame
 
 
 class BaseTokenizingNet(nn.Module):
@@ -61,37 +63,88 @@ class BaseTokenizingNet(nn.Module):
         Assumes that any necessary transformations have already been applied to the state.
         """
         device = self.get_device()
-        all_tokens = []
-
-        for table_name, table_spec in self.network_spec["tables"].items():
-            df = state.get(table_name)
+        # Create a batched version of the state with batch_idx = 0
+        batched_state = {}
+        has_data = False
+        for table_name, df in state.items():
             if df is None or df.is_empty():
+                batched_state[table_name] = df
+                continue
+
+            has_data = True
+            new_data = [row + [0] for row in df._data]
+            new_columns = df.columns + ["batch_idx"]
+            batched_state[table_name] = DataFrame(data=new_data, columns=new_columns)
+
+        if not has_data:
+            return torch.empty(1, 0, self.embedding_dim, device=device)
+
+        token_sequences, batch_size = self._batched_state_to_tokens(batched_state)
+
+        if not token_sequences:
+            return torch.empty(1, 0, self.embedding_dim, device=device)
+
+        return token_sequences[0].unsqueeze(0)  # (1, num_tokens, dim)
+
+    def _batched_state_to_tokens(
+        self, state_batch: Dict[str, DataFrame]
+    ) -> Tuple[List[torch.Tensor], int]:
+        """
+        Converts a batch of game states (represented as a dictionary of batched DataFrames)
+        into a list of token sequences and the batch size.
+        """
+        device = self.get_device()
+        all_tokens = []
+        all_batch_indices = []
+
+        for table_name, df in state_batch.items():
+            table_spec = self.network_spec["tables"].get(table_name)
+            if df is None or df.is_empty() or not table_spec:
                 continue
 
             columns = table_spec["columns"]
-            cardinalities = self.network_spec["cardinalities"]
+            num_rows = len(df._data)
+            table_token_embeddings = torch.zeros(
+                num_rows, self.embedding_dim, device=device
+            )
 
-            for row_data in df.rows():
-                token_embedding = torch.zeros(1, self.embedding_dim, device=device)
-                for i, col_name in enumerate(columns):
-                    val = row_data[i]
+            for col_name in columns:
+                raw_values = df[col_name]
+                # Convert None to -1 for later processing
+                final_values = [v if v is not None else -1 for v in raw_values]
+                values_tensor = torch.tensor(
+                    final_values, dtype=torch.long, device=device
+                )
+                # Add 1 to shift values for padding_idx=0
+                values_tensor += 1
+                table_token_embeddings += self.embedding_layers[col_name](values_tensor)
 
-                    if val is None:
-                        # Use 0 for padding/None index
-                        val = 0
-                    else:
-                        if isinstance(val, bool):
-                            val = int(val)
-                        val = val + 1
+            all_tokens.append(table_token_embeddings)
+            all_batch_indices.append(
+                torch.tensor(df["batch_idx"], dtype=torch.long, device=device)
+            )
 
-                    val_tensor = torch.tensor([val], device=device, dtype=torch.long)
-                    token_embedding += self.embedding_layers[col_name](val_tensor)
-                all_tokens.append(token_embedding)
+        batch_size = 0
+        if all_batch_indices:
+            batch_indices_tensor = torch.cat(all_batch_indices, dim=0)
+            if batch_indices_tensor.numel() > 0:
+                batch_size = int(batch_indices_tensor.max().item() + 1)
+        else:
+            return [], 0
 
-        if not all_tokens:
-            return torch.empty(1, 0, self.embedding_dim, device=device)
+        token_sequences = []
+        if all_tokens:
+            token_tensor = torch.cat(all_tokens, dim=0)
+            for i in range(batch_size):
+                mask = batch_indices_tensor == i
+                token_sequences.append(token_tensor[mask])
+        else:
+            token_sequences = [
+                torch.empty(0, self.embedding_dim, device=device)
+                for _ in range(batch_size)
+            ]
 
-        return torch.cat(all_tokens, dim=0).unsqueeze(0)  # (1, num_tokens, dim)
+        return token_sequences, batch_size
 
     def _action_to_token(self, action: ActionType) -> torch.Tensor:
         """Converts a single action into an embedding token."""

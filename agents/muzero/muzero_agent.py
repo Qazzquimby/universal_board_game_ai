@@ -639,9 +639,6 @@ class MuZeroAgent(BaseLearningAgent):
         with context:
             for batch_data in iterator:
                 batch_data: MuZeroCollation
-                state_tensor_batch = self._convert_state_df_to_tensors(
-                    batch_data.batched_state
-                )
                 policy_targets_batch = batch_data.policy_targets.to(self.device)
                 value_targets_batch = batch_data.value_targets.to(self.device)
                 action_batch = batch_data.action_batch.to(self.device)
@@ -650,7 +647,7 @@ class MuZeroAgent(BaseLearningAgent):
                     self.optimizer.zero_grad()
 
                 policy_logits, value_preds = self.network(
-                    state_tensor_batch,
+                    batch_data.batched_state,
                     action_batch,
                     candidate_actions=batch_data.candidate_actions,
                 )

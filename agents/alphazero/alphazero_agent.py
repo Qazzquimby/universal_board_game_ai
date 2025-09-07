@@ -334,7 +334,7 @@ def make_pure_az(
     )
 
 
-def get_policy_value(network: nn.Module, node: "MCTSNode", env: BaseEnvironment):
+def get_policy_value(network: AlphaZeroNet, node: "MCTSNode", env: BaseEnvironment):
     key = node.state_with_key.key
     cached_result = network.cache.get(key)
 
@@ -344,6 +344,8 @@ def get_policy_value(network: nn.Module, node: "MCTSNode", env: BaseEnvironment)
         network.eval()
         with torch.no_grad():
             legal_actions = env.get_legal_actions()
-            policy_dict, value = network.predict(node.state_with_key, legal_actions)
+            policy_dict, value = network.predict_single(
+                state_with_key=node.state_with_key, legal_actions=legal_actions
+            )
         network.cache[key] = (policy_dict, value)
     return policy_dict, value

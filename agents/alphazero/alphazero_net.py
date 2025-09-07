@@ -91,70 +91,28 @@ class AlphaZeroNet(BaseTokenizingNet):
 
     def forward(
         self,
-        state_batch: Dict[str, torch.Tensor],
+        state_batch: Dict[str, "DataFrame"],
         legal_actions: List[List[ActionType]],
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Performs a forward pass for a batch of states during training.
-        The input is a dictionary of tensors, where each tensor represents a
-        flattened column of data from all states in the batch.
+        The input is a dictionary of batched DataFrames.
         `legal_actions` is a list of lists, where each inner list contains the
         legal actions for a state in the batch.
         """
         device = self.get_device()
-        all_tokens = []
-        all_batch_indices = []
-
-        # --- State Processing: Convert input tensors to token embeddings ---
-        for table_name, table_spec in self.network_spec["tables"].items():
-            columns = table_spec["columns"]
-            first_col_key = f"{table_name}_{columns[0]}"
-            if first_col_key not in state_batch:
-                continue
-
-            num_rows = state_batch[first_col_key].shape[0]
-            if num_rows == 0:
-                continue
-
-            table_token_embeddings = torch.zeros(
-                num_rows, self.embedding_dim, device=device
-            )
-            for col_name in columns:
-                feature_key = f"{table_name}_{col_name}"
-                # Add 1 to shift values for padding_idx=0. Assumes -1 for None in batch.
-                values = state_batch[feature_key] + 1
-                table_token_embeddings += self.embedding_layers[col_name](values)
-
-            all_tokens.append(table_token_embeddings)
-            all_batch_indices.append(state_batch[f"{table_name}_batch_idx"])
-
-        # Determine batch size. Try from batch indices first, then fallback to a 'game' tensor.
-        batch_size = 0
-        if all_batch_indices:
-            batch_indices_tensor = torch.cat(all_batch_indices, dim=0)
-            if batch_indices_tensor.numel() > 0:
-                batch_size = int(batch_indices_tensor.max().item() + 1)
-
-        if batch_size == 0 and "game_current_player" in state_batch:
-            batch_size = state_batch["game_current_player"].shape[0]
+        token_sequences, batch_size = self._batched_state_to_tokens(state_batch)
 
         if batch_size == 0:
-            # Cannot process anything, return empty tensors.
-            # Note: The dimensions might need adjustment depending on the loss function.
-            # Here, we return 1D value preds and 2D policy logits.
-            return torch.empty(0, 0, device=device), torch.empty(0, device=device)
+            batch_size = len(legal_actions)
+            if not token_sequences:
+                token_sequences = [
+                    torch.empty(0, self.embedding_dim, device=device)
+                    for _ in range(batch_size)
+                ]
 
-        if all_tokens:
-            token_tensor = torch.cat(all_tokens, dim=0)
-            token_sequences = []
-            for i in range(batch_size):
-                mask = batch_indices_tensor == i
-                token_sequences.append(token_tensor[mask])
-        else:
-            token_sequences = [
-                torch.empty(0, self.embedding_dim, device=device)
-                for _ in range(batch_size)
-            ]
+        if batch_size == 0:
+            return torch.empty(0, 0, device=device), torch.empty(0, device=device)
 
         padded_tokens = nn.utils.rnn.pad_sequence(
             token_sequences, batch_first=True, padding_value=0

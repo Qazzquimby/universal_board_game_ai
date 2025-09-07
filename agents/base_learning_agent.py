@@ -233,26 +233,6 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
             else:
                 self.train_replay_buffer.append(exp)
 
-    def _convert_state_df_to_tensors(
-        self, state_df: Dict[str, DataFrame]
-    ) -> Dict[str, torch.Tensor]:
-        """Converts a dictionary of batched DataFrames to a dictionary of tensors."""
-        tensors = {}
-        for table_name, table_df in state_df.items():
-            for col_name in table_df.columns:
-                key = f"{table_name}_{col_name}"
-                raw_values = table_df[col_name]
-                if col_name == "batch_idx":
-                    tensors[key] = torch.tensor(
-                        raw_values, dtype=torch.long, device=self.device
-                    )
-                else:
-                    final_values = [v if v is not None else -1 for v in raw_values]
-                    tensors[key] = torch.tensor(
-                        final_values, dtype=torch.long, device=self.device
-                    )
-        return tensors
-
     @abc.abstractmethod
     def _calculate_loss(
         self, policy_logits, value_preds, policy_targets, value_targets
@@ -340,9 +320,6 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
         with context:
             for batch_data in iterator:
                 batch_data: BaseCollation
-                state_tensor_batch = self._convert_state_df_to_tensors(
-                    batch_data.batched_state
-                )
                 policy_targets_batch = batch_data.policy_targets.to(self.device)
                 value_targets_batch = batch_data.value_targets.to(self.device)
 
@@ -350,7 +327,8 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
                     self.optimizer.zero_grad()
 
                 policy_logits, value_preds = self.network(
-                    state_tensor_batch, legal_actions=batch_data.legal_actions_batch
+                    batch_data.batched_state,
+                    legal_actions=batch_data.legal_actions_batch,
                 )
                 loss_statistics = self._calculate_loss(
                     policy_logits,

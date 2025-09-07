@@ -261,7 +261,7 @@ class MuZeroNet(BaseTokenizingNet):
 
     def forward(
         self,
-        state_batch: Dict[str, torch.Tensor],
+        state_batch: Dict[str, "DataFrame"],
         action_batch: torch.Tensor,
         candidate_actions: List[List[List[ActionType]]],
     ):
