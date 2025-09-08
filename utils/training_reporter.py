@@ -7,6 +7,7 @@ from loguru import logger
 from agents.alphazero.alphazero_agent import AlphaZeroAgent
 from agents.base_learning_agent import BestEpochMetrics
 from core.config import AppConfig
+from models.training import BenchmarkResults
 
 
 class TrainingReporter:
@@ -70,27 +71,21 @@ class TrainingReporter:
                 logger.warning(f"Failed to log metrics to WandB: {e}")
 
     def log_evaluation_results(
-        self, eval_results: dict, benchmark_agent_name: str, iteration: int
+        self, eval_results: BenchmarkResults, benchmark_agent_name: str, iteration: int
     ):
-        if self.config.wandb.enabled:
-            wandb_eval_log = {
-                f"eval_vs_{benchmark_agent_name}/win_rate": eval_results.get(
-                    "AlphaZero_win_rate", 0.0
-                ),
-                f"eval_vs_{benchmark_agent_name}/loss_rate": eval_results.get(
-                    f"{benchmark_agent_name}_win_rate", 0.0
-                ),
-                f"eval_vs_{benchmark_agent_name}/draw_rate": eval_results.get(
-                    "draw_rate", 0.0
-                ),
-                "iteration": iteration + 1,
-            }
-            try:
-                wandb.log(wandb_eval_log)
-            except Exception as e:
-                print("Couldn't log to wandb")
-                pass
-            logger.info(f"Logged periodic evaluation results to WandB.")
+        # todo update
+        pass
+        # if self.config.wandb.enabled:
+        #
+        #     wandb_eval_log = {
+        #         "iteration": iteration + 1,
+        #     }
+        #     try:
+        #         wandb.log(wandb_eval_log)
+        #     except Exception as e:
+        #         print("Couldn't log to wandb")
+        #         pass
+        #     logger.info(f"Logged periodic evaluation results to WandB.")
 
     def finish(self):
         if self.config.wandb.enabled and wandb.run is not None:

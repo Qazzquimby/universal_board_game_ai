@@ -2,15 +2,16 @@
 # Does not use Reward, only Policy and Value
 # Hidden state is a Vae that can be sampled from. Need progressive widening.
 # Legal actions for hidden states come from a network prediction. Variable length list of encoded action tokens.
-
+#
 # In muzero the root node and inner nodes are handled differently.
 # The root node uses the actual state and legal actions
 # The inner nodes derive both the hidden state and the encoded action tokens.
 # Transitioning from a hidden state tensor to the next hidden state vae is done with the encoded action, not the ActionType action.
-
+#
 # Note that the root node also needs to use Vae and sampling for hidden info,
 # but the root node has a known set of legal actions
-
+import math
+import random
 from typing import Optional, List, Tuple, Dict, Union
 from collections import defaultdict, deque
 from dataclasses import dataclass
@@ -164,15 +165,11 @@ def muzero_collate_fn(batch):
     )
 
 
-DUMMY_STATE_WITH_KEY = StateWithKey.from_state(
-    {"game": DataFrame(data=[[0]], columns=["dummy"])}
-)
-
-
 def _calculate_child_limit(num_visits: int) -> int:
     """A simple formula for progressive widening. More visits allow more children."""
-    # This formula allows for a new child for roughly every 5 visits.
-    return 1 + num_visits // 5
+    if num_visits <= 10:
+        return 1
+    return math.floor(math.log2(num_visits / 10)) + 2
 
 
 class MuZeroEdge(Edge):
@@ -193,8 +190,7 @@ class MuZeroNode(MCTSNode):
         hidden_state: torch.Tensor,
         state_with_key: Optional[StateWithKey] = None,
     ):
-        # Use a dummy or provided state_with_key for MCTSNode compatibility
-        super().__init__(state_with_key or DUMMY_STATE_WITH_KEY)
+        super().__init__(state_with_key=state_with_key)
         self.hidden_state = hidden_state
         self.player_idx = player_idx
         self.action_tokens: Optional[List[torch.Tensor]] = None
@@ -220,7 +216,7 @@ class MuZeroExpansion(ExpansionStrategy):
 
         legal_actions = None
         # If root node, use real environment actions
-        if node.state_with_key is not DUMMY_STATE_WITH_KEY:
+        if node.state_with_key is not None:
             legal_actions = env.get_legal_actions()
             if not legal_actions:
                 node.is_expanded = True
@@ -320,7 +316,7 @@ class MuZeroSelection(UCB1Selection):
 
         if len(edge.child_nodes) < child_limit:
             # Widen the edge by creating a new child node from a new dynamics sample.
-            is_root = current_node.state_with_key is not DUMMY_STATE_WITH_KEY
+            is_root = current_node.state_with_key is not None
             if is_root:
                 action_token = self.network._action_to_token(action).unsqueeze(0)
             else:
@@ -443,12 +439,11 @@ class MuZeroAgent(BaseLearningAgent):
                 )
                 self.root.child_samples.append(new_sample_node)
 
-            # Select a root sample for this simulation using UCB.
-            best_sample_node = self._select_root_sample()
+            root_sample = random.choice(self.root.child_samples)
 
             sim_env = env.copy()
             selection_result = self.selection_strategy.select(
-                best_sample_node,
+                root_sample,
                 sim_env,
                 self.node_cache,
                 self.num_simulations - i,
@@ -469,28 +464,6 @@ class MuZeroAgent(BaseLearningAgent):
         # After simulations, aggregate edges from samples to the root for policy selection.
         self._aggregate_root_edges()
 
-    def _select_root_sample(self) -> MuZeroNode:
-        """Selects a root sample using a UCB formula."""
-        exploration_constant = self.selection_strategy.exploration_constant
-        best_sample = None
-        best_score = -float("inf")
-
-        for sample_node in self.root.child_samples:
-            q_value = (
-                sample_node.total_value / sample_node.num_visits
-                if sample_node.num_visits > 0
-                else 0.0
-            )
-            exploration_term = exploration_constant * (
-                self.root.num_visits**0.5 / (1 + sample_node.num_visits)
-            )
-            score = q_value + exploration_term
-            if score > best_score:
-                best_score = score
-                best_sample = sample_node
-
-        return best_sample
-
     def _aggregate_root_edges(self):
         """Aggregates edges from all root samples into the main root node."""
         self.root.edges = {}
@@ -509,12 +482,6 @@ class MuZeroAgent(BaseLearningAgent):
     ):
         if not leaf_node.is_expanded and not leaf_env.is_done:
             self.expansion_strategy.expand(leaf_node, leaf_env)
-
-    def act(self, env: BaseEnvironment, train: bool = False) -> ActionType:
-        self.search(env=env, train=train)
-        temperature = self.config.temperature if train else 0.0
-        policy_result = self.get_policy_from_visits(temperature)
-        return policy_result.chosen_action
 
     def _create_buffer_experiences(
         self,
@@ -705,7 +672,9 @@ class MuZeroAgent(BaseLearningAgent):
 
             # Policy loss (Cross-Entropy)
             log_probs = F.log_softmax(step_policy_logits, dim=1)
-            policy_loss = -torch.sum(step_policy_targets * log_probs, dim=1).mean()
+            difference = step_policy_targets * log_probs
+            difference = torch.nan_to_num(difference, nan=0.0)
+            policy_loss = -torch.sum(difference, dim=1).mean()
             total_policy_loss += policy_loss
             # step_policy_logits has an inf value
 

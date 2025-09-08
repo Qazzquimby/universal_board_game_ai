@@ -138,6 +138,16 @@ class MCTSNode:
             return 0.0
         return self.total_value / self.num_visits
 
+    @property
+    def current_player_index(self):
+        if hasattr(self, "player_idx"):
+            current_player_index = self.player_idx
+        else:
+            current_player_index = _get_current_player_from_state(
+                self.state_with_key.state
+            )
+        return current_player_index
+
 
 class MCTSNodeCache:
     def __init__(self):
@@ -449,13 +459,8 @@ class StandardBackpropagation(BackpropagationStrategy):
                 steps_from_end=i
             )
 
-            current_player_index = getattr(
-                node,
-                "player_idx",
-                _get_current_player_from_state(node.state_with_key.state),
-            )
             node.num_visits += 1
-            node.total_value += player_to_value.get(current_player_index, 0.0)
+            node.total_value += player_to_value.get(node.current_player_index, 0.0)
 
             if parent_of_node and action_to_node is not None:
                 # not start of path
@@ -468,13 +473,7 @@ class StandardBackpropagation(BackpropagationStrategy):
                 edge_to_update = parent_of_node.edges[action_key]
                 edge_to_update.num_visits += 1
 
-                player_index = getattr(
-                    parent_of_node,
-                    "player_idx",
-                    _get_current_player_from_state(parent_of_node.state_with_key.state),
-                )
-
-                value = player_to_value.get(player_index)
+                value = player_to_value.get(parent_of_node.current_player_index)
                 edge_to_update.total_value += value
 
 

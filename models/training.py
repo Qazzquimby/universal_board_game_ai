@@ -1,28 +1,13 @@
+from dataclasses import dataclass
+from dataclasses import dataclass
+from typing import List, Dict, Union, Tuple
 import time
-from typing import Union, Tuple, List
 
 import numpy as np
 from tqdm import tqdm
 from loguru import logger
 
-from agents.base_learning_agent import BaseLearningAgent, GameHistoryStep
-from agents.mcts_agent import MCTSAgent, make_pure_mcts
-from core.config import AppConfig, DATA_DIR
-from core.serialization import save_game_log
-from environments.base import BaseEnvironment, DataFrame
-from agents.alphazero.alphazero_agent import AlphaZeroAgent, make_pure_az
-from agents.muzero.muzero_agent import make_pure_muzero, MuZeroAgent
-from factories import get_environment
-from utils.plotting import plot_losses
-from utils.training_reporter import TrainingReporter
-import time
-from typing import Union, Tuple
-
-import numpy as np
-from tqdm import tqdm
-from loguru import logger
-
-from agents.base_learning_agent import BaseLearningAgent
+from agents.base_learning_agent import GameHistoryStep, BaseLearningAgent
 from agents.mcts_agent import MCTSAgent, make_pure_mcts
 from core.config import AppConfig, DATA_DIR
 from core.serialization import save_game_log
@@ -285,15 +270,22 @@ def add_results_to_buffer(
     )
 
 
+@dataclass
+class BenchmarkResults:
+    total_games: int
+    win_rate: float
+    wins: Dict[str, int]
+
+
 def run_eval_against_benchmark(
     iteration: int,
     agent_in_training: AlphaZeroAgent,
-    benchmark_agent: Union[AlphaZeroAgent, MCTSAgent],
+    benchmark_agent: Union[AlphaZeroAgent, MuZeroAgent, MCTSAgent],
     benchmark_agent_name: str,
     config: AppConfig,
     env: BaseEnvironment,
     reporter: TrainingReporter = None,
-) -> Tuple[dict, list]:
+) -> Tuple[BenchmarkResults, List[GameHistoryStep]]:
     logger.info(
         f"\n--- Running Evaluation vs '{benchmark_agent_name}' (Iteration {iteration + 1}) ---"
     )
@@ -326,7 +318,9 @@ def run_eval_against_benchmark(
             legal_actions = game_env.get_legal_actions()
             action = agent_for_turn.act(game_env, train=False)
 
-            if isinstance(agent_for_turn, AlphaZeroAgent):
+            if isinstance(agent_for_turn, AlphaZeroAgent) or isinstance(
+                agent_for_turn, MuZeroAgent
+            ):
                 policy_target = agent_for_turn.get_policy_target(legal_actions)
             elif isinstance(agent_for_turn, MCTSAgent):
                 policy_target = np.zeros(len(legal_actions), dtype=np.float32)
@@ -342,6 +336,8 @@ def run_eval_against_benchmark(
                         for i, act in enumerate(legal_actions):
                             act_key = tuple(act) if isinstance(act, list) else act
                             policy_target[i] = visit_probs.get(act_key, 0.0)
+            else:
+                raise ValueError(f"Unsupported agent type {agent_for_turn}")
 
             state_with_actions = state.copy()
             if legal_actions:
@@ -367,11 +363,11 @@ def run_eval_against_benchmark(
             winner_agent = agents[winner]
             wins[winner_agent.name] += 1
 
-    eval_results = {
-        "wins": wins,
-        "total_games": num_games,
-        "win_rate": wins[agent_in_training.name] / num_games if num_games > 0 else 0,
-    }
+    eval_results = BenchmarkResults(
+        wins=wins,
+        total_games=num_games,
+        win_rate=wins[agent_in_training.name] / num_games if num_games > 0 else 0,
+    )
 
     if iteration > -1 and reporter:
         reporter.log_evaluation_results(

@@ -181,6 +181,7 @@ class MuZeroNet(BaseTokenizingNet):
                 continue
             # candidate_action_tokens_batch[i] is a list of tensors.
             action_tokens = torch.stack(actions)
+            action_tokens = action_tokens.squeeze(1)
             flat_action_tokens.append(action_tokens)
             batch_indices_for_policy.extend([i] * len(actions))
 
@@ -195,7 +196,7 @@ class MuZeroNet(BaseTokenizingNet):
         state_embs_for_policy = hidden_state_batch[batch_indices_tensor]
 
         scores = self._get_policy_scores(
-            state_embs_for_policy, flat_action_tokens_tensor
+            hidden_states=state_embs_for_policy, action_tokens=flat_action_tokens_tensor
         )
 
         scores_by_item = []
@@ -239,7 +240,7 @@ class MuZeroNet(BaseTokenizingNet):
         Prediction function (f): Predicts policy and value from a hidden state
         and a list of candidate encoded actions.
         """
-        hidden_state_batch = hidden_state.unsqueeze(0)
+        hidden_state_batch = hidden_state
         # The candidate_actions are already tokenized.
         candidate_action_tokens_batch = [candidate_actions]
 

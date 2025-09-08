@@ -178,6 +178,13 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
         self.train_replay_buffer = deque(maxlen=train_buffer_size)
         self.val_replay_buffer = deque(maxlen=val_buffer_size)
 
+    def act(self, env: BaseEnvironment, train: bool = False) -> ActionType:
+        self.search(env=env, train=train)
+
+        temperature = self.config.temperature if train else 0.0
+        policy_result = self.get_policy_from_visits(temperature)
+        return policy_result.chosen_action
+
     def process_finished_episode(
         self,
         game_history: List[GameHistoryStep],
@@ -214,6 +221,39 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
         return EpisodeResult(
             buffer_experiences=buffer_experiences, logged_history=logged_history
         )
+
+    def get_policy_target(self, legal_actions: List[ActionType]) -> np.ndarray:
+        """
+        Returns the policy target vector based on the visit counts from the last search,
+        ordered according to the provided legal_actions list.
+        """
+        if not self.root:
+            raise RuntimeError(
+                "Must run `act()` to perform a search before getting a policy target."
+            )
+
+        assert self.root.edges
+
+        action_visits: Dict[ActionType, int] = {
+            action: edge.num_visits for action, edge in self.root.edges.items()
+        }
+        total_visits = sum(action_visits.values())
+
+        if total_visits == 0:
+            return np.ones(len(legal_actions), dtype=np.float32) / len(legal_actions)
+
+        # Create the policy target vector, ensuring the order matches legal_actions.
+        policy_target = np.zeros(len(legal_actions), dtype=np.float32)
+        for i, action in enumerate(legal_actions):
+            action_key = tuple(action) if isinstance(action, list) else action
+            visit_count = action_visits.get(action_key, 0)
+            policy_target[i] = visit_count / total_visits
+
+        # Normalize again to be safe, although it should sum to 1.
+        if np.sum(policy_target) > 0:
+            policy_target /= np.sum(policy_target)
+
+        return policy_target
 
     @abc.abstractmethod
     def _create_buffer_experiences(
