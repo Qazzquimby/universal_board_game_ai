@@ -1,5 +1,6 @@
 import time
-from typing import Optional
+from dataclasses import dataclass
+from typing import Optional, Dict
 
 import wandb
 from loguru import logger
@@ -7,7 +8,13 @@ from loguru import logger
 from agents.alphazero.alphazero_agent import AlphaZeroAgent
 from agents.base_learning_agent import BestEpochMetrics
 from core.config import AppConfig
-from models.training import BenchmarkResults
+
+
+@dataclass
+class BenchmarkResults:
+    total_games: int
+    win_rate: float
+    wins: Dict[str, int]
 
 
 class TrainingReporter:
@@ -73,19 +80,18 @@ class TrainingReporter:
     def log_evaluation_results(
         self, eval_results: BenchmarkResults, benchmark_agent_name: str, iteration: int
     ):
-        # todo update
-        pass
-        # if self.config.wandb.enabled:
-        #
-        #     wandb_eval_log = {
-        #         "iteration": iteration + 1,
-        #     }
-        #     try:
-        #         wandb.log(wandb_eval_log)
-        #     except Exception as e:
-        #         print("Couldn't log to wandb")
-        #         pass
-        #     logger.info(f"Logged periodic evaluation results to WandB.")
+        if self.config.wandb.enabled:
+            wandb_eval_log = {
+                "iteration": iteration + 1,
+            }
+            wandb_eval_log.update(eval_results.__dict__)
+            try:
+                wandb.log(wandb_eval_log)
+            except Exception as e:
+                print("Couldn't log to wandb")
+                print(e)
+                pass
+            logger.info(f"Logged periodic evaluation results to WandB.")
 
     def finish(self):
         if self.config.wandb.enabled and wandb.run is not None:

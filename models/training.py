@@ -16,7 +16,7 @@ from agents.alphazero.alphazero_agent import AlphaZeroAgent, make_pure_az
 from agents.muzero.muzero_agent import make_pure_muzero, MuZeroAgent
 from factories import get_environment
 from utils.plotting import plot_losses
-from utils.training_reporter import TrainingReporter
+from utils.training_reporter import TrainingReporter, BenchmarkResults
 
 
 def run_training_loop(
@@ -105,15 +105,15 @@ def run_training_loop(
                 config=config,
             )
 
-            if eval_results["win_rate"] > 0.6:
+            if eval_results.win_rate > 0.6:
                 logger.info(
-                    f"{current_agent.name} outperformed MCTS with win rate: {eval_results['win_rate']:.2f}. "
+                    f"{current_agent.name} outperformed MCTS with win rate: {eval_results.win_rate:.2f}. "
                     f"Promoting to use {current_agent.name} for self-play."
                 )
                 self_play_agent = current_agent
             else:
                 logger.info(
-                    f"{current_agent.name} did not outperform MCTS (win rate: {eval_results['win_rate']:.2f}). "
+                    f"{current_agent.name} did not outperform MCTS (win rate: {eval_results.win_rate:.2f}). "
                     "Continuing with MCTS for self-play."
                 )
         else:
@@ -270,13 +270,6 @@ def add_results_to_buffer(
     )
 
 
-@dataclass
-class BenchmarkResults:
-    total_games: int
-    win_rate: float
-    wins: Dict[str, int]
-
-
 def run_eval_against_benchmark(
     iteration: int,
     agent_in_training: AlphaZeroAgent,
@@ -285,7 +278,7 @@ def run_eval_against_benchmark(
     config: AppConfig,
     env: BaseEnvironment,
     reporter: TrainingReporter = None,
-) -> Tuple[BenchmarkResults, List[GameHistoryStep]]:
+) -> Tuple[BenchmarkResults, List[Tuple[List[GameHistoryStep], float]]]:
     logger.info(
         f"\n--- Running Evaluation vs '{benchmark_agent_name}' (Iteration {iteration + 1}) ---"
     )
@@ -349,7 +342,13 @@ def run_eval_against_benchmark(
                 state_with_actions["legal_actions"] = DataFrame(
                     data=[], columns=["action_id"]
                 )
-            game_history.append((state_with_actions, action, policy_target))
+            game_history_step = GameHistoryStep(
+                state=state_with_actions,
+                action=action,
+                policy=policy_target,
+                legal_actions=legal_actions,
+            )
+            game_history.append(game_history_step)
             action_result = game_env.step(action)
             state_with_key = action_result.next_state_with_key
 
