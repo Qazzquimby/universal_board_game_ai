@@ -26,7 +26,9 @@ from algorithms.mcts import (
 from core.config import (
     DATA_DIR,
     TrainingConfig,
-    SomethingZeroConfig, TRAINING_DEVICE, INFERENCE_DEVICE,
+    SomethingZeroConfig,
+    TRAINING_DEVICE,
+    INFERENCE_DEVICE,
 )
 
 

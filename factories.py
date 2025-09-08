@@ -30,80 +30,37 @@ def get_environment(env_config: EnvConfig) -> BaseEnvironment:
         raise ValueError(f"Unknown environment name: {env_config.name}")
 
 
-def get_agents(
-    env: BaseEnvironment, config: AppConfig, load_all_az_iterations: bool = False
-) -> Dict[str, Agent]:
+def get_agents(env: BaseEnvironment, config: AppConfig) -> Dict[str, Agent]:
     """Factory function to create agent instances for the given environment."""
     az_config = config.alphazero
     training_config = config.training
 
     agents = {}
-    if load_all_az_iterations:
-        data_dir = Path("data")
+    network = AlphaZeroNet(env=env)
+    network.init_zero()
+    optimizer = optim.AdamW(network.parameters(), lr=training_config.learning_rate)
 
-        def get_iter_from_path(p):
-            m = re.search(r"iter_(\d+)\.pth", str(p))
-            return int(m.group(1)) if m else -1
-
-        files = sorted(
-            list(data_dir.glob("alphazero_net_connect4_iter_*.pth")),
-            key=get_iter_from_path,
+    az_agent_name = f"AZ_{config.mcts.num_simulations}"
+    az_agent = AlphaZeroAgent(
+        selection_strategy=UCB1Selection(exploration_constant=az_config.cpuct),
+        expansion_strategy=AlphaZeroExpansion(network=network),
+        evaluation_strategy=AlphaZeroEvaluation(network=network),
+        backpropagation_strategy=StandardBackpropagation(),
+        network=network,
+        optimizer=optimizer,
+        env=env,
+        config=az_config,
+        training_config=training_config,
+    )
+    if not az_agent.load():
+        logger.warning(
+            "Could not load pre-trained AlphaZero weights. Agent will play randomly/poorly."
         )
-
-        for pth_file in files:
-            iteration = get_iter_from_path(pth_file)
-            network = AlphaZeroNet(env=env)
-            network.init_zero()
-            optimizer = optim.AdamW(
-                network.parameters(), lr=training_config.learning_rate
-            )
-            az_agent_name = f"AZ_{config.mcts.num_simulations}_iter_{iteration}"
-            az_agent = AlphaZeroAgent(
-                selection_strategy=UCB1Selection(exploration_constant=az_config.cpuct),
-                expansion_strategy=AlphaZeroExpansion(network=network),
-                evaluation_strategy=AlphaZeroEvaluation(network=network),
-                backpropagation_strategy=StandardBackpropagation(),
-                network=network,
-                optimizer=optimizer,
-                env=env,
-                config=az_config,
-                training_config=training_config,
-            )
-            if not az_agent.load(filepath=pth_file):
-                logger.warning(
-                    f"Could not load pre-trained AlphaZero weights from {pth_file}."
-                )
-            else:
-                logger.info(f"Loaded pre-trained AlphaZero agent from {pth_file}.")
-            if az_agent.network:
-                az_agent.network.eval()
-            agents[az_agent_name] = az_agent
     else:
-        network = AlphaZeroNet(env=env)
-        network.init_zero()
-        optimizer = optim.AdamW(network.parameters(), lr=training_config.learning_rate)
-
-        az_agent_name = f"AZ_{config.mcts.num_simulations}"
-        az_agent = AlphaZeroAgent(
-            selection_strategy=UCB1Selection(exploration_constant=az_config.cpuct),
-            expansion_strategy=AlphaZeroExpansion(network=network),
-            evaluation_strategy=AlphaZeroEvaluation(network=network),
-            backpropagation_strategy=StandardBackpropagation(),
-            network=network,
-            optimizer=optimizer,
-            env=env,
-            config=az_config,
-            training_config=training_config,
-        )
-        if not az_agent.load():
-            logger.warning(
-                "Could not load pre-trained AlphaZero weights. Agent will play randomly/poorly."
-            )
-        else:
-            logger.info("Loaded pre-trained AlphaZero agent.")
-        if az_agent.network:
-            az_agent.network.eval()
-        agents[az_agent_name] = az_agent
+        logger.info("Loaded pre-trained AlphaZero agent.")
+    if az_agent.network:
+        az_agent.network.eval()
+    agents[az_agent_name] = az_agent
 
     mcts_agent_name = f"MCTS_{config.mcts.num_simulations}"
     mcts_agent = make_pure_mcts(
