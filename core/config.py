@@ -4,11 +4,8 @@ from typing import List, Dict, Any
 
 import wandb
 
-USE_CUDA_FOR_INFERENCE = False
-
-
-GAMES_PER_TRAINING_LOOP = 1
-MCTS_SIMULATIONS = 20  # 400
+GAMES_PER_TRAINING_LOOP = 1  # todo
+MCTS_SIMULATIONS = 400
 
 # --- Environment Configuration ---
 @dataclass
@@ -32,7 +29,20 @@ class MCTSConfig:
     num_simulations: int = MCTS_SIMULATIONS
 
 
-TRAINING_BATCH_SIZE = 32  # 256
+TRAINING_BATCH_SIZE = 256
+
+REPLAY_BUFFER_SIZE = max(
+    [
+        TRAINING_BATCH_SIZE,
+        (
+            1000  # GAMES_PER_TRAINING_LOOP
+            * 75
+            # 128
+            # * 2
+            # * 75  # todo configure to be on avg 3 iterations of games
+        ),
+    ]
+)
 
 
 @dataclass
@@ -43,18 +53,7 @@ class SomethingZeroConfig:
     weight_decay: float = 0.0001
 
     training_batch_size: int = TRAINING_BATCH_SIZE
-    replay_buffer_size: int = max(
-        [
-            TRAINING_BATCH_SIZE,
-            (
-                GAMES_PER_TRAINING_LOOP
-                * 75
-                # 128
-                # * 2
-                # * 75  # todo configure to be on avg 3 iterations of games
-            ),
-        ]
-    )
+    replay_buffer_size: int = REPLAY_BUFFER_SIZE
 
     temperature: float = 0.1
     debug_mode: bool = True

@@ -157,9 +157,7 @@ def run_self_play(
             legal_actions = game_env.get_legal_actions()
             action = agent.act(game_env, train=True)
 
-            if isinstance(agent, AlphaZeroAgent):
-                policy_target = agent.get_policy_target(legal_actions)
-            elif isinstance(agent, MuZeroAgent):
+            if isinstance(agent, AlphaZeroAgent) or isinstance(agent, MuZeroAgent):
                 policy_target = agent.get_policy_target(legal_actions)
             elif isinstance(agent, MCTSAgent):
                 policy_target = np.zeros(len(legal_actions), dtype=np.float32)
