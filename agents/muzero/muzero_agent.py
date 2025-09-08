@@ -417,12 +417,10 @@ class MuZeroAgent(BaseLearningAgent):
         self.root: Optional["MuZeroRootNode"] = None
 
     def search(self, env: BaseEnvironment, train: bool = False):
-        if self.root is None:
-            state_with_key = env.get_state_with_key()
-            # The root node will act as a container for different hidden state samples.
-            self.root = MuZeroRootNode(
-                player_idx=env.get_current_player(), state_with_key=state_with_key
-            )
+        # Skip cache when setting root since muzero will never get cache hits
+        self.root = MuZeroRootNode(
+            player_idx=env.get_current_player(), state_with_key=env.get_state_with_key()
+        )
 
         for i in range(self.num_simulations):
             # Progressive widening at the root.

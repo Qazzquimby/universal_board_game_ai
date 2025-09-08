@@ -8,8 +8,6 @@ MAX_EPOCHS = 300
 LEARNING_RATE = 0.001
 BATCH_SIZE = 256
 EARLY_STOPPING_PATIENCE = 50
-TRAINING_DEVICE = "cpu"  # "cuda" if torch.cuda.is_available() else "cpu"
-INFERENCE_DEVICE = "cpu"
 DATA_PATH = (
     Path(__file__).resolve().parents[2]
     / "data"

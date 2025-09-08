@@ -12,6 +12,8 @@ from tqdm import tqdm
 import pandas as pd
 
 import wandb
+
+from core.config import TRAINING_DEVICE
 from experiments.architectures.detached import (
     DetachedPolicyNet,
 )
@@ -40,8 +42,6 @@ from experiments.architectures.shared import (
     LEARNING_RATE,
     BATCH_SIZE,
     EARLY_STOPPING_PATIENCE,
-    INFERENCE_DEVICE,
-    TRAINING_DEVICE,
 )
 from experiments.architectures.transformers import (
     create_transformer_input,
@@ -50,7 +50,6 @@ from experiments.architectures.transformers import (
     PieceTransformer_EncoderSum_SimpleOut_ParamGameToken,
     PieceTransformerNet,
 )
-from models.networks import AutoGraphNet
 
 TINY_RUN = True
 MAX_TRAINING_TIME_SECONDS = 2 * 3600  # 2h
@@ -564,11 +563,11 @@ def run_piece_transformer_experiments(all_results: dict, data: TestData):
 
 def run_graph_transformer_experiments(all_results: dict, data: TestData):
     experiments = [
-        {
-            "name": "Auto_V1",
-            "model_class": AutoGraphNet,
-            "input_creator": make_state_with_key,
-        }
+        # {
+        #     "name": "Auto_V1",
+        #     "model_class": AutoGraphNet,
+        #     "input_creator": make_state_with_key,
+        # }
         # {
         #     "name": "CellGraphTransformer",
         #     "model_class": CellGraphTransformer,

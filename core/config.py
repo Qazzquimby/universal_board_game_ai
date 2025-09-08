@@ -2,10 +2,14 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import List, Dict, Any
 
+import torch
 import wandb
 
 GAMES_PER_TRAINING_LOOP = 1  # todo
 MCTS_SIMULATIONS = 400
+
+TRAINING_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+INFERENCE_DEVICE = "cpu"
 
 # --- Environment Configuration ---
 @dataclass

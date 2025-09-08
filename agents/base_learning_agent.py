@@ -23,11 +23,10 @@ from algorithms.mcts import (
     EvaluationStrategy,
     BackpropagationStrategy,
 )
-from experiments.architectures.shared import INFERENCE_DEVICE, TRAINING_DEVICE
 from core.config import (
     DATA_DIR,
     TrainingConfig,
-    SomethingZeroConfig,
+    SomethingZeroConfig, TRAINING_DEVICE, INFERENCE_DEVICE,
 )
 
 

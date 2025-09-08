@@ -56,6 +56,7 @@ class Connect4(BaseEnvironment):
         # Find the lowest available row in the chosen column
         pieces_in_col = self.state["pieces"].filter(("col", col))
         row = self.height - 1 - pieces_in_col.height
+        assert row >= 0
 
         # Add piece
         new_piece = DataFrame(
