@@ -53,21 +53,21 @@ REPLAY_BUFFER_SIZE = max(
 class SomethingZeroConfig:
     num_simulations: int = MCTS_SIMULATIONS  # MCTS simulations per move
     cpuct: float = 1.0  # Exploration constant in PUCT formula
-    learning_rate: float = 0.001
+    learning_rate: float = 0.005
     weight_decay: float = 0.0001
+
+    value_loss_weight: float = 0.5
 
     training_batch_size: int = TRAINING_BATCH_SIZE
     replay_buffer_size: int = REPLAY_BUFFER_SIZE
 
     temperature: float = 0.1
-    debug_mode: bool = True
+
+    debug_mode: bool = False
 
 
 @dataclass
 class AlphaZeroConfig(SomethingZeroConfig):
-    # Weight for value loss (default 1.0, try increasing)
-    value_loss_weight: float = 0.5
-
     # Parallel Self-Play & Batching
     num_self_play_workers: int = 2
     inference_batch_size: int = 32  # Max batch size for network inference
@@ -92,13 +92,9 @@ class AlphaZeroConfig(SomethingZeroConfig):
 
 @dataclass
 class MuZeroConfig(SomethingZeroConfig):
-    training_batch_size: int = 32
     num_unroll_steps: int = 5  # Number of game steps to simulate in dynamics (k)
     td_steps: int = 10  # Number of steps for n-step return calculation
-    value_loss_weight: float = 0.25  # Weight for value loss component
-    reward_loss_weight: float = 1.0  # Weight for reward loss component (often 1.0)
     policy_loss_weight: float = 1.0  # Weight for policy loss component (often 1.0)
-    debug_mode: bool = False
     discount_factor: float = 0.99
     state_model_params: Dict[str, Any] = field(
         default_factory=lambda: {
