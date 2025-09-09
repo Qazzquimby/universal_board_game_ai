@@ -652,8 +652,6 @@ class MuZeroAgent(BaseLearningAgent):
         self, policy_logits, value_preds, policy_targets, value_targets
     ):
         """Calculates the MuZero loss over an unrolled trajectory."""
-        # todo I dont think this runs on a batched input yet? value_loss is int.
-
         total_policy_loss = 0
         total_value_loss = 0
         num_steps = policy_logits.shape[1]
@@ -666,6 +664,7 @@ class MuZeroAgent(BaseLearningAgent):
 
             # Value loss (MSE)
             value_loss = F.mse_loss(step_value_preds, step_value_targets)
+            # value_loss = 0.5 * value_loss  # scale down unrolled losses # if i > 0
             total_value_loss += value_loss
 
             # Policy loss (Cross-Entropy)
@@ -673,8 +672,9 @@ class MuZeroAgent(BaseLearningAgent):
             difference = step_policy_targets * log_probs
             difference = torch.nan_to_num(difference, nan=0.0)
             policy_loss = -torch.sum(difference, dim=1).mean()
+            # policy_loss = 0.5 * policy_loss  # scale down unrolled losses
             total_policy_loss += policy_loss
-            # step_policy_logits has an inf value
+            #
 
             # TODO: Do we need VAE KL-divergence loss, or will policy+value loss handle it downstream?
 

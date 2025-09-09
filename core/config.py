@@ -39,7 +39,7 @@ REPLAY_BUFFER_SIZE = max(
     [
         TRAINING_BATCH_SIZE,
         (
-            1000  # GAMES_PER_TRAINING_LOOP
+            10_000  # GAMES_PER_TRAINING_LOOP
             * 75
             # 128
             # * 2
@@ -53,7 +53,7 @@ REPLAY_BUFFER_SIZE = max(
 class SomethingZeroConfig:
     num_simulations: int = MCTS_SIMULATIONS  # MCTS simulations per move
     cpuct: float = 1.0  # Exploration constant in PUCT formula
-    learning_rate: float = 0.005
+    learning_rate: float = 0.001
     weight_decay: float = 0.0001
 
     value_loss_weight: float = 0.5
@@ -92,7 +92,7 @@ class AlphaZeroConfig(SomethingZeroConfig):
 
 @dataclass
 class MuZeroConfig(SomethingZeroConfig):
-    num_unroll_steps: int = 5  # Number of game steps to simulate in dynamics (k)
+    num_unroll_steps: int = 5  # 1  # Number of game steps to simulate in dynamics (k)
     td_steps: int = 10  # Number of steps for n-step return calculation
     policy_loss_weight: float = 1.0  # Weight for policy loss component (often 1.0)
     discount_factor: float = 0.99
