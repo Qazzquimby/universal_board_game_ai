@@ -167,6 +167,9 @@ def muzero_collate_fn(batch):
 
 def _calculate_child_limit(num_visits: int) -> int:
     """A simple formula for progressive widening. More visits allow more children."""
+    return 1
+    # todo disable later
+
     if num_visits <= 10:
         return 1
     return math.floor(math.log2(num_visits / 10)) + 2

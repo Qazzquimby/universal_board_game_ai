@@ -19,9 +19,10 @@ class Vae:
         self.log_var = log_var
 
     def take_sample(self) -> torch.Tensor:
-        std = torch.exp(0.5 * self.log_var)
-        eps = torch.randn_like(std)
-        return self.mu + eps * std
+        # std = torch.exp(0.5 * self.log_var)
+        # eps = torch.randn_like(std)
+        # return self.mu + eps * std
+        return self.mu
 
 
 class MuZeroNet(BaseTokenizingNet):
@@ -283,6 +284,9 @@ class MuZeroNet(BaseTokenizingNet):
         # 1. Representation (h):
         hidden_state_vae = self.get_hidden_state_vae(state_batch)
         hidden_state_tensor = hidden_state_vae.take_sample()
+
+        # todo, the take samples in this function, will they adequately train the vae,
+        #   or will they train it to produce an average result?
 
         # If we get a single state but a batch of action sequences,
         # expand the hidden state to match the batch size for unrolling.
