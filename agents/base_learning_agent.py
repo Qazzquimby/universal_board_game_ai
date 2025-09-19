@@ -475,15 +475,16 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
         """Creates and returns training and validation data loaders."""
         if not self.network or not self.optimizer:
             raise ValueError("Network or optimizer not initialized.")
-        if len(self.train_replay_buffer) < self.config.training_batch_size:
-            raise ValueError(
-                f"Not enough training data for one batch. Have {len(self.train_replay_buffer)}. Need {self.config.training_batch_size}"
-            )
-        if not self.val_replay_buffer:
-            raise ValueError("Validation buffer is empty.")
+        # Temporarily disable buffer size checks for overfitting test.
+        if not self.train_replay_buffer:
+            raise ValueError("Training buffer is empty.")
 
         train_ds = self._get_dataset(self.train_replay_buffer)
-        val_ds = self._get_dataset(self.val_replay_buffer)
+        
+        val_buffer = self.val_replay_buffer
+        if not val_buffer:
+            val_buffer = self.train_replay_buffer
+        val_ds = self._get_dataset(val_buffer)
         collate_fn = self._get_collate_fn()
         train_loader = DataLoader(
             train_ds,

@@ -33,20 +33,9 @@ class MCTSConfig:
     num_simulations: int = MCTS_SIMULATIONS
 
 
-TRAINING_BATCH_SIZE = 256
+TRAINING_BATCH_SIZE = 1
 
-REPLAY_BUFFER_SIZE = max(
-    [
-        TRAINING_BATCH_SIZE,
-        (
-            10_000  # GAMES_PER_TRAINING_LOOP
-            * 75
-            # 128
-            # * 2
-            # * 75  # todo configure to be on avg 3 iterations of games
-        ),
-    ]
-)
+REPLAY_BUFFER_SIZE = 1
 
 
 @dataclass

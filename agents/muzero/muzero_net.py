@@ -341,7 +341,7 @@ class MuZeroNet(BaseTokenizingNet):
         policies_tensor = torch.stack(padded_policies, dim=1)
         values_tensor = torch.stack(unrolled_values, dim=1)
 
-        return policies_tensor, values_tensor  # check for inf in policies
+        return policies_tensor, values_tensor
 
     def init_zero(self):
         # todo Initialize all weights to 0. Update as needed
