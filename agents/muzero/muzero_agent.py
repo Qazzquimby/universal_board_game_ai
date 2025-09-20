@@ -657,7 +657,7 @@ class MuZeroAgent(BaseLearningAgent):
         """Calculates the MuZero loss over an unrolled trajectory."""
         total_policy_loss = 0
         total_value_loss = 0
-        num_steps = policy_logits.shape[1]
+        num_steps = policy_targets.shape[1]
 
         for i in range(num_steps):
             step_policy_logits = policy_logits[:, i, :]
