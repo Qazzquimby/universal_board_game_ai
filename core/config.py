@@ -5,7 +5,7 @@ from typing import List, Dict, Any
 import torch
 import wandb
 
-GAMES_PER_TRAINING_LOOP = 1  # todo
+GAMES_PER_TRAINING_LOOP = 0  # todo
 MCTS_SIMULATIONS = 400
 
 TRAINING_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"

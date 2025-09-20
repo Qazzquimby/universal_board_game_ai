@@ -58,6 +58,7 @@ from core.config import MuZeroConfig, TrainingConfig
 class MuZeroTrainingStep:
     """A single step of experience for MuZero training."""
 
+    state: StateType
     policy_target: np.ndarray
     value_target: float
     legal_actions: List[ActionType]
@@ -69,7 +70,6 @@ class MuZeroTrainingStep:
 class MuZeroExperience:
     """Holds a trajectory of experience for MuZero training."""
 
-    initial_state: StateType
     steps: List[MuZeroTrainingStep]
 
 
@@ -82,6 +82,7 @@ class MuZeroDataset(Dataset):
 
     def __getitem__(self, idx):
         exp = self.buffer[idx]
+        states = [step.state for step in exp.steps]
         actions = [step.action for step in exp.steps if step.action is not None]
         policy_targets = [
             torch.tensor(step.policy_target, dtype=torch.float32) for step in exp.steps
@@ -91,7 +92,7 @@ class MuZeroDataset(Dataset):
         )
         legal_actions_per_step = [step.legal_actions for step in exp.steps]
         return (
-            exp.initial_state,
+            states,
             actions,
             policy_targets,
             value_targets,
@@ -106,18 +107,32 @@ class MuZeroCollation:
     value_targets: torch.Tensor
     action_batch: torch.Tensor  # tensor rather than ActionType because encoded
     candidate_actions: List[List[List[ActionType]]]
+    target_states_batch: List[Dict[str, DataFrame]]
 
 
 def muzero_collate_fn(batch):
     """Collates a batch of MuZero experiences."""
     (
-        initial_states,
+        states_seqs,
         action_seqs,
         policy_target_seqs,
         value_target_seqs,
         candidate_actions_seqs,
     ) = zip(*batch)
+
+    initial_states = [seq[0] for seq in states_seqs]
     batched_state = _get_batched_state(state_dicts=initial_states)
+
+    target_states_batch = []
+    if states_seqs:
+        # Longest sequence of states
+        max_len = max(len(s) for s in states_seqs)
+        # We need states for steps 1...N for hidden state consistency loss
+        for i in range(1, max_len):
+            states_for_step = [
+                seq[i] if i < len(seq) else seq[-1] for seq in states_seqs
+            ]
+            target_states_batch.append(_get_batched_state(state_dicts=states_for_step))
 
     max_action_len = max((len(seq) for seq in action_seqs), default=0)
     actions_batch = torch.zeros((len(action_seqs), max_action_len), dtype=torch.long)
@@ -162,6 +177,7 @@ def muzero_collate_fn(batch):
         value_targets=value_targets_batch,
         action_batch=actions_batch,
         candidate_actions=list(candidate_actions_seqs),
+        target_states_batch=target_states_batch,
     )
 
 
@@ -493,38 +509,33 @@ class MuZeroAgent(BaseLearningAgent):
         muzero_experiences = []
         num_unroll_steps = self.config.num_unroll_steps
 
-        for i, game_history_step in enumerate(game_history):
-            transformed_initial_state = self.network._apply_transforms(
-                game_history_step.state
-            )
-
+        for turn_index in range(len(game_history)):
             steps = []
-            # The number of targets for policy and value is num_unroll_steps + 1
-            # It includes the initial state (i) and num_unroll_steps future states.
-            for k in range(num_unroll_steps + 1):
-                step_idx = i + k
+            for unroll_index in range(num_unroll_steps + 1):
+                step_idx = turn_index + unroll_index
                 if step_idx >= len(game_history):
                     break
+
+                game_step = game_history[step_idx]
+                transformed_state = self.network._apply_transforms(game_step.state)
                 value_target = value_targets[step_idx]
 
-                # The action is the one taken from the state at step_idx.
-                # For the last policy/value target, there's no subsequent action in the unroll window.
                 action_for_step = (
-                    game_history_step.action if k < num_unroll_steps else None
+                    game_step.action if unroll_index < num_unroll_steps else None
                 )
 
                 steps.append(
                     MuZeroTrainingStep(
-                        policy_target=game_history_step.policy,
+                        state=transformed_state,
+                        policy_target=game_step.policy,
                         value_target=value_target,
-                        legal_actions=game_history_step.legal_actions,
+                        legal_actions=game_step.legal_actions,
                         action=action_for_step,
                     )
                 )
 
-            muzero_experiences.append(
-                MuZeroExperience(initial_state=transformed_initial_state, steps=steps)
-            )
+            if steps:
+                muzero_experiences.append(MuZeroExperience(steps=steps))
         return muzero_experiences
 
     def _get_dataset(self, buffer: deque) -> Dataset:
@@ -614,16 +625,24 @@ class MuZeroAgent(BaseLearningAgent):
                 if is_training:
                     self.optimizer.zero_grad()
 
-                policy_logits, value_preds = self.network(
+                (
+                    policy_logits,
+                    value_preds,
+                    hidden_state_loss,
+                    action_pred_loss,
+                ) = self.network(
                     state_batch=batch_data.batched_state,
                     action_history_batch=action_batch,
                     legal_actions_batch=batch_data.candidate_actions,
+                    target_states_batch=batch_data.target_states_batch,
                 )
                 loss_statistics = self._calculate_loss(
                     policy_logits,
                     value_preds,
                     policy_targets_batch,
                     value_targets_batch,
+                    hidden_state_loss,
+                    action_pred_loss,
                 )
 
                 if is_training:
@@ -652,7 +671,13 @@ class MuZeroAgent(BaseLearningAgent):
         )
 
     def _calculate_loss(
-        self, policy_logits, value_preds, policy_targets, value_targets
+        self,
+        policy_logits,
+        value_preds,
+        policy_targets,
+        value_targets,
+        hidden_state_loss,
+        action_pred_loss,
     ):
         """Calculates the MuZero loss over an unrolled trajectory."""
         total_policy_loss = 0
@@ -681,7 +706,9 @@ class MuZeroAgent(BaseLearningAgent):
 
             # TODO: Do we need VAE KL-divergence loss, or will policy+value loss handle it downstream?
 
-        total_loss = total_value_loss + total_policy_loss
+        total_loss = (
+            total_value_loss + total_policy_loss + hidden_state_loss + action_pred_loss
+        )
 
         # low priority: Accuracy and MSE metrics need to be re-evaluated for sequential data.
         # Placeholder metrics for now.

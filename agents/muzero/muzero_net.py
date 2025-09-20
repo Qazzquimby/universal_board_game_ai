@@ -262,58 +262,112 @@ class MuZeroNet(BaseTokenizingNet):
 
         return policy_dict, value
 
+    def _train_action_generator(
+        self, hidden_state: torch.Tensor, real_actions_per_item: List[List[ActionType]]
+    ):
+        """Train the action generation LSTM with teacher forcing."""
+        if not any(real_actions_per_item):
+            return torch.tensor(0.0, device=self.get_device())
+
+        # Not all items in the batch might have actions, so we filter.
+        batch_indices_with_actions = [
+            i for i, actions in enumerate(real_actions_per_item) if actions
+        ]
+        hidden_states_with_actions = hidden_state[batch_indices_with_actions]
+
+        # Tokenize and pad the actions for LSTM processing.
+        tokenized_actions = [
+            torch.stack(list(self._actions_to_tokens(actions)))
+            for actions in real_actions_per_item
+            if actions
+        ]
+        padded_tokens = nn.utils.rnn.pad_sequence(tokenized_actions, batch_first=True)
+        seq_lengths = torch.tensor([len(seq) for seq in tokenized_actions], device=self.get_device())
+
+        batch_size, max_seq_len, embedding_dim = padded_tokens.shape
+        h = self.hidden_to_lstm_h(hidden_states_with_actions)
+        c = self.hidden_to_lstm_c(hidden_states_with_actions)
+        start_tokens = self.start_action_token.expand(batch_size, -1)
+
+        # Prepare inputs for LSTM: start_token + ground truth tokens
+        lstm_inputs = torch.cat([start_tokens.unsqueeze(1), padded_tokens], dim=1)
+
+        total_loss = 0
+        for t in range(max_seq_len + 1):
+            active_mask = seq_lengths > t
+            if not torch.any(active_mask):
+                # Process stop token for sequences that just ended.
+                ended_mask = seq_lengths == t
+                if torch.any(ended_mask):
+                    stop_logits = self.action_generation_stop_head(h[ended_mask])
+                    loss = F.binary_cross_entropy_with_logits(
+                        stop_logits, torch.ones_like(stop_logits)
+                    )
+                    total_loss += loss
+                break
+
+            input_token_t = lstm_inputs[active_mask, t, :]
+            h_active, c_active = h[active_mask], c[active_mask]
+            h_next, c_next = self.action_decoder_lstm(
+                input_token_t, (h_active, c_active)
+            )
+            h = h.clone()
+            c = c.clone()
+            h[active_mask], c[active_mask] = h_next, c_next
+
+            # Predict stop token (should be 'not stop')
+            stop_logits = self.action_generation_stop_head(h_next)
+            loss = F.binary_cross_entropy_with_logits(
+                stop_logits, torch.zeros_like(stop_logits)
+            )
+            total_loss += loss
+
+            # Predict next action token if not at the end of sequence
+            if t < max_seq_len:
+                pred_token = self.action_generation_head(h_next)
+                target_token = padded_tokens[active_mask, t, :]
+                loss = F.mse_loss(pred_token, target_token)
+                total_loss += loss
+
+        return total_loss / batch_size if batch_size > 0 else 0
+
     def forward(
         self,
         state_batch: Dict[str, "DataFrame"],
         action_history_batch: torch.Tensor,
         legal_actions_batch: List[List[List[ActionType]]],
+        target_states_batch: List[Dict[str, "DataFrame"]],
     ):
-        """
-        Forward pass for training. Performs unrolling.
-        - state_batch: A batch of initial observation tensors.
-        - action_batch: A batch of action sequences for unrolling, with shape
-                        (batch_size, num_unroll_steps).
-        - candidate_actions: A list of lists of lists of actions for policy prediction.
-                             Shape: (batch_size, num_unroll_steps + 1, num_actions)
-        Returns:
-        - A tuple of tensors containing predictions for each step:
-          (unrolled_policies, unrolled_values).
-        """
         num_unroll_steps = action_history_batch.shape[1]
+        batch_size = action_history_batch.shape[0]
 
         # 1. Representation (h):
         hidden_state_vae = self.get_hidden_state_vae(state_batch)
         hidden_state_tensor = hidden_state_vae.take_sample()
 
-        # todo, the take samples in this function, will they adequately train the vae,
-        #   or will they train it to produce an average result?
-
-        # If we get a single state but a batch of action sequences,
-        # expand the hidden state to match the batch size for unrolling.
-        batch_size = action_history_batch.shape[0]
         if hidden_state_tensor.shape[0] == 1 and batch_size > 1:
             hidden_state_tensor = hidden_state_tensor.expand(batch_size, -1)
 
-        # Lists to store predictions at each step
-        unrolled_policy_logits = []
-        unrolled_values = []
+        unrolled_policy_logits, unrolled_values = [], []
+        total_hidden_state_loss = 0.0
+        total_action_pred_loss = 0.0
 
-        # 2. Initial Prediction (f) and Unrolling Loop:
         for i in range(num_unroll_steps + 1):
-            # Get candidate actions for the current unroll step for all items in the batch
-            legal_actions_for_step_batch = []
-            for legal_actions_for_turns in legal_actions_batch:
-                if len(legal_actions_for_turns) > i:
-                    legal_actions_for_turn = legal_actions_for_turns[i]
-                else:
-                    legal_actions_for_turn = []
-                legal_actions_for_step_batch.append(legal_actions_for_turn)
+            # Get candidate actions for policy head
+            legal_actions_for_step = [
+                seq[i] if i < len(seq) else [] for seq in legal_actions_batch
+            ]
             policy_logits, value = self.get_policy_and_value_batched(
-                hidden_state_tensor, legal_actions_for_step_batch
+                hidden_state_tensor, legal_actions_for_step
             )
-
             unrolled_policy_logits.append(policy_logits)
             unrolled_values.append(value)
+
+            # Train action generator
+            action_loss = self._train_action_generator(
+                hidden_state_tensor, legal_actions_for_step
+            )
+            total_action_pred_loss += action_loss
 
             if i < num_unroll_steps:
                 # 3. Dynamics (g):
@@ -325,23 +379,29 @@ class MuZeroNet(BaseTokenizingNet):
                 )
                 hidden_state_tensor = next_h_vae.take_sample()
 
-        # 4. Collate and return all predictions.
-        # Pad policies to the max number of actions over all unroll steps.
-        max_actions = 0
-        for p in unrolled_policy_logits:
-            if p.numel() > 0:
-                max_actions = max(max_actions, p.shape[1])
+                # Hidden state consistency loss
+                target_h_vae = self.get_hidden_state_vae(target_states_batch[i])
+                target_h_tensor = target_h_vae.take_sample().detach()
+                consistency_loss = F.mse_loss(hidden_state_tensor, target_h_tensor)
+                total_hidden_state_loss += consistency_loss
 
-        padded_policies = []
-        for p in unrolled_policy_logits:
-            pad_width = max_actions - p.shape[1]
-            padded_p = F.pad(p, (0, pad_width), "constant", value=-torch.inf)
-            padded_policies.append(padded_p)
-
+        # Collate and return all predictions.
+        max_actions = max(
+            (p.shape[1] for p in unrolled_policy_logits if p.numel() > 0), default=0
+        )
+        padded_policies = [
+            F.pad(p, (0, max_actions - p.shape[1]), "constant", value=-torch.inf)
+            for p in unrolled_policy_logits
+        ]
         policies_tensor = torch.stack(padded_policies, dim=1)
         values_tensor = torch.stack(unrolled_values, dim=1)
 
-        return policies_tensor, values_tensor
+        return (
+            policies_tensor,
+            values_tensor,
+            total_hidden_state_loss,
+            total_action_pred_loss,
+        )
 
     def init_zero(self):
         # todo Initialize all weights to 0. Update as needed
