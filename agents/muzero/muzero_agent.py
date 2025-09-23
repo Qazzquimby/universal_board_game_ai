@@ -637,7 +637,8 @@ class MuZeroAgent(BaseLearningAgent):
                 (
                     policy_logits,
                     value_preds,
-                    hidden_state_loss,  # seems wrong to be getting loss during forward
+                    predicted_hidden_states,
+                    target_hidden_states,
                     action_pred_loss,
                 ) = self.network(
                     state_batch=batch_data.batched_state,
@@ -646,12 +647,13 @@ class MuZeroAgent(BaseLearningAgent):
                     target_states_batch=batch_data.target_states_batch,
                 )
                 loss_statistics = self._calculate_loss(
-                    policy_logits,
-                    value_preds,
-                    policy_targets_batch,
-                    value_targets_batch,
-                    hidden_state_loss,
-                    action_pred_loss,
+                    policy_logits=policy_logits,
+                    value_preds=value_preds,
+                    policy_targets=policy_targets_batch,
+                    value_targets=value_targets_batch,
+                    predicted_hidden_states=predicted_hidden_states,
+                    target_hidden_states=target_hidden_states,
+                    action_pred_loss=action_pred_loss,
                 )
 
                 if is_training:
@@ -685,7 +687,8 @@ class MuZeroAgent(BaseLearningAgent):
         value_preds,
         policy_targets,
         value_targets,
-        hidden_state_loss,
+        predicted_hidden_states,
+        target_hidden_states,
         action_pred_loss,
     ):
         """Calculates the MuZero loss over an unrolled trajectory."""
@@ -715,14 +718,17 @@ class MuZeroAgent(BaseLearningAgent):
 
             # TODO: Do we need VAE KL-divergence loss, or will policy+value loss handle it downstream?
 
+        # Hidden state consistency loss
+        if predicted_hidden_states.numel() > 0:
+            hidden_state_loss = F.mse_loss(
+                predicted_hidden_states, target_hidden_states
+            )
+        else:
+            hidden_state_loss = torch.tensor(0.0, device=policy_logits.device)
+
         total_loss = (
             total_value_loss + total_policy_loss + hidden_state_loss + action_pred_loss
         )
-
-        # low priority: Accuracy and MSE metrics need to be re-evaluated for sequential data.
-        # Placeholder metrics for now.
-        policy_acc = 0.0
-        value_mse = (total_value_loss / num_steps).item()
 
         return MuZeroLossStatistics(
             batch_loss=total_loss,

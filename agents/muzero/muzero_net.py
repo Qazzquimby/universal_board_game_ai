@@ -262,10 +262,10 @@ class MuZeroNet(BaseTokenizingNet):
 
         return policy_dict, value
 
-    def _train_action_generator(
+    def _calculate_action_prediction_loss(
         self, hidden_state: torch.Tensor, real_actions_per_item: List[List[ActionType]]
     ):
-        """Train the action generation LSTM with teacher forcing."""
+        """Calculate action prediction loss using teacher forcing."""
         if not any(real_actions_per_item):
             return torch.tensor(0.0, device=self.get_device())
 
@@ -352,9 +352,9 @@ class MuZeroNet(BaseTokenizingNet):
 
         unrolled_policy_logits = []
         unrolled_values = []
+        unrolled_predicted_hidden_states = []
+        unrolled_target_hidden_states = []
 
-        # Seems wrong to be getting loss during forward
-        total_hidden_state_loss = 0.0
         total_action_pred_loss = 0.0
 
         for i in range(num_unroll_steps + 1):
@@ -369,7 +369,7 @@ class MuZeroNet(BaseTokenizingNet):
             unrolled_values.append(value)
 
             # Train action generator
-            action_loss = self._train_action_generator(
+            action_loss = self._calculate_action_prediction_loss(
                 hidden_state_tensor, legal_actions_for_step
             )
             total_action_pred_loss += action_loss
@@ -383,12 +383,12 @@ class MuZeroNet(BaseTokenizingNet):
                     hidden_state_tensor, action_tokens
                 )
                 hidden_state_tensor = next_h_vae.take_sample()
+                unrolled_predicted_hidden_states.append(hidden_state_tensor)
 
-                # Hidden state consistency loss # Seems wrong to be getting loss during forward
+                # Target hidden state for consistency loss
                 target_h_vae = self.get_hidden_state_vae(target_states_batch[i])
                 target_h_tensor = target_h_vae.take_sample().detach()
-                consistency_loss = F.mse_loss(hidden_state_tensor, target_h_tensor)
-                total_hidden_state_loss += consistency_loss
+                unrolled_target_hidden_states.append(target_h_tensor)
 
         # Collate and return all predictions.
         max_actions = max(
@@ -401,10 +401,26 @@ class MuZeroNet(BaseTokenizingNet):
         policies_tensor = torch.stack(padded_policies, dim=1)
         values_tensor = torch.stack(unrolled_values, dim=1)
 
+        if num_unroll_steps > 0:
+            predicted_hidden_states_tensor = torch.stack(
+                unrolled_predicted_hidden_states, dim=1
+            )
+            target_hidden_states_tensor = torch.stack(
+                unrolled_target_hidden_states, dim=1
+            )
+        else:
+            predicted_hidden_states_tensor = torch.empty(
+                batch_size, 0, hidden_state_tensor.shape[-1], device=self.get_device()
+            )
+            target_hidden_states_tensor = torch.empty(
+                batch_size, 0, hidden_state_tensor.shape[-1], device=self.get_device()
+            )
+
         return (
             policies_tensor,
             values_tensor,
-            total_hidden_state_loss,
+            predicted_hidden_states_tensor,
+            target_hidden_states_tensor,
             total_action_pred_loss,
         )
 
