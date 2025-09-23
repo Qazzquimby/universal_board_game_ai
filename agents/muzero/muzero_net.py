@@ -282,7 +282,9 @@ class MuZeroNet(BaseTokenizingNet):
             if actions
         ]
         padded_tokens = nn.utils.rnn.pad_sequence(tokenized_actions, batch_first=True)
-        seq_lengths = torch.tensor([len(seq) for seq in tokenized_actions], device=self.get_device())
+        seq_lengths = torch.tensor(
+            [len(seq) for seq in tokenized_actions], device=self.get_device()
+        )
 
         batch_size, max_seq_len, embedding_dim = padded_tokens.shape
         h = self.hidden_to_lstm_h(hidden_states_with_actions)
@@ -348,7 +350,10 @@ class MuZeroNet(BaseTokenizingNet):
         if hidden_state_tensor.shape[0] == 1 and batch_size > 1:
             hidden_state_tensor = hidden_state_tensor.expand(batch_size, -1)
 
-        unrolled_policy_logits, unrolled_values = [], []
+        unrolled_policy_logits = []
+        unrolled_values = []
+
+        # Seems wrong to be getting loss during forward
         total_hidden_state_loss = 0.0
         total_action_pred_loss = 0.0
 
@@ -379,7 +384,7 @@ class MuZeroNet(BaseTokenizingNet):
                 )
                 hidden_state_tensor = next_h_vae.take_sample()
 
-                # Hidden state consistency loss
+                # Hidden state consistency loss # Seems wrong to be getting loss during forward
                 target_h_vae = self.get_hidden_state_vae(target_states_batch[i])
                 target_h_tensor = target_h_vae.take_sample().detach()
                 consistency_loss = F.mse_loss(hidden_state_tensor, target_h_tensor)

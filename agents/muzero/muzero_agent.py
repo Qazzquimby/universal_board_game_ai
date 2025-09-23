@@ -403,6 +403,15 @@ class MuZeroSelection(UCB1Selection):
         return SelectionResult(path=path, leaf_env=sim_env)
 
 
+@dataclass
+class MuZeroLossStatistics:
+    batch_loss: torch.Tensor
+    value_loss: torch.Tensor
+    policy_loss: torch.Tensor
+    hidden_state_loss: torch.Tensor
+    action_pred_loss: torch.Tensor
+
+
 class MuZeroAgent(BaseLearningAgent):
     """Agent implementing the MuZero algorithm."""
 
@@ -628,7 +637,7 @@ class MuZeroAgent(BaseLearningAgent):
                 (
                     policy_logits,
                     value_preds,
-                    hidden_state_loss,
+                    hidden_state_loss,  # seems wrong to be getting loss during forward
                     action_pred_loss,
                 ) = self.network(
                     state_batch=batch_data.batched_state,
@@ -685,22 +694,22 @@ class MuZeroAgent(BaseLearningAgent):
         num_steps = policy_targets.shape[1]
 
         for i in range(num_steps):
-            step_policy_logits = policy_logits[:, i, :]
             step_value_preds = value_preds[:, i]
-            step_policy_targets = policy_targets[:, i, :]
             step_value_targets = value_targets[:, i]
-
-            # Value loss (MSE)
             value_loss = F.mse_loss(step_value_preds, step_value_targets)
-            # value_loss = 0.5 * value_loss  # scale down unrolled losses # if i > 0
+            if i > 0:
+                value_loss = 0.5 * value_loss  # scale down unrolled losses # if i > 0
             total_value_loss += value_loss
 
             # Policy loss (Cross-Entropy)
+            step_policy_logits = policy_logits[:, i, :]
+            step_policy_targets = policy_targets[:, i, :]
             log_probs = F.log_softmax(step_policy_logits, dim=1)
             difference = step_policy_targets * log_probs
             difference = torch.nan_to_num(difference, nan=0.0)
             policy_loss = -torch.sum(difference, dim=1).mean()
-            # policy_loss = 0.5 * policy_loss  # scale down unrolled losses
+            if i > 0:
+                policy_loss = 0.5 * policy_loss  # scale down unrolled losses
             total_policy_loss += policy_loss
             #
 
@@ -715,12 +724,12 @@ class MuZeroAgent(BaseLearningAgent):
         policy_acc = 0.0
         value_mse = (total_value_loss / num_steps).item()
 
-        return LossStatistics(
+        return MuZeroLossStatistics(
             batch_loss=total_loss,
             value_loss=total_value_loss,
             policy_loss=total_policy_loss,
-            policy_acc=policy_acc,
-            value_mse=value_mse,
+            hidden_state_loss=hidden_state_loss,
+            action_pred_loss=action_pred_loss,
         )
 
 
