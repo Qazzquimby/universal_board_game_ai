@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from typing import Tuple, Dict, List
 
 import torch
@@ -6,6 +7,15 @@ import torch.nn.functional as F
 
 from environments.base import BaseEnvironment, StateType, ActionType
 from models.networks import BaseTokenizingNet
+
+
+@dataclass
+class MuZeroNetworkOutput:
+    pred_policies: torch.Tensor
+    pred_values: torch.Tensor
+    pred_hidden_states: torch.Tensor
+    target_hidden_states: torch.Tensor
+    pred_action_losses: torch.Tensor
 
 
 # Don't delete
@@ -331,7 +341,11 @@ class MuZeroNet(BaseTokenizingNet):
                 loss = F.mse_loss(pred_token, target_token)
                 total_loss += loss
 
-        return total_loss / batch_size if batch_size > 0 else 0
+        return (
+            total_loss / batch_size
+            if batch_size > 0
+            else torch.tensor(0.0, device=self.get_device())
+        )
 
     def forward(
         self,
@@ -339,7 +353,7 @@ class MuZeroNet(BaseTokenizingNet):
         action_history_batch: torch.Tensor,
         legal_actions_batch: List[List[List[ActionType]]],
         target_states_batch: List[Dict[str, "DataFrame"]],
-    ):
+    ) -> MuZeroNetworkOutput:
         num_unroll_steps = action_history_batch.shape[1]
         batch_size = action_history_batch.shape[0]
 
@@ -354,8 +368,7 @@ class MuZeroNet(BaseTokenizingNet):
         unrolled_values = []
         unrolled_predicted_hidden_states = []
         unrolled_target_hidden_states = []
-
-        total_action_pred_loss = 0.0
+        unrolled_action_pred_losses = []
 
         for i in range(num_unroll_steps + 1):
             # Get candidate actions for policy head
@@ -372,7 +385,7 @@ class MuZeroNet(BaseTokenizingNet):
             action_loss = self._calculate_action_prediction_loss(
                 hidden_state_tensor, legal_actions_for_step
             )
-            total_action_pred_loss += action_loss
+            unrolled_action_pred_losses.append(action_loss)
 
             if i < num_unroll_steps:
                 # 3. Dynamics (g):
@@ -398,30 +411,28 @@ class MuZeroNet(BaseTokenizingNet):
             F.pad(p, (0, max_actions - p.shape[1]), "constant", value=-torch.inf)
             for p in unrolled_policy_logits
         ]
-        policies_tensor = torch.stack(padded_policies, dim=1)
-        values_tensor = torch.stack(unrolled_values, dim=1)
+        pred_policies = torch.stack(padded_policies, dim=1)
+        pred_values = torch.stack(unrolled_values, dim=1)
 
         if num_unroll_steps > 0:
-            predicted_hidden_states_tensor = torch.stack(
-                unrolled_predicted_hidden_states, dim=1
-            )
-            target_hidden_states_tensor = torch.stack(
-                unrolled_target_hidden_states, dim=1
-            )
+            pred_hidden_states = torch.stack(unrolled_predicted_hidden_states, dim=1)
+            target_hidden_states = torch.stack(unrolled_target_hidden_states, dim=1)
         else:
-            predicted_hidden_states_tensor = torch.empty(
+            pred_hidden_states = torch.empty(
                 batch_size, 0, hidden_state_tensor.shape[-1], device=self.get_device()
             )
-            target_hidden_states_tensor = torch.empty(
+            target_hidden_states = torch.empty(
                 batch_size, 0, hidden_state_tensor.shape[-1], device=self.get_device()
             )
 
-        return (
-            policies_tensor,
-            values_tensor,
-            predicted_hidden_states_tensor,
-            target_hidden_states_tensor,
-            total_action_pred_loss,
+        pred_action_losses = torch.stack(unrolled_action_pred_losses)
+
+        return MuZeroNetworkOutput(
+            pred_policies=pred_policies,
+            pred_values=pred_values,
+            pred_hidden_states=pred_hidden_states,
+            target_hidden_states=target_hidden_states,
+            pred_action_losses=pred_action_losses,
         )
 
     def init_zero(self):
