@@ -694,7 +694,8 @@ class MuZeroAgent(BaseLearningAgent):
         target_hidden_states = network_output.target_hidden_states
         # loss per step?
 
-        action_pred_losses_per_step = network_output.pred_action_losses
+        # TODO this is returning actions, not losses, now
+        action_pred_losses_per_step = network_output.pred_actions
 
         num_steps = policy_targets.shape[1]
         for i in range(num_steps):

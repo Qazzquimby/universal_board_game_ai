@@ -15,7 +15,7 @@ class MuZeroNetworkOutput:
     pred_values: torch.Tensor
     pred_hidden_states: torch.Tensor
     target_hidden_states: torch.Tensor
-    pred_action_losses: torch.Tensor
+    pred_actions: torch.Tensor
 
 
 # Don't delete
@@ -166,22 +166,22 @@ class MuZeroNet(BaseTokenizingNet):
         scores = self.policy_head(policy_input).squeeze(-1)
         return scores
 
-    def _predict_policy_and_value_from_tokens(
+    def get_value_batched(
+        self,
+        hidden_state_batch: torch.Tensor,
+    ):
+        value_preds = self.value_head(hidden_state_batch).squeeze(-1)
+        return value_preds
+
+    def get_policy_batched(
         self,
         hidden_state_batch: torch.Tensor,
         candidate_action_tokens_batch: List[List[torch.Tensor]],
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Prediction function (f) core logic: Predicts policy logits and value from a batch of hidden states
-        and a batch of candidate action tokens.
-        """
         device = self.get_device()
         batch_size = hidden_state_batch.shape[0]
 
-        # --- Value Head ---
-        value_preds = self.value_head(hidden_state_batch).squeeze(-1)
-
-        # --- Policy Head --- # todo reorganize, better document
+        # todo reorganize, better document
         flat_action_tokens = []
         batch_indices_for_policy = []
         num_actions_per_item = []
@@ -223,26 +223,7 @@ class MuZeroNet(BaseTokenizingNet):
             scores_by_item, batch_first=True, padding_value=-torch.inf
         )
 
-        return policy_preds, value_preds
-
-    def get_policy_and_value_batched(
-        self,
-        hidden_state_batch: torch.Tensor,
-        candidate_actions_batch: List[List[ActionType]],
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Prediction function (f) for training: Predicts policy logits and value from a batch of hidden states
-        and candidate actions for each state.
-        """
-        # Tokenize actions for each item in the batch
-        candidate_action_tokens_batch = [
-            list(self._actions_to_tokens(actions))
-            for actions in candidate_actions_batch
-        ]
-
-        return self._predict_policy_and_value_from_tokens(
-            hidden_state_batch, candidate_action_tokens_batch
-        )
+        return (policy_preds,)
 
     def get_policy_and_value(
         self, hidden_state: torch.Tensor, candidate_actions: List[torch.Tensor]
@@ -272,84 +253,6 @@ class MuZeroNet(BaseTokenizingNet):
 
         return policy_dict, value
 
-    def _calculate_action_pred_loss(
-        self, hidden_state: torch.Tensor, real_actions_per_item: List[List[ActionType]]
-    ):
-        """Calculate action prediction loss using teacher forcing."""
-        if not any(real_actions_per_item):
-            return torch.tensor(0.0, device=self.get_device())
-
-        # Not all items in the batch might have actions, so we filter.
-        batch_indices_with_actions = [
-            i for i, actions in enumerate(real_actions_per_item) if actions
-        ]
-        hidden_states_with_actions = hidden_state[batch_indices_with_actions]
-
-        # Tokenize and pad the actions for LSTM processing. # todo this was done earlier
-        tokenized_actions = [
-            torch.stack(list(self._actions_to_tokens(actions)))
-            for actions in real_actions_per_item
-            if actions
-        ]
-        padded_tokens = nn.utils.rnn.pad_sequence(tokenized_actions, batch_first=True)
-        seq_lengths = torch.tensor(
-            [len(seq) for seq in tokenized_actions], device=self.get_device()
-        )  # todo make sure max seq len isn't preventing predicting longer seq
-
-        batch_size, max_seq_len, embedding_dim = padded_tokens.shape
-        h = self.hidden_to_lstm_h(hidden_states_with_actions)
-        c = self.hidden_to_lstm_c(hidden_states_with_actions)
-        start_tokens = self.start_action_token.expand(batch_size, -1)
-
-        # Prepare inputs for LSTM: start_token + ground truth tokens
-        lstm_inputs = torch.cat([start_tokens.unsqueeze(1), padded_tokens], dim=1)
-
-        total_loss = 0
-        for t in range(max_seq_len + 1):
-            active_mask = seq_lengths > t
-            if not torch.any(active_mask):
-                # Process stop token for sequences that just ended.
-                ended_mask = seq_lengths == t
-                if torch.any(ended_mask):
-                    stop_logits = self.action_generation_stop_head(h[ended_mask])
-                    loss = F.binary_cross_entropy_with_logits(
-                        stop_logits, torch.ones_like(stop_logits)
-                    )
-                    total_loss += loss
-                break
-
-            input_token_t = lstm_inputs[active_mask, t, :]
-            h_active, c_active = h[active_mask], c[active_mask]
-            h_next, c_next = self.action_decoder_lstm(
-                input_token_t, (h_active, c_active)
-            )
-            h = h.clone()
-            c = c.clone()
-            h[active_mask], c[active_mask] = h_next, c_next
-
-            # Predict stop token (should be 'not stop')
-            stop_logits = self.action_generation_stop_head(h_next)
-            loss = F.binary_cross_entropy_with_logits(
-                stop_logits, torch.zeros_like(stop_logits)
-            )
-            total_loss += loss
-
-            # Predict next action token if not at the end of sequence
-            if t < max_seq_len:
-                pred_token = self.action_generation_head(h_next)
-                target_token = padded_tokens[active_mask, t, :]
-                loss = F.mse_loss(pred_token, target_token)
-                # todo no this is dumb, actions don't have an order.
-                total_loss += loss
-
-        # todo
-
-        return (
-            total_loss / batch_size
-            if batch_size > 0
-            else torch.tensor(0.0, device=self.get_device())
-        )
-
     def forward(
         self,
         state_batch: Dict[str, "DataFrame"],
@@ -363,55 +266,63 @@ class MuZeroNet(BaseTokenizingNet):
         # 1. Representation (h):
         hidden_state_vae = self.get_hidden_state_vae(state_batch)
         hidden_state_tensor = hidden_state_vae.take_sample()
-
         if hidden_state_tensor.shape[0] == 1 and batch_size > 1:
-            hidden_state_tensor = hidden_state_tensor.expand(batch_size, -1)
+            assert False
+            # hidden_state_tensor = hidden_state_tensor.expand(batch_size, -1)
 
         unrolled_pred_policies = []
         unrolled_pred_values = []
-        unrolled_pred_hidden_states = []
-        unrolled_target_hidden_states = []
-        unrolled_action_pred_losses = []
+        unrolled_pred_dynamics_hidden_vaes = []
+        unrolled_pred_representation_hidden_vaes = []
+
+        unrolled_pred_actions = []
 
         for i in range(num_unroll_steps + 1):
-            # Get candidate actions for policy head
+            # POLICY
+            # Uses actual actions rather than predicted actions to keep unroll close
+            #  to reality. Action generation is trained separately rather than
+            #  downstream of this
             legal_actions_for_step = [
                 seq[i] if i < len(seq) else [] for seq in legal_actions_batch
             ]
-
-            # This is passing in actual actions rather than the predicted action tokens
-            # Will it learn properly since we also train for action prediction accuracy?
-            # Or should there be a connection here with the policy and value being derived
-            # from the predicted action?
-            # This way certainly seems simpler to train.
-            pred_policy, pred_value = self.get_policy_and_value_batched(
-                hidden_state_tensor, legal_actions_for_step
+            candidate_action_tokens_batch = [
+                list(self._actions_to_tokens(actions))
+                for actions in legal_actions_for_step
+            ]  # todo avoid list of lists
+            pred_policy = self.get_policy_batched(
+                hidden_state_batch=hidden_state_tensor,
+                candidate_action_tokens_batch=candidate_action_tokens_batch,
             )
             unrolled_pred_policies.append(pred_policy)
+
+            # VALUE
+            pred_value = self.get_value_batched(hidden_state_batch=hidden_state_tensor)
             unrolled_pred_values.append(pred_value)
 
-            action_pred_loss = self._calculate_action_pred_loss(
-                hidden_state_tensor, legal_actions_for_step
+            # ACTIONS
+            pred_actions = self.get_actions_for_hidden_state(
+                hidden_state=hidden_state_tensor
             )
-            unrolled_action_pred_losses.append(action_pred_loss)
+            unrolled_pred_actions.append(pred_actions)
 
             if i < num_unroll_steps:
-                # 3. Dynamics (g):
+                # REPRESENTATION
+                pred_representation_hidden_vae = self.get_hidden_state_vae(
+                    target_states_batch[i]
+                )
+                unrolled_pred_representation_hidden_vaes.append(
+                    pred_representation_hidden_vae
+                )
+
+                # DYNAMICS
                 action_token_batch = self._actions_to_tokens(
                     action_history_batch[:, i].tolist()
                 )
                 # todo are the types right here? 1 hidden state but batch of actions?
-                next_h_vae = self.get_next_hidden_state_vae(
+                pred_dynamics_hidden_vae = self.get_next_hidden_state_vae(
                     hidden_state_tensor, action_token_batch
                 )
-                hidden_state_tensor = next_h_vae.take_sample()
-                unrolled_pred_hidden_states.append(hidden_state_tensor)
-
-                # Target hidden state for consistency loss
-                target_h_vae = self.get_hidden_state_vae(target_states_batch[i])
-                # todo I do not think this is how you train a vae...
-                target_h_tensor = target_h_vae.take_sample().detach()
-                unrolled_target_hidden_states.append(target_h_tensor)
+                unrolled_pred_dynamics_hidden_vaes.append(pred_dynamics_hidden_vae)
 
         # Collate and return all predictions.
         max_actions = max(
@@ -425,8 +336,10 @@ class MuZeroNet(BaseTokenizingNet):
         pred_values = torch.stack(unrolled_pred_values, dim=1)
 
         if num_unroll_steps > 0:
-            pred_hidden_states = torch.stack(unrolled_pred_hidden_states, dim=1)
-            target_hidden_states = torch.stack(unrolled_target_hidden_states, dim=1)
+            pred_hidden_states = torch.stack(unrolled_pred_dynamics_hidden_vaes, dim=1)
+            target_hidden_states = torch.stack(
+                unrolled_pred_representation_hidden_vaes, dim=1
+            )
         else:
             pred_hidden_states = torch.empty(
                 batch_size, 0, hidden_state_tensor.shape[-1], device=self.get_device()
@@ -435,14 +348,14 @@ class MuZeroNet(BaseTokenizingNet):
                 batch_size, 0, hidden_state_tensor.shape[-1], device=self.get_device()
             )
 
-        pred_action_losses = torch.stack(unrolled_action_pred_losses)
+        pred_actions = torch.stack(unrolled_pred_actions)
 
         return MuZeroNetworkOutput(
             pred_policies=pred_policies,
             pred_values=pred_values,
             pred_hidden_states=pred_hidden_states,
             target_hidden_states=target_hidden_states,
-            pred_action_losses=pred_action_losses,
+            pred_actions=pred_actions,
         )
 
     def init_zero(self):
