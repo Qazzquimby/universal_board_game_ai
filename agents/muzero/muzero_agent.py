@@ -727,9 +727,7 @@ class MuZeroAgent(BaseLearningAgent):
         # Hidden state consistency loss
         # Should this not be one per step?
         if pred_hidden_states.numel() > 0:
-            hidden_state_loss = F.mse_loss(
-                pred_hidden_states, target_hidden_states
-            )
+            hidden_state_loss = F.mse_loss(pred_hidden_states, target_hidden_states)
         else:
             hidden_state_loss = torch.tensor(0.0, device=pred_policies.device)
 

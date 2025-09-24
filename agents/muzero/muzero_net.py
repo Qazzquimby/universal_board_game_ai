@@ -181,7 +181,7 @@ class MuZeroNet(BaseTokenizingNet):
         # --- Value Head ---
         value_preds = self.value_head(hidden_state_batch).squeeze(-1)
 
-        # --- Policy Head ---
+        # --- Policy Head --- # todo reorganize, better document
         flat_action_tokens = []
         batch_indices_for_policy = []
         num_actions_per_item = []
@@ -219,11 +219,11 @@ class MuZeroNet(BaseTokenizingNet):
             else:
                 scores_by_item.append(torch.empty(0, device=device))
 
-        policy_logits = nn.utils.rnn.pad_sequence(
+        policy_preds = nn.utils.rnn.pad_sequence(
             scores_by_item, batch_first=True, padding_value=-torch.inf
         )
 
-        return policy_logits, value_preds
+        return policy_preds, value_preds
 
     def get_policy_and_value_batched(
         self,
@@ -272,7 +272,7 @@ class MuZeroNet(BaseTokenizingNet):
 
         return policy_dict, value
 
-    def _calculate_action_prediction_loss(
+    def _calculate_action_pred_loss(
         self, hidden_state: torch.Tensor, real_actions_per_item: List[List[ActionType]]
     ):
         """Calculate action prediction loss using teacher forcing."""
@@ -285,7 +285,7 @@ class MuZeroNet(BaseTokenizingNet):
         ]
         hidden_states_with_actions = hidden_state[batch_indices_with_actions]
 
-        # Tokenize and pad the actions for LSTM processing.
+        # Tokenize and pad the actions for LSTM processing. # todo this was done earlier
         tokenized_actions = [
             torch.stack(list(self._actions_to_tokens(actions)))
             for actions in real_actions_per_item
@@ -294,7 +294,7 @@ class MuZeroNet(BaseTokenizingNet):
         padded_tokens = nn.utils.rnn.pad_sequence(tokenized_actions, batch_first=True)
         seq_lengths = torch.tensor(
             [len(seq) for seq in tokenized_actions], device=self.get_device()
-        )
+        )  # todo make sure max seq len isn't preventing predicting longer seq
 
         batch_size, max_seq_len, embedding_dim = padded_tokens.shape
         h = self.hidden_to_lstm_h(hidden_states_with_actions)
@@ -339,7 +339,10 @@ class MuZeroNet(BaseTokenizingNet):
                 pred_token = self.action_generation_head(h_next)
                 target_token = padded_tokens[active_mask, t, :]
                 loss = F.mse_loss(pred_token, target_token)
+                # todo no this is dumb, actions don't have an order.
                 total_loss += loss
+
+        # todo
 
         return (
             total_loss / batch_size
@@ -364,9 +367,9 @@ class MuZeroNet(BaseTokenizingNet):
         if hidden_state_tensor.shape[0] == 1 and batch_size > 1:
             hidden_state_tensor = hidden_state_tensor.expand(batch_size, -1)
 
-        unrolled_policy_logits = []
-        unrolled_values = []
-        unrolled_predicted_hidden_states = []
+        unrolled_pred_policies = []
+        unrolled_pred_values = []
+        unrolled_pred_hidden_states = []
         unrolled_target_hidden_states = []
         unrolled_action_pred_losses = []
 
@@ -375,47 +378,54 @@ class MuZeroNet(BaseTokenizingNet):
             legal_actions_for_step = [
                 seq[i] if i < len(seq) else [] for seq in legal_actions_batch
             ]
-            policy_logits, value = self.get_policy_and_value_batched(
-                hidden_state_tensor, legal_actions_for_step
-            )
-            unrolled_policy_logits.append(policy_logits)
-            unrolled_values.append(value)
 
-            # Train action generator
-            action_loss = self._calculate_action_prediction_loss(
+            # This is passing in actual actions rather than the predicted action tokens
+            # Will it learn properly since we also train for action prediction accuracy?
+            # Or should there be a connection here with the policy and value being derived
+            # from the predicted action?
+            # This way certainly seems simpler to train.
+            pred_policy, pred_value = self.get_policy_and_value_batched(
                 hidden_state_tensor, legal_actions_for_step
             )
-            unrolled_action_pred_losses.append(action_loss)
+            unrolled_pred_policies.append(pred_policy)
+            unrolled_pred_values.append(pred_value)
+
+            action_pred_loss = self._calculate_action_pred_loss(
+                hidden_state_tensor, legal_actions_for_step
+            )
+            unrolled_action_pred_losses.append(action_pred_loss)
 
             if i < num_unroll_steps:
                 # 3. Dynamics (g):
-                action_tokens = self._actions_to_tokens(
+                action_token_batch = self._actions_to_tokens(
                     action_history_batch[:, i].tolist()
                 )
+                # todo are the types right here? 1 hidden state but batch of actions?
                 next_h_vae = self.get_next_hidden_state_vae(
-                    hidden_state_tensor, action_tokens
+                    hidden_state_tensor, action_token_batch
                 )
                 hidden_state_tensor = next_h_vae.take_sample()
-                unrolled_predicted_hidden_states.append(hidden_state_tensor)
+                unrolled_pred_hidden_states.append(hidden_state_tensor)
 
                 # Target hidden state for consistency loss
                 target_h_vae = self.get_hidden_state_vae(target_states_batch[i])
+                # todo I do not think this is how you train a vae...
                 target_h_tensor = target_h_vae.take_sample().detach()
                 unrolled_target_hidden_states.append(target_h_tensor)
 
         # Collate and return all predictions.
         max_actions = max(
-            (p.shape[1] for p in unrolled_policy_logits if p.numel() > 0), default=0
+            (p.shape[1] for p in unrolled_pred_policies if p.numel() > 0), default=0
         )
         padded_policies = [
             F.pad(p, (0, max_actions - p.shape[1]), "constant", value=-torch.inf)
-            for p in unrolled_policy_logits
+            for p in unrolled_pred_policies
         ]
         pred_policies = torch.stack(padded_policies, dim=1)
-        pred_values = torch.stack(unrolled_values, dim=1)
+        pred_values = torch.stack(unrolled_pred_values, dim=1)
 
         if num_unroll_steps > 0:
-            pred_hidden_states = torch.stack(unrolled_predicted_hidden_states, dim=1)
+            pred_hidden_states = torch.stack(unrolled_pred_hidden_states, dim=1)
             target_hidden_states = torch.stack(unrolled_target_hidden_states, dim=1)
         else:
             pred_hidden_states = torch.empty(
