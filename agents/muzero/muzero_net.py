@@ -177,7 +177,7 @@ class MuZeroNet(BaseTokenizingNet):
         self,
         hidden_state_batch: torch.Tensor,
         candidate_action_tokens_batch: List[List[torch.Tensor]],
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> torch.Tensor:
         device = self.get_device()
         batch_size = hidden_state_batch.shape[0]
 
@@ -197,7 +197,7 @@ class MuZeroNet(BaseTokenizingNet):
             batch_indices_for_policy.extend([i] * len(actions))
 
         if not batch_indices_for_policy:
-            return torch.empty(batch_size, 0, device=device), value_preds
+            return torch.empty(batch_size, 0, device=device)
 
         flat_action_tokens_tensor = torch.cat(flat_action_tokens, dim=0)
         batch_indices_tensor = torch.tensor(
@@ -223,7 +223,7 @@ class MuZeroNet(BaseTokenizingNet):
             scores_by_item, batch_first=True, padding_value=-torch.inf
         )
 
-        return (policy_preds,)
+        return policy_preds
 
     def get_policy_and_value(
         self, hidden_state: torch.Tensor, candidate_actions: List[torch.Tensor]
@@ -263,19 +263,17 @@ class MuZeroNet(BaseTokenizingNet):
         num_unroll_steps = action_history_batch.shape[1]
         batch_size = action_history_batch.shape[0]
 
-        # 1. Representation (h):
+        unrolled_pred_policies = []
+        unrolled_pred_values = []
+        unrolled_pred_actions = []
+        unrolled_pred_dynamics_hidden_vaes = []
+        unrolled_pred_representation_hidden_vaes = []
+
         hidden_state_vae = self.get_hidden_state_vae(state_batch)
         hidden_state_tensor = hidden_state_vae.take_sample()
         if hidden_state_tensor.shape[0] == 1 and batch_size > 1:
             assert False
             # hidden_state_tensor = hidden_state_tensor.expand(batch_size, -1)
-
-        unrolled_pred_policies = []
-        unrolled_pred_values = []
-        unrolled_pred_dynamics_hidden_vaes = []
-        unrolled_pred_representation_hidden_vaes = []
-
-        unrolled_pred_actions = []
 
         for i in range(num_unroll_steps + 1):
             # POLICY
@@ -306,7 +304,7 @@ class MuZeroNet(BaseTokenizingNet):
             unrolled_pred_actions.append(pred_actions)
 
             if i < num_unroll_steps:
-                # REPRESENTATION
+                # REPRESENTATION # todo make sure these states line up, not offby1
                 pred_representation_hidden_vae = self.get_hidden_state_vae(
                     target_states_batch[i]
                 )
@@ -323,6 +321,8 @@ class MuZeroNet(BaseTokenizingNet):
                     hidden_state_tensor, action_token_batch
                 )
                 unrolled_pred_dynamics_hidden_vaes.append(pred_dynamics_hidden_vae)
+
+                hidden_state_tensor = pred_dynamics_hidden_vae.take_sample()
 
         # Collate and return all predictions.
         max_actions = max(
