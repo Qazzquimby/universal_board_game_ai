@@ -30,7 +30,7 @@ from agents.base_learning_agent import (
     EpochMetrics,
     GameHistoryStep,
 )
-from agents.muzero.muzero_net import MuZeroNet, MuZeroNetworkOutput
+from agents.muzero.muzero_net import MuZeroNet, MuZeroNetworkOutput, vae_take_sample
 from algorithms.mcts import (
     SelectionStrategy,
     ExpansionStrategy,
@@ -356,10 +356,15 @@ class MuZeroSelection(UCB1Selection):
             else:
                 action_token = current_node.action_tokens[action]
 
-            next_hidden_state_vae = self.network.get_next_hidden_state_vae(
+            (
+                next_hidden_state_mu,
+                next_hidden_state_log_var,
+            ) = self.network.get_next_hidden_state_vae(
                 current_node.hidden_state, action_token
             )
-            next_hidden_state = next_hidden_state_vae.take_sample()
+            next_hidden_state = vae_take_sample(
+                next_hidden_state_mu, next_hidden_state_log_var
+            )
 
             next_player_idx = 1 - current_node.player_idx
             next_node = MuZeroNode(
@@ -475,10 +480,11 @@ class MuZeroAgent(BaseLearningAgent):
             # Progressive widening at the root.
             child_limit = _calculate_child_limit(self.root.num_visits)
             if len(self.root.child_samples) < child_limit:
-                hidden_state_vae = self.network.get_hidden_state_vae(
-                    self.root.state_with_key.state
-                )
-                hidden_state = hidden_state_vae.take_sample()
+                (
+                    hidden_state_mu,
+                    hidden_state_log_var,
+                ) = self.network.get_hidden_state_vae(self.root.state_with_key.state)
+                hidden_state = vae_take_sample(hidden_state_mu, hidden_state_log_var)
                 new_sample_node = MuZeroNode(
                     player_idx=self.root.player_idx,
                     hidden_state=hidden_state,
@@ -692,6 +698,7 @@ class MuZeroAgent(BaseLearningAgent):
             mse=total_value_mse / num_batches,
         )
 
+    # todo split into helper functions per loss type and join at the bottom of this function
     def _calculate_loss(
         self,
         network_output: MuZeroNetworkOutput,
@@ -705,11 +712,13 @@ class MuZeroAgent(BaseLearningAgent):
         pred_values = network_output.pred_values
         value_losses_per_step = []
 
-        pred_hidden_states = network_output.pred_hidden_states
-        target_hidden_states = network_output.target_hidden_states
+        pred_hidden_states_mu = network_output.pred_hidden_states_mu
+        pred_hidden_states_log_var = network_output.pred_hidden_states_log_var
+        target_hidden_states_mu = network_output.target_hidden_states_mu
+        target_hidden_states_log_var = network_output.target_hidden_states_log_var
         # loss per step?
 
-        # TODO this is returning actions, not losses, now
+        # TODO this is returning actions, not losses, now. Update
         action_pred_losses_per_step = network_output.pred_actions
 
         num_steps = policy_targets.shape[1]
@@ -742,8 +751,13 @@ class MuZeroAgent(BaseLearningAgent):
 
         # Hidden state consistency loss
         # Should this not be one per step?
-        if pred_hidden_states.numel() > 0:
-            hidden_state_loss = F.mse_loss(pred_hidden_states, target_hidden_states)
+        if pred_hidden_states_mu.numel() > 0:
+            # Using MSE on mu and log_var. KL-divergence might be better.
+            mu_loss = F.mse_loss(pred_hidden_states_mu, target_hidden_states_mu)
+            log_var_loss = F.mse_loss(
+                pred_hidden_states_log_var, target_hidden_states_log_var
+            )
+            hidden_state_loss = mu_loss + log_var_loss
         else:
             hidden_state_loss = torch.tensor(0.0, device=pred_policies.device)
 

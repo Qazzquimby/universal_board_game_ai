@@ -13,8 +13,10 @@ from models.networks import BaseTokenizingNet
 class MuZeroNetworkOutput:
     pred_policies: torch.Tensor
     pred_values: torch.Tensor
-    pred_hidden_states: torch.Tensor
-    target_hidden_states: torch.Tensor
+    pred_hidden_states_mu: torch.Tensor
+    pred_hidden_states_log_var: torch.Tensor
+    target_hidden_states_mu: torch.Tensor
+    target_hidden_states_log_var: torch.Tensor
     pred_actions: torch.Tensor
 
 
@@ -23,16 +25,11 @@ class MuZeroNetworkOutput:
 # A hidden state tensor can be used to predict a variable length list of encoded action tokens with size action_dim. These should be stored with the hidden state tensor.
 
 
-class Vae:
-    def __init__(self, mu: torch.Tensor, log_var: torch.Tensor):
-        self.mu = mu  # average value
-        self.log_var = log_var
-
-    def take_sample(self) -> torch.Tensor:
-        # std = torch.exp(0.5 * self.log_var)
-        # eps = torch.randn_like(std)
-        # return self.mu + eps * std
-        return self.mu
+def vae_take_sample(mu: torch.Tensor, log_var: torch.Tensor) -> torch.Tensor:
+    # std = torch.exp(0.5 * log_var)
+    # eps = torch.randn_like(std)
+    # return mu + eps * std
+    return mu
 
 
 class MuZeroNet(BaseTokenizingNet):
@@ -91,7 +88,9 @@ class MuZeroNet(BaseTokenizingNet):
         # A head to predict whether to stop generating actions.
         self.action_generation_stop_head = nn.Linear(embedding_dim, 1)
 
-    def get_hidden_state_vae(self, state: StateType) -> Vae:
+    def get_hidden_state_vae(
+        self, state: StateType
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Representation function (h): Encodes a batch of states into a stochastic hidden state distribution.
         """
@@ -105,11 +104,11 @@ class MuZeroNet(BaseTokenizingNet):
         game_token_output = transformer_output[:, 0, :]
         mu = self.fc_hidden_state_mu(game_token_output)
         log_var = self.fc_hidden_state_log_var(game_token_output)
-        return Vae(mu, log_var)
+        return mu, log_var
 
     def get_next_hidden_state_vae(
         self, hidden_state: torch.Tensor, action_token: torch.Tensor
-    ) -> Vae:
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Dynamics function (g): Predicts the distribution of the next hidden state
         given a current hidden state and an encoded action token.
@@ -119,7 +118,7 @@ class MuZeroNet(BaseTokenizingNet):
 
         mu = self.fc_next_hidden_state_mu(base_output)
         log_var = self.fc_next_hidden_state_log_var(base_output)
-        return Vae(mu, log_var)
+        return mu, log_var
 
     def get_actions_for_hidden_state(
         self,
@@ -285,11 +284,13 @@ class MuZeroNet(BaseTokenizingNet):
         unrolled_pred_policies = []
         unrolled_pred_values = []
         unrolled_pred_actions = []
-        unrolled_pred_dynamics_hidden_vaes = []
-        unrolled_pred_representation_hidden_vaes = []
+        unrolled_pred_dynamics_mu = []
+        unrolled_pred_dynamics_log_var = []
+        unrolled_pred_representation_mu = []
+        unrolled_pred_representation_log_var = []
 
-        hidden_state_vae = self.get_hidden_state_vae(initial_state)
-        current_hidden_state = hidden_state_vae.take_sample()
+        hidden_state_mu, hidden_state_log_var = self.get_hidden_state_vae(initial_state)
+        current_hidden_state = vae_take_sample(hidden_state_mu, hidden_state_log_var)
         assert current_hidden_state.shape[0] == batch_size
 
         for i in range(num_unroll_steps + 1):
@@ -315,29 +316,33 @@ class MuZeroNet(BaseTokenizingNet):
             unrolled_pred_values.append(pred_value)
 
             # ACTIONS
+            # todo keep actions separated by batch
             pred_actions = self.get_actions_for_hidden_state(
                 hidden_state=current_hidden_state
             )
             unrolled_pred_actions.append(pred_actions)
 
             if i < num_unroll_steps:
-                # REPRESENTATION # todo make sure these states line up, not offby1
-                pred_representation_hidden_vae = self.get_hidden_state_vae(
-                    unrolled_state[i]
-                )
-                unrolled_pred_representation_hidden_vaes.append(
-                    pred_representation_hidden_vae
-                )
+                # REPRESENTATION
+                (
+                    pred_representation_mu,
+                    pred_representation_log_var,
+                ) = self.get_hidden_state_vae(unrolled_state[i])
+                unrolled_pred_representation_mu.append(pred_representation_mu)
+                unrolled_pred_representation_log_var.append(pred_representation_log_var)
 
                 # DYNAMICS
                 action_tokens = self._actions_to_tokens(action_history[:, i].tolist())
-                # todo are the types right here? 1 hidden state but batch of actions?
-                pred_dynamics_hidden_vae = self.get_next_hidden_state_vae(
-                    current_hidden_state, action_tokens
-                )
-                unrolled_pred_dynamics_hidden_vaes.append(pred_dynamics_hidden_vae)
+                (
+                    pred_dynamics_mu,
+                    pred_dynamics_log_var,
+                ) = self.get_next_hidden_state_vae(current_hidden_state, action_tokens)
+                unrolled_pred_dynamics_mu.append(pred_dynamics_mu)
+                unrolled_pred_dynamics_log_var.append(pred_dynamics_log_var)
 
-                current_hidden_state = pred_dynamics_hidden_vae.take_sample()
+                current_hidden_state = vae_take_sample(
+                    pred_dynamics_mu, pred_dynamics_log_var
+                )
 
         # Collate and return all predictions.
         max_actions = max(
@@ -352,28 +357,31 @@ class MuZeroNet(BaseTokenizingNet):
         pred_values = torch.stack(unrolled_pred_values, dim=1)
 
         if num_unroll_steps > 0:
-            # Todo rather than use a vae class per vae, vae should be a long tensor that's split, or two tensors, and a method to take a sample from it.
-            pred_representation_hidden_vaes = torch.stack(
-                unrolled_pred_representation_hidden_vaes, dim=1
+            pred_representation_mu = torch.stack(unrolled_pred_representation_mu, dim=1)
+            pred_representation_log_var = torch.stack(
+                unrolled_pred_representation_log_var, dim=1
             )
-            pred_dynamics_hidden_vaes = torch.stack(
-                unrolled_pred_dynamics_hidden_vaes, dim=1
-            )
+            pred_dynamics_mu = torch.stack(unrolled_pred_dynamics_mu, dim=1)
+            pred_dynamics_log_var = torch.stack(unrolled_pred_dynamics_log_var, dim=1)
         else:
-            pred_representation_hidden_vaes = torch.empty(
+            empty_hidden_state_part = torch.empty(
                 batch_size, 0, current_hidden_state.shape[-1], device=self.get_device()
             )
-            pred_dynamics_hidden_vaes = torch.empty(
-                batch_size, 0, current_hidden_state.shape[-1], device=self.get_device()
-            )
+            pred_representation_mu = empty_hidden_state_part
+            pred_representation_log_var = empty_hidden_state_part
+            pred_dynamics_mu = empty_hidden_state_part
+            pred_dynamics_log_var = empty_hidden_state_part
 
+        # todo figure out how to collate pred actions.
         pred_actions = torch.stack(unrolled_pred_actions)
 
         return MuZeroNetworkOutput(
             pred_policies=pred_policies,
             pred_values=pred_values,
-            pred_hidden_states=pred_dynamics_hidden_vaes,
-            target_hidden_states=pred_representation_hidden_vaes,
+            pred_hidden_states_mu=pred_dynamics_mu,
+            pred_hidden_states_log_var=pred_dynamics_log_var,
+            target_hidden_states_mu=pred_representation_mu,
+            target_hidden_states_log_var=pred_representation_log_var,
             pred_actions=pred_actions,
         )
 
