@@ -717,11 +717,14 @@ class MuZeroAgent(BaseLearningAgent):
         candidate_actions: List[List[List[ActionType]]],
     ):
         """Calculates the MuZero loss over an unrolled trajectory."""
-        pred_policies = network_output.pred_policies
-        policy_losses_per_step = []
 
-        pred_values = network_output.pred_values
-        value_losses_per_step = []
+        policy_losses_tensor = self._calculate_policy_loss(
+            pred_policies=network_output.pred_policies, policy_targets=policy_targets
+        )
+
+        value_losses_tensor = self._calculate_value_loss(
+            pred_values=network_output.pred_values, value_targets=value_targets
+        )
 
         pred_hidden_states_mu = network_output.pred_hidden_states_mu
         pred_hidden_states_log_var = network_output.pred_hidden_states_log_var
@@ -733,29 +736,8 @@ class MuZeroAgent(BaseLearningAgent):
             target_actions=candidate_actions,
         )
 
-        num_steps = policy_targets.shape[1]
-        for i in range(num_steps):
-            step_value_preds = pred_values[:, i]
-            step_value_targets = value_targets[:, i]
-            value_loss = F.mse_loss(step_value_preds, step_value_targets)
-            if i > 0:
-                value_loss = 0.5 * value_loss  # scale down unrolled losses # if i > 0
-            value_losses_per_step.append(value_loss)
-
-            # Policy loss (Cross-Entropy)
-            step_policy_logits = pred_policies[:, i, :]
-            step_policy_targets = policy_targets[:, i, :]
-            log_probs = F.log_softmax(step_policy_logits, dim=1)
-            difference = step_policy_targets * log_probs
-            difference = torch.nan_to_num(difference, nan=0.0)
-            policy_loss = -torch.sum(difference, dim=1).mean()
-            if i > 0:
-                policy_loss = 0.5 * policy_loss  # scale down unrolled losses
-            policy_losses_per_step.append(policy_loss)
-
-        value_losses_tensor = torch.stack(value_losses_per_step)
-        policy_losses_tensor = torch.stack(policy_losses_per_step)
         total_value_loss = torch.sum(value_losses_tensor)
+
         total_policy_loss = torch.sum(policy_losses_tensor)
 
         # Hidden state consistency loss
@@ -768,7 +750,9 @@ class MuZeroAgent(BaseLearningAgent):
             )
             hidden_state_loss = mu_loss + log_var_loss
         else:
-            hidden_state_loss = torch.tensor(0.0, device=pred_policies.device)
+            hidden_state_loss = torch.tensor(
+                0.0, device=network_output.pred_policies.device
+            )
 
         total_loss = (
             total_value_loss
@@ -786,6 +770,43 @@ class MuZeroAgent(BaseLearningAgent):
             hidden_state_loss=hidden_state_loss,
             total_action_pred_loss=total_action_pred_loss,
         )
+
+    def _calculate_value_loss(self, pred_values, value_targets):
+        num_steps = pred_values.shape[1]
+        assert value_targets.shape[1] == num_steps
+
+        value_losses_per_step = []
+
+        for i in range(num_steps):
+            step_value_preds = pred_values[:, i]
+            step_value_targets = value_targets[:, i]
+
+            value_loss = F.mse_loss(step_value_preds, step_value_targets)
+            if i > 0:
+                value_loss = 0.5 * value_loss  # scale down unrolled losses # if i > 0
+            value_losses_per_step.append(value_loss)
+        value_losses_tensor = torch.stack(value_losses_per_step)
+
+        return value_losses_tensor
+
+    def _calculate_policy_loss(self, pred_policies, policy_targets):
+        num_steps = pred_policies.shape[1]
+        assert policy_targets.shape[1] == num_steps
+
+        policy_losses_per_step = []
+        for i in range(num_steps):
+            # Policy loss (Cross-Entropy)
+            step_policy_logits = pred_policies[:, i, :]
+            step_policy_targets = policy_targets[:, i, :]
+            log_probs = F.log_softmax(step_policy_logits, dim=1)
+            difference = step_policy_targets * log_probs
+            difference = torch.nan_to_num(difference, nan=0.0)
+            policy_loss = -torch.sum(difference, dim=1).mean()
+            if i > 0:
+                policy_loss = 0.5 * policy_loss  # scale down unrolled losses
+            policy_losses_per_step.append(policy_loss)
+        policy_losses_tensor = torch.stack(policy_losses_per_step)
+        return policy_losses_tensor
 
 
 def make_pure_muzero(
