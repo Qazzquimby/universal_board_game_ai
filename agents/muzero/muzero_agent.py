@@ -641,10 +641,10 @@ class MuZeroAgent(BaseLearningAgent):
                     self.optimizer.zero_grad()
 
                 network_output: MuZeroNetworkOutput = self.network(
-                    state_batch=batch_data.batched_state,
-                    action_history_batch=action_batch,
-                    legal_actions_batch=batch_data.candidate_actions,
-                    target_states_batch=batch_data.target_states_batch,
+                    initial_state=batch_data.batched_state,
+                    action_history=action_batch,
+                    legal_actions=batch_data.candidate_actions,
+                    unrolled_state=batch_data.target_states_batch,
                 )
                 loss_statistics = self._calculate_loss(
                     network_output=network_output,
