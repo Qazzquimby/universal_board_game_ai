@@ -260,8 +260,8 @@ class MuZeroExpansion(ExpansionStrategy):
             ]
         else:  # If internal node, generate actions from hidden state
             node.action_tokens = self.network.get_actions_for_hidden_state(
-                node.hidden_state
-            )
+                node.hidden_state.unsqueeze(0)
+            )[0]
             if not node.action_tokens:
                 node.is_expanded = True
                 return
@@ -671,6 +671,7 @@ class MuZeroAgent(BaseLearningAgent):
                     network_output=network_output,
                     policy_targets=policy_targets_batch,
                     value_targets=value_targets_batch,
+                    candidate_actions=batch_data.candidate_actions,
                 )
 
                 if is_training:
@@ -698,12 +699,22 @@ class MuZeroAgent(BaseLearningAgent):
             mse=total_value_mse / num_batches,
         )
 
+    def _calculate_action_prediction_loss(
+        self,
+        predicted_actions: List[List[List[torch.Tensor]]],
+        target_actions: List[List[List[ActionType]]],
+    ) -> torch.Tensor:
+        # todo compare predicted actions to target actions
+        # order doesn't matter
+        return torch.tensor(0.0, device=self.network.get_device())
+
     # todo split into helper functions per loss type and join at the bottom of this function
     def _calculate_loss(
         self,
         network_output: MuZeroNetworkOutput,
         policy_targets: torch.Tensor,
         value_targets: torch.Tensor,
+        candidate_actions: List[List[List[ActionType]]],
     ):
         """Calculates the MuZero loss over an unrolled trajectory."""
         pred_policies = network_output.pred_policies
@@ -716,10 +727,11 @@ class MuZeroAgent(BaseLearningAgent):
         pred_hidden_states_log_var = network_output.pred_hidden_states_log_var
         target_hidden_states_mu = network_output.target_hidden_states_mu
         target_hidden_states_log_var = network_output.target_hidden_states_log_var
-        # loss per step?
 
-        # TODO this is returning actions, not losses, now. Update
-        action_pred_losses_per_step = network_output.pred_actions
+        total_action_pred_loss = self._calculate_action_prediction_loss(
+            predicted_actions=network_output.pred_actions,
+            target_actions=candidate_actions,
+        )
 
         num_steps = policy_targets.shape[1]
         for i in range(num_steps):
@@ -740,9 +752,6 @@ class MuZeroAgent(BaseLearningAgent):
             if i > 0:
                 policy_loss = 0.5 * policy_loss  # scale down unrolled losses
             policy_losses_per_step.append(policy_loss)
-            #
-
-            # TODO: Do we need VAE KL-divergence loss, or will policy+value loss handle it downstream?
 
         value_losses_tensor = torch.stack(value_losses_per_step)
         policy_losses_tensor = torch.stack(policy_losses_per_step)
@@ -760,8 +769,6 @@ class MuZeroAgent(BaseLearningAgent):
             hidden_state_loss = mu_loss + log_var_loss
         else:
             hidden_state_loss = torch.tensor(0.0, device=pred_policies.device)
-
-        total_action_pred_loss = torch.sum(action_pred_losses_per_step)
 
         total_loss = (
             total_value_loss

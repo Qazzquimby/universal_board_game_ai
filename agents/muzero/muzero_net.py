@@ -17,7 +17,7 @@ class MuZeroNetworkOutput:
     pred_hidden_states_log_var: torch.Tensor
     target_hidden_states_mu: torch.Tensor
     target_hidden_states_log_var: torch.Tensor
-    pred_actions: torch.Tensor
+    pred_actions: List[List[List[torch.Tensor]]]
 
 
 # Don't delete
@@ -124,11 +124,18 @@ class MuZeroNet(BaseTokenizingNet):
         self,
         hidden_state: torch.Tensor,
         max_actions: int = 10,
-    ) -> List[torch.Tensor]:
+    ) -> List[List[torch.Tensor]]:
         """
-        Generates a list of candidate encoded actions from a hidden state.
+        Generates lists of candidate encoded actions from a batch of hidden states.
         """
-        action_tokens = []
+        batch_size = hidden_state.shape[0]
+        # A list of lists to hold the generated action token sequences for each batch item.
+        batched_action_tokens = [[] for _ in range(batch_size)]
+        # A mask to track which sequences in the batch are still being generated.
+        active_mask = torch.ones(
+            batch_size, dtype=torch.bool, device=hidden_state.device
+        )
+
         # Use eval mode for generation to disable dropout etc.
         self.eval()
         with torch.no_grad():
@@ -136,24 +143,35 @@ class MuZeroNet(BaseTokenizingNet):
             h = self.hidden_to_lstm_h(hidden_state)
             c = self.hidden_to_lstm_c(hidden_state)
 
-            # Start with the learnable start-of-action token
-            input_token_emb = self.start_action_token
+            # Start with the learnable start-of-action token, expanded for the batch.
+            input_token_emb = self.start_action_token.expand(batch_size, -1)
 
             for _ in range(max_actions):
+                if not active_mask.any():
+                    break  # All sequences have stopped.
+
                 h, c = self.action_decoder_lstm(input_token_emb, (h, c))
 
-                stop_logit = self.action_generation_stop_head(h)
-                if torch.sigmoid(stop_logit) > 0.5:
-                    break
+                stop_logits = self.action_generation_stop_head(h).squeeze(-1)
+                # Sequences that should stop are those that are active and meet the stop condition.
+                should_stop = (torch.sigmoid(stop_logits) > 0.5) & active_mask
 
-                # Generate the next action token
-                next_action_token = self.action_generation_head(h)
-                action_tokens.append(next_action_token)
+                # Generate the next action token for all sequences in the batch.
+                next_action_tokens = self.action_generation_head(h)
 
-                # The generated token is the input for the next step
-                input_token_emb = next_action_token
+                # For sequences that are still active and not stopping, append the new token.
+                for i in range(batch_size):
+                    if active_mask[i] and not should_stop[i]:
+                        batched_action_tokens[i].append(
+                            next_action_tokens[i].unsqueeze(0)
+                        )
 
-        return action_tokens
+                # Update the active mask: turn off sequences that just stopped.
+                active_mask &= ~should_stop
+
+                # The generated token is the input for the next step.
+                input_token_emb = next_action_tokens
+        return batched_action_tokens
 
     def _get_policy_scores(
         self, hidden_states: torch.Tensor, action_tokens: torch.Tensor
@@ -316,7 +334,6 @@ class MuZeroNet(BaseTokenizingNet):
             unrolled_pred_values.append(pred_value)
 
             # ACTIONS
-            # todo keep actions separated by batch
             pred_actions = self.get_actions_for_hidden_state(
                 hidden_state=current_hidden_state
             )
@@ -372,9 +389,6 @@ class MuZeroNet(BaseTokenizingNet):
             pred_dynamics_mu = empty_hidden_state_part
             pred_dynamics_log_var = empty_hidden_state_part
 
-        # todo figure out how to collate pred actions.
-        pred_actions = torch.stack(unrolled_pred_actions)
-
         return MuZeroNetworkOutput(
             pred_policies=pred_policies,
             pred_values=pred_values,
@@ -382,7 +396,7 @@ class MuZeroNet(BaseTokenizingNet):
             pred_hidden_states_log_var=pred_dynamics_log_var,
             target_hidden_states_mu=pred_representation_mu,
             target_hidden_states_log_var=pred_representation_log_var,
-            pred_actions=pred_actions,
+            pred_actions=unrolled_pred_actions,
         )
 
     def init_zero(self):
