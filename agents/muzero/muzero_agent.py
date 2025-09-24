@@ -170,7 +170,22 @@ def muzero_collate_fn(batch):
         list(value_target_seqs), batch_first=True, padding_value=0.0
     )
 
-    # The 'legal_actions' part of the tuple in the base training loop will be our actions_batch.
+    batch_size = policy_targets_batch.shape[0]
+    assert (
+        value_targets_batch.shape[0]
+        == actions_batch.shape[0]
+        == len(candidate_actions_seqs)
+        == batch_size
+    )
+
+    future_unroll_length = len(target_states_batch)
+    assert actions_batch.shape[1] == future_unroll_length
+    assert (
+        policy_targets_batch.shape[1]
+        == value_targets_batch.shape[1]
+        == future_unroll_length + 1
+    )
+
     return MuZeroCollation(
         batched_state=batched_state,
         policy_targets=policy_targets_batch,
