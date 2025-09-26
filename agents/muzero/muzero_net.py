@@ -13,10 +13,10 @@ from models.networks import BaseTokenizingNet
 class MuZeroNetworkOutput:
     pred_policies: torch.Tensor
     pred_values: torch.Tensor
-    pred_hidden_states_mu: torch.Tensor
-    pred_hidden_states_log_var: torch.Tensor
-    target_hidden_states_mu: torch.Tensor
-    target_hidden_states_log_var: torch.Tensor
+    pred_dynamics_mu: torch.Tensor
+    pred_dynamics_log_var: torch.Tensor
+    target_representation_mu: torch.Tensor
+    target_representation_log_var: torch.Tensor
     pred_actions: List[List[List[torch.Tensor]]]
 
 
@@ -392,10 +392,10 @@ class MuZeroNet(BaseTokenizingNet):
         return MuZeroNetworkOutput(
             pred_policies=pred_policies,
             pred_values=pred_values,
-            pred_hidden_states_mu=pred_dynamics_mu,
-            pred_hidden_states_log_var=pred_dynamics_log_var,
-            target_hidden_states_mu=pred_representation_mu,
-            target_hidden_states_log_var=pred_representation_log_var,
+            pred_dynamics_mu=pred_dynamics_mu,
+            pred_dynamics_log_var=pred_dynamics_log_var,
+            target_representation_mu=pred_representation_mu,
+            target_representation_log_var=pred_representation_log_var,
             pred_actions=unrolled_pred_actions,
         )
 

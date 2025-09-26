@@ -15,7 +15,7 @@ import random
 from typing import Optional, List, Tuple, Dict, Union
 from collections import defaultdict, deque
 from dataclasses import dataclass
-
+from geomloss import SamplesLoss
 import torch
 from torch import nn, optim
 import torch.nn.functional as F
@@ -25,7 +25,6 @@ from tqdm import tqdm
 
 from agents.base_learning_agent import (
     BaseLearningAgent,
-    LossStatistics,
     _get_batched_state,
     EpochMetrics,
     GameHistoryStep,
@@ -433,9 +432,11 @@ class MuZeroLossStatistics:
     total_policy_loss: torch.Tensor
     policy_losses_per_step: torch.Tensor
 
-    hidden_state_loss: torch.Tensor
+    total_hidden_state_loss: torch.Tensor
+    hidden_state_losses_per_step: torch.Tensor
 
     total_action_pred_loss: torch.Tensor
+    action_pred_losses_per_step: torch.Tensor
 
 
 class MuZeroAgent(BaseLearningAgent):
@@ -701,14 +702,28 @@ class MuZeroAgent(BaseLearningAgent):
 
     def _calculate_action_prediction_loss(
         self,
-        predicted_actions: List[List[List[torch.Tensor]]],
+        pred_actions: List[List[List[torch.Tensor]]],
         target_actions: List[List[List[ActionType]]],
     ) -> torch.Tensor:
-        # todo compare predicted actions to target actions
-        # order doesn't matter
-        return torch.tensor(0.0, device=self.network.get_device())
+        # list-list-list
+        # batch-unrollstep-tokens
+        batch_step_tokens = []
+        for batch in target_actions:
+            step_tokens = []
+            for actions_in_step in batch:
+                tokens = self.network._actions_to_tokens(actions_in_step)
+                step_tokens.append(tokens)
+            batch_step_tokens.append(step_tokens)
+        target_tokens = batch_step_tokens
 
-    # todo split into helper functions per loss type and join at the bottom of this function
+        # todo, the length of unrollstep and length of tokens are variable
+        # but need tensors for the loss function
+        # Length of unrollstep must match in pred and target but length of tokens can vary
+        # dim and batch must also be same
+
+        loss_fn = SamplesLoss(loss="sinkhorn", p=2, blur=0.05)
+        return loss_fn(pred_actions, target_tokens)
+
     def _calculate_loss(
         self,
         network_output: MuZeroNetworkOutput,
@@ -721,57 +736,48 @@ class MuZeroAgent(BaseLearningAgent):
         policy_losses_tensor = self._calculate_policy_loss(
             pred_policies=network_output.pred_policies, policy_targets=policy_targets
         )
+        total_policy_loss = torch.sum(policy_losses_tensor)
 
         value_losses_tensor = self._calculate_value_loss(
             pred_values=network_output.pred_values, value_targets=value_targets
         )
-
-        pred_hidden_states_mu = network_output.pred_hidden_states_mu
-        pred_hidden_states_log_var = network_output.pred_hidden_states_log_var
-        target_hidden_states_mu = network_output.target_hidden_states_mu
-        target_hidden_states_log_var = network_output.target_hidden_states_log_var
-
-        total_action_pred_loss = self._calculate_action_prediction_loss(
-            predicted_actions=network_output.pred_actions,
-            target_actions=candidate_actions,
-        )
-
         total_value_loss = torch.sum(value_losses_tensor)
 
-        total_policy_loss = torch.sum(policy_losses_tensor)
+        hidden_state_losses = self._calculate_hidden_state_consistency_loss(
+            network_output=network_output
+        )
+        total_hidden_state_loss = torch.sum(hidden_state_losses)
 
-        # Hidden state consistency loss
-        # Should this not be one per step?
-        if pred_hidden_states_mu.numel() > 0:
-            # Using MSE on mu and log_var. KL-divergence might be better.
-            mu_loss = F.mse_loss(pred_hidden_states_mu, target_hidden_states_mu)
-            log_var_loss = F.mse_loss(
-                pred_hidden_states_log_var, target_hidden_states_log_var
-            )
-            hidden_state_loss = mu_loss + log_var_loss
-        else:
-            hidden_state_loss = torch.tensor(
-                0.0, device=network_output.pred_policies.device
-            )
+        action_pred_losses = self._calculate_action_prediction_loss(
+            pred_actions=network_output.pred_actions,
+            target_actions=candidate_actions,
+        )
+        total_action_pred_loss = torch.sum(action_pred_losses)
 
         total_loss = (
             total_value_loss
             + total_policy_loss
-            + hidden_state_loss
+            + total_hidden_state_loss
             + total_action_pred_loss
         )
 
         return MuZeroLossStatistics(
             batch_loss=total_loss,
+            #
             total_value_loss=total_value_loss,
             value_losses_per_step=value_losses_tensor,
+            #
             total_policy_loss=total_policy_loss,
             policy_losses_per_step=policy_losses_tensor,
-            hidden_state_loss=hidden_state_loss,
+            #
+            total_hidden_state_loss=total_hidden_state_loss,
+            hidden_state_losses_per_step=hidden_state_losses,
+            #
             total_action_pred_loss=total_action_pred_loss,
+            action_pred_losses_per_step=action_pred_losses,
         )
 
-    def _calculate_value_loss(self, pred_values, value_targets):
+    def _calculate_value_loss(self, pred_values, value_targets) -> torch.Tensor:
         num_steps = pred_values.shape[1]
         assert value_targets.shape[1] == num_steps
 
@@ -789,7 +795,7 @@ class MuZeroAgent(BaseLearningAgent):
 
         return value_losses_tensor
 
-    def _calculate_policy_loss(self, pred_policies, policy_targets):
+    def _calculate_policy_loss(self, pred_policies, policy_targets) -> torch.Tensor:
         num_steps = pred_policies.shape[1]
         assert policy_targets.shape[1] == num_steps
 
@@ -807,6 +813,30 @@ class MuZeroAgent(BaseLearningAgent):
             policy_losses_per_step.append(policy_loss)
         policy_losses_tensor = torch.stack(policy_losses_per_step)
         return policy_losses_tensor
+
+    def _calculate_hidden_state_consistency_loss(self, network_output):
+        if not network_output.pred_dynamics_mu.numel():
+            return torch.tensor(0.0, network_output.pred_policies.device)
+
+        loss = wasserstein_distance_loss(
+            mu1=network_output.pred_dynamics_mu,
+            logvar1=network_output.pred_dynamics_log_var,
+            mu2=network_output.target_representation_mu,
+            logvar2=network_output.target_representation_log_var,
+        )
+        return loss
+
+
+def wasserstein_distance_loss(
+    mu1: torch.Tensor, logvar1: torch.Tensor, mu2: torch.Tensor, logvar2: torch.Tesnor
+):
+    # W^2(p, q) = ||mu1 - mu2||^2 + ||sigma1 - sigma2||^2
+    mean_diff_squared = torch.sum((mu1 - mu2).pow(2), dim=1)
+    sigma1 = torch.exp(0.5 * logvar1)
+    sigma2 = torch.exp(0.5 * logvar2)
+    std_diff_squared = torch.sum((sigma1 - sigma2).pow(2), dim=1)
+    distance = mean_diff_squared + std_diff_squared
+    return torch.mean(distance)
 
 
 def make_pure_muzero(
