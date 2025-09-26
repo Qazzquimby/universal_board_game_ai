@@ -50,9 +50,6 @@ class TrainingReporter:
             logger.info(
                 f"  Latest Losses: Train Total={metrics.train.loss:.4f}, Val Total={metrics.val.loss:.4f}"
             )
-            logger.info(
-                f"  Latest Accs:   Train Policy={metrics.train.acc:.4f}, Val Policy={metrics.val.acc:.4f}"
-            )
         else:
             logger.info("Learning Time: Skipped (buffer too small)")
 

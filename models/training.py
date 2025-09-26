@@ -66,9 +66,6 @@ def run_training_loop(
         f"Starting {current_agent.name} training for {config.training.num_iterations} iterations...\n"
         f"({config.training.num_games_per_iteration} self-play games per iteration)"
     )
-
-    total_losses, value_losses, policy_losses = [], [], []
-
     outer_loop_iterator = range(config.training.num_iterations)
     start_time = time.time()
     reporter = TrainingReporter(config, current_agent, start_time)
@@ -90,9 +87,6 @@ def run_training_loop(
         logger.info("Running learning step...")
         metrics = current_agent.train_network()
         if metrics:
-            total_losses.append(metrics.train.loss)
-            value_losses.append(metrics.train.value_loss)
-            policy_losses.append(metrics.train.policy_loss)
             reporter.log_iteration_end(iteration=iteration, metrics=metrics)
 
         if isinstance(self_play_agent, MCTSAgent):
@@ -127,7 +121,7 @@ def run_training_loop(
         current_agent.save()
         logger.info(f"Saved checkpoint to {checkpoint_path}")
 
-    plot_losses(total_losses, value_losses, policy_losses)
+    # plot_losses(total_losses, value_losses, policy_losses)
 
     logger.info(f"\n--- {current_agent.name} Training Finished ---")
 

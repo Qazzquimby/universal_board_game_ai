@@ -450,9 +450,9 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
                 continue
 
             logger.info(
-                f"Epoch {epoch+1}/{max_epochs}: "
-                f"Train Loss={train_metrics.loss:.4f}, Val Loss={val_metrics.loss:.4f} | "
-                f"Train Acc={train_metrics.acc:.4f}, Val Acc={val_metrics.acc:.4f}"
+                f"Epoch {epoch+1}/{max_epochs}:\n"
+                f"Train Loss=\t{train_metrics}\n"
+                f"Val Loss=\t{val_metrics}"
             )
             if val_metrics.loss < best_val_loss:
                 best_val_loss = val_metrics.loss
@@ -480,7 +480,7 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
             raise ValueError("Training buffer is empty.")
 
         train_ds = self._get_dataset(self.train_replay_buffer)
-        
+
         val_buffer = self.val_replay_buffer
         if not val_buffer:
             val_buffer = self.train_replay_buffer

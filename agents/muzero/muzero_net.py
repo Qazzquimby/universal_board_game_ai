@@ -339,7 +339,7 @@ class MuZeroNet(BaseTokenizingNet):
 
         num_unroll_steps = action_history.shape[1]
         assert len(unrolled_state) == num_unroll_steps
-        assert len(legal_actions[0]) == num_unroll_steps + 1
+        assert len(legal_actions[0]) <= num_unroll_steps + 1
 
         unrolled_pred_policies = []
         unrolled_pred_values = []

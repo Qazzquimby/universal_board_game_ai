@@ -33,9 +33,9 @@ class MCTSConfig:
     num_simulations: int = MCTS_SIMULATIONS
 
 
-TRAINING_BATCH_SIZE = 1
+TRAINING_BATCH_SIZE = 256
 
-REPLAY_BUFFER_SIZE = 1
+REPLAY_BUFFER_SIZE = 512  # 10_000
 
 
 @dataclass
@@ -90,7 +90,7 @@ class MuZeroConfig(SomethingZeroConfig):
             "embedding_dim": 64,
             "num_heads": 4,
             "num_encoder_layers": 2,
-            "dropout": 0.1,
+            "dropout": 0,  # 0.1, # wasn't converging at 0.1
         }
     )
 

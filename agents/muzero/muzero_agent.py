@@ -26,7 +26,6 @@ from tqdm import tqdm
 from agents.base_learning_agent import (
     BaseLearningAgent,
     _get_batched_state,
-    EpochMetrics,
     GameHistoryStep,
 )
 from agents.muzero.muzero_net import MuZeroNet, MuZeroNetworkOutput, vae_take_sample
@@ -439,6 +438,28 @@ class MuZeroLossStatistics:
     action_pred_losses_per_step: torch.Tensor
 
 
+@dataclass
+class MuZeroEpochMetrics:
+    loss: float
+    policy_loss: float
+    value_loss: float
+    hidden_state_loss: float
+    action_pred_loss: float
+    policy_loss_by_step: List[float]
+    value_loss_by_step: List[float]
+    hidden_state_loss_by_step: List[float]
+    action_pred_loss_by_step: List[float]
+
+    def __str__(self):
+        return (
+            f"Total: {self.loss:.3f} "
+            f"- Policy: {self.policy_loss:.3f} "
+            f"- Value: {self.value_loss:.3f} "
+            f"- State: {self.hidden_state_loss:.3f} "
+            f"- Action: {self.action_pred_loss:.3f} "
+        )
+
+
 class MuZeroAgent(BaseLearningAgent):
     """Agent implementing the MuZero algorithm."""
 
@@ -644,10 +665,14 @@ class MuZeroAgent(BaseLearningAgent):
         is_training: bool,
         epoch: Optional[int] = None,
         max_epochs: Optional[int] = None,
-    ) -> Optional[EpochMetrics]:
+    ) -> Optional[MuZeroEpochMetrics]:
         """Runs a single epoch of training or validation for MuZero."""
         total_loss, total_policy_loss, total_value_loss = 0.0, 0.0, 0.0
-        total_policy_acc, total_value_mse = 0.0, 0.0
+        total_hidden_state_loss, total_action_pred_loss = 0.0, 0.0
+        policy_loss_by_step = defaultdict(float)
+        value_loss_by_step = defaultdict(float)
+        hidden_state_loss_by_step = defaultdict(float)
+        action_pred_loss_by_step = defaultdict(float)
         num_batches = 0
 
         iterator = loader
@@ -689,19 +714,45 @@ class MuZeroAgent(BaseLearningAgent):
                 total_loss += loss_statistics.batch_loss.item()
                 total_value_loss += loss_statistics.total_value_loss.item()
                 total_policy_loss += loss_statistics.total_policy_loss.item()
-                total_policy_acc += loss_statistics.policy_acc
-                total_value_mse += loss_statistics.value_mse
+                total_hidden_state_loss += (
+                    loss_statistics.total_hidden_state_loss.item()
+                )
+                total_action_pred_loss += loss_statistics.total_action_pred_loss.item()
+                for i, v in enumerate(loss_statistics.policy_losses_per_step):
+                    policy_loss_by_step[i] += v.item()
+                for i, v in enumerate(loss_statistics.value_losses_per_step):
+                    value_loss_by_step[i] += v.item()
+                for i, v in enumerate(loss_statistics.hidden_state_losses_per_step):
+                    hidden_state_loss_by_step[i] += v.item()
+                for i, v in enumerate(loss_statistics.action_pred_losses_per_step):
+                    action_pred_loss_by_step[i] += v.item()
                 num_batches += 1
 
         if num_batches == 0:
             return None
 
-        return EpochMetrics(
+        policy_loss_list = [
+            v / num_batches for _, v in sorted(policy_loss_by_step.items())
+        ]
+        value_loss_list = [
+            v / num_batches for _, v in sorted(value_loss_by_step.items())
+        ]
+        hidden_state_loss_list = [
+            v / num_batches for _, v in sorted(hidden_state_loss_by_step.items())
+        ]
+        action_pred_loss_list = [
+            v / num_batches for _, v in sorted(action_pred_loss_by_step.items())
+        ]
+        return MuZeroEpochMetrics(
             loss=total_loss / num_batches,
             policy_loss=total_policy_loss / num_batches,
             value_loss=total_value_loss / num_batches,
-            acc=total_policy_acc / len(loader.dataset),
-            mse=total_value_mse / num_batches,
+            hidden_state_loss=total_hidden_state_loss / num_batches,
+            action_pred_loss=total_action_pred_loss / num_batches,
+            policy_loss_by_step=policy_loss_list,
+            value_loss_by_step=value_loss_list,
+            hidden_state_loss_by_step=hidden_state_loss_list,
+            action_pred_loss_by_step=action_pred_loss_list,
         )
 
     def _calculate_action_prediction_loss(
@@ -739,9 +790,7 @@ class MuZeroAgent(BaseLearningAgent):
                 # when one set is empty and the other isn't.
                 _pred_set = pred_set
                 if _pred_set.shape[0] == 0:
-                    _pred_set = torch.zeros(
-                        1, pred_actions.shape[-1], device=device
-                    )
+                    _pred_set = torch.zeros(1, pred_actions.shape[-1], device=device)
 
                 _target_set = target_set
                 if _target_set.shape[0] == 0:
@@ -869,12 +918,12 @@ def wasserstein_distance_loss(
     mu1: torch.Tensor, logvar1: torch.Tensor, mu2: torch.Tensor, logvar2: torch.Tensor
 ):
     # W^2(p, q) = ||mu1 - mu2||^2 + ||sigma1 - sigma2||^2
-    mean_diff_squared = torch.sum((mu1 - mu2).pow(2), dim=1)
+    mean_diff_squared = torch.sum((mu1 - mu2).pow(2), dim=2)
     sigma1 = torch.exp(0.5 * logvar1)
     sigma2 = torch.exp(0.5 * logvar2)
-    std_diff_squared = torch.sum((sigma1 - sigma2).pow(2), dim=1)
+    std_diff_squared = torch.sum((sigma1 - sigma2).pow(2), dim=2)
     distance = mean_diff_squared + std_diff_squared
-    return torch.mean(distance, dim=1)
+    return torch.mean(distance, dim=0)
 
 
 def make_pure_muzero(
