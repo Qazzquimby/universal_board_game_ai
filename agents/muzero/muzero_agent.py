@@ -733,7 +733,23 @@ class MuZeroAgent(BaseLearningAgent):
                 if pred_set.shape[0] == 0 and target_set.shape[0] == 0:
                     continue
 
-                loss = loss_fn(pred_set, target_set)
+                # geomloss' SamplesLoss crashes if one of the sets is empty.
+                # To handle this, if a set is empty, we replace it with a
+                # single zero vector. This provides a meaningful loss signal
+                # when one set is empty and the other isn't.
+                _pred_set = pred_set
+                if _pred_set.shape[0] == 0:
+                    _pred_set = torch.zeros(
+                        1, pred_actions.shape[-1], device=device
+                    )
+
+                _target_set = target_set
+                if _target_set.shape[0] == 0:
+                    _target_set = torch.zeros(
+                        1, target_actions.shape[-1], device=device
+                    )
+
+                loss = loss_fn(_pred_set, _target_set)
                 batch_step_losses.append(loss)
 
             if batch_step_losses:

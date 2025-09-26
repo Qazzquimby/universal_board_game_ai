@@ -29,20 +29,21 @@ class MuZeroNetworkOutput:
 
 
 def _pad_action_sets(
-    action_sets_b_u_a_d: List[List[List[torch.Tensor]]], embedding_dim: int, device
+    action_sets: List[List[List[torch.Tensor]]], embedding_dim: int, device
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    if not action_sets_b_u_a_d:
+    # actions are batch, step, action, dim
+    if not action_sets:
         return torch.empty(0, 0, 0, 0, device=device), torch.empty(
             0, 0, 0, dtype=torch.bool, device=device
         )
 
-    batch_size = len(action_sets_b_u_a_d)
-    num_unroll_steps = len(action_sets_b_u_a_d[0])
+    batch_size = len(action_sets)
+    num_unroll_steps = len(action_sets[0])
 
     max_actions = 0
-    for i in range(batch_size):
-        for j in range(num_unroll_steps):
-            num_actions = len(action_sets_b_u_a_d[i][j])
+    for batch_index in range(batch_size):
+        for step_index in range(num_unroll_steps):
+            num_actions = len(action_sets[batch_index][step_index])
             if num_actions > max_actions:
                 max_actions = num_actions
 
@@ -53,14 +54,14 @@ def _pad_action_sets(
         batch_size, num_unroll_steps, max_actions, dtype=torch.bool, device=device
     )
 
-    for i in range(batch_size):
-        for j in range(num_unroll_steps):
-            actions = action_sets_b_u_a_d[i][j]
+    for batch_index in range(batch_size):
+        for step_index in range(num_unroll_steps):
+            actions = action_sets[batch_index][step_index]
             if actions:
                 num_actions = len(actions)
                 action_tensor = torch.cat(actions, dim=0)
-                padded_tensor[i, j, :num_actions] = action_tensor
-                mask[i, j, :num_actions] = True
+                padded_tensor[batch_index, step_index, :num_actions] = action_tensor
+                mask[batch_index, step_index, :num_actions] = True
 
     return padded_tensor, mask
 
@@ -361,10 +362,14 @@ class MuZeroNet(BaseTokenizingNet):
             legal_actions_for_step = [
                 seq[i] if i < len(seq) else [] for seq in legal_actions
             ]
+            candidate_action_tokens_tensors = [
+                self._actions_to_tokens(actions) for actions in legal_actions_for_step
+            ]
+            # Convert to list of lists of tensors to match predicted actions structure
             candidate_action_tokens = [
-                list(self._actions_to_tokens(actions))
-                for actions in legal_actions_for_step
-            ]  # todolater avoid list of lists
+                [row.unsqueeze(0) for row in tensor]
+                for tensor in candidate_action_tokens_tensors
+            ]
             unrolled_candidate_action_tokens.append(candidate_action_tokens)
             pred_policy = self.get_policy_batched(
                 hidden_state=current_hidden_state,
