@@ -17,13 +17,52 @@ class MuZeroNetworkOutput:
     pred_dynamics_log_var: torch.Tensor
     target_representation_mu: torch.Tensor
     target_representation_log_var: torch.Tensor
-    pred_actions: List[List[List[torch.Tensor]]]
-    candidate_action_tokens: List[List[List[torch.Tensor]]]
+    pred_actions: torch.Tensor
+    pred_actions_mask: torch.Tensor
+    candidate_action_tokens: torch.Tensor
+    candidate_action_tokens_mask: torch.Tensor
 
 
 # Don't delete
 # Hidden state vae is a distribution for sampling hidden state tensors from, for stochasticity.
 # A hidden state tensor can be used to predict a variable length list of encoded action tokens with size action_dim. These should be stored with the hidden state tensor.
+
+
+def _pad_action_sets(
+    action_sets_b_u_a_d: List[List[List[torch.Tensor]]], embedding_dim: int, device
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    if not action_sets_b_u_a_d:
+        return torch.empty(0, 0, 0, 0, device=device), torch.empty(
+            0, 0, 0, dtype=torch.bool, device=device
+        )
+
+    batch_size = len(action_sets_b_u_a_d)
+    num_unroll_steps = len(action_sets_b_u_a_d[0])
+
+    max_actions = 0
+    for i in range(batch_size):
+        for j in range(num_unroll_steps):
+            num_actions = len(action_sets_b_u_a_d[i][j])
+            if num_actions > max_actions:
+                max_actions = num_actions
+
+    padded_tensor = torch.zeros(
+        batch_size, num_unroll_steps, max_actions, embedding_dim, device=device
+    )
+    mask = torch.zeros(
+        batch_size, num_unroll_steps, max_actions, dtype=torch.bool, device=device
+    )
+
+    for i in range(batch_size):
+        for j in range(num_unroll_steps):
+            actions = action_sets_b_u_a_d[i][j]
+            if actions:
+                num_actions = len(actions)
+                action_tensor = torch.cat(actions, dim=0)
+                padded_tensor[i, j, :num_actions] = action_tensor
+                mask[i, j, :num_actions] = True
+
+    return padded_tensor, mask
 
 
 def vae_take_sample(mu: torch.Tensor, log_var: torch.Tensor) -> torch.Tensor:
@@ -43,6 +82,7 @@ class MuZeroNet(BaseTokenizingNet):
         dropout: float = 0.1,
     ):
         super().__init__(env=env, embedding_dim=embedding_dim)
+        self.embedding_dim = embedding_dim
 
         # get_hidden_state (representation, h)
         encoder_layer = nn.TransformerEncoderLayer(
@@ -398,6 +438,13 @@ class MuZeroNet(BaseTokenizingNet):
             list(x) for x in zip(*unrolled_candidate_action_tokens)
         ]
 
+        pred_actions, pred_actions_mask = _pad_action_sets(
+            pred_actions_transposed, self.embedding_dim, self.get_device()
+        )
+        candidate_actions, candidate_actions_mask = _pad_action_sets(
+            candidate_action_tokens_transposed, self.embedding_dim, self.get_device()
+        )
+
         return MuZeroNetworkOutput(
             pred_policies=pred_policies,
             pred_values=pred_values,
@@ -405,8 +452,10 @@ class MuZeroNet(BaseTokenizingNet):
             pred_dynamics_log_var=pred_dynamics_log_var,
             target_representation_mu=pred_representation_mu,
             target_representation_log_var=pred_representation_log_var,
-            pred_actions=pred_actions_transposed,
-            candidate_action_tokens=candidate_action_tokens_transposed,
+            pred_actions=pred_actions,
+            pred_actions_mask=pred_actions_mask,
+            candidate_action_tokens=candidate_actions,
+            candidate_action_tokens_mask=candidate_actions_mask,
         )
 
     def init_zero(self):

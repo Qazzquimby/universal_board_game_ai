@@ -706,20 +706,43 @@ class MuZeroAgent(BaseLearningAgent):
 
     def _calculate_action_prediction_loss(
         self,
-        pred_actions: List[List[List[torch.Tensor]]],
-        target_actions: List[List[List[torch.Tensor]]],
+        pred_actions: torch.Tensor,
+        pred_actions_mask: torch.Tensor,
+        target_actions: torch.Tensor,
+        target_actions_mask: torch.Tensor,
     ) -> torch.Tensor:
-        # list-list-list
-        # batch-unrollstep-tokens
-
-        # todo, the length of unrollstep and length of tokens are variable
-        # but need tensors for the loss function
-        # Length of unrollstep must match in pred and target but length of tokens can vary
-        # dim and batch must also be same
-
         loss_fn = SamplesLoss(loss="sinkhorn", p=2, blur=0.05)
-        loss = loss_fn(pred_actions, target_actions)
-        return loss
+        step_losses = []
+        device = self.network.get_device()
+
+        if pred_actions.shape[0] == 0:
+            return torch.tensor(0.0, device=device)
+
+        batch_size, num_unroll_steps, _, _ = pred_actions.shape
+
+        for step_index in range(num_unroll_steps):
+            batch_step_losses = []
+            for batch_index in range(batch_size):
+                pred_set = pred_actions[batch_index, step_index][
+                    pred_actions_mask[batch_index, step_index]
+                ]
+                target_set = target_actions[batch_index, step_index][
+                    target_actions_mask[batch_index, step_index]
+                ]
+
+                if pred_set.shape[0] == 0 and target_set.shape[0] == 0:
+                    continue
+
+                loss = loss_fn(pred_set, target_set)
+                batch_step_losses.append(loss)
+
+            if batch_step_losses:
+                step_losses.append(torch.stack(batch_step_losses).mean())
+
+        if not step_losses:
+            return torch.tensor(0.0, device=device)
+
+        return torch.stack(step_losses)
 
     def _calculate_loss(
         self,
@@ -747,7 +770,9 @@ class MuZeroAgent(BaseLearningAgent):
 
         action_pred_losses = self._calculate_action_prediction_loss(
             pred_actions=network_output.pred_actions,
+            pred_actions_mask=network_output.pred_actions_mask,
             target_actions=network_output.candidate_action_tokens,
+            target_actions_mask=network_output.candidate_action_tokens_mask,
         )
         total_action_pred_loss = torch.sum(action_pred_losses)
 
