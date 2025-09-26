@@ -703,18 +703,10 @@ class MuZeroAgent(BaseLearningAgent):
     def _calculate_action_prediction_loss(
         self,
         pred_actions: List[List[List[torch.Tensor]]],
-        target_actions: List[List[List[ActionType]]],
+        target_actions: List[List[List[torch.Tensor]]],
     ) -> torch.Tensor:
         # list-list-list
         # batch-unrollstep-tokens
-        batch_step_tokens = []
-        for batch in target_actions:
-            step_tokens = []
-            for actions_in_step in batch:
-                tokens = self.network._actions_to_tokens(actions_in_step)
-                step_tokens.append(tokens)
-            batch_step_tokens.append(step_tokens)
-        target_tokens = batch_step_tokens
 
         # todo, the length of unrollstep and length of tokens are variable
         # but need tensors for the loss function
@@ -722,7 +714,7 @@ class MuZeroAgent(BaseLearningAgent):
         # dim and batch must also be same
 
         loss_fn = SamplesLoss(loss="sinkhorn", p=2, blur=0.05)
-        return loss_fn(pred_actions, target_tokens)
+        return loss_fn(pred_actions, target_actions)
 
     def _calculate_loss(
         self,
@@ -750,7 +742,7 @@ class MuZeroAgent(BaseLearningAgent):
 
         action_pred_losses = self._calculate_action_prediction_loss(
             pred_actions=network_output.pred_actions,
-            target_actions=candidate_actions,
+            target_actions=network_output.candidate_action_tokens,
         )
         total_action_pred_loss = torch.sum(action_pred_losses)
 
@@ -828,7 +820,7 @@ class MuZeroAgent(BaseLearningAgent):
 
 
 def wasserstein_distance_loss(
-    mu1: torch.Tensor, logvar1: torch.Tensor, mu2: torch.Tensor, logvar2: torch.Tesnor
+    mu1: torch.Tensor, logvar1: torch.Tensor, mu2: torch.Tensor, logvar2: torch.Tensor
 ):
     # W^2(p, q) = ||mu1 - mu2||^2 + ||sigma1 - sigma2||^2
     mean_diff_squared = torch.sum((mu1 - mu2).pow(2), dim=1)

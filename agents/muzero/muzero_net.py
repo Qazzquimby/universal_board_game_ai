@@ -18,6 +18,7 @@ class MuZeroNetworkOutput:
     target_representation_mu: torch.Tensor
     target_representation_log_var: torch.Tensor
     pred_actions: List[List[List[torch.Tensor]]]
+    candidate_action_tokens: List[List[List[torch.Tensor]]]
 
 
 # Don't delete
@@ -302,6 +303,7 @@ class MuZeroNet(BaseTokenizingNet):
         unrolled_pred_policies = []
         unrolled_pred_values = []
         unrolled_pred_actions = []
+        unrolled_candidate_action_tokens = []
         unrolled_pred_dynamics_mu = []
         unrolled_pred_dynamics_log_var = []
         unrolled_pred_representation_mu = []
@@ -323,6 +325,7 @@ class MuZeroNet(BaseTokenizingNet):
                 list(self._actions_to_tokens(actions))
                 for actions in legal_actions_for_step
             ]  # todolater avoid list of lists
+            unrolled_candidate_action_tokens.append(candidate_action_tokens)
             pred_policy = self.get_policy_batched(
                 hidden_state=current_hidden_state,
                 candidate_action_tokens=candidate_action_tokens,
@@ -389,6 +392,12 @@ class MuZeroNet(BaseTokenizingNet):
             pred_dynamics_mu = empty_hidden_state_part
             pred_dynamics_log_var = empty_hidden_state_part
 
+        # Transpose from step x batch to batch x step.
+        pred_actions_transposed = [list(x) for x in zip(*unrolled_pred_actions)]
+        candidate_action_tokens_transposed = [
+            list(x) for x in zip(*unrolled_candidate_action_tokens)
+        ]
+
         return MuZeroNetworkOutput(
             pred_policies=pred_policies,
             pred_values=pred_values,
@@ -396,7 +405,8 @@ class MuZeroNet(BaseTokenizingNet):
             pred_dynamics_log_var=pred_dynamics_log_var,
             target_representation_mu=pred_representation_mu,
             target_representation_log_var=pred_representation_log_var,
-            pred_actions=unrolled_pred_actions,
+            pred_actions=pred_actions_transposed,
+            candidate_action_tokens=candidate_action_tokens_transposed,
         )
 
     def init_zero(self):
