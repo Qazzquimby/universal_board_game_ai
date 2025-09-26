@@ -392,7 +392,7 @@ class MuZeroNet(BaseTokenizingNet):
             pred_dynamics_mu = empty_hidden_state_part
             pred_dynamics_log_var = empty_hidden_state_part
 
-        # Transpose from step x batch to batch x step.
+        # Transpose from step, batch to batch, step.
         pred_actions_transposed = [list(x) for x in zip(*unrolled_pred_actions)]
         candidate_action_tokens_transposed = [
             list(x) for x in zip(*unrolled_candidate_action_tokens)

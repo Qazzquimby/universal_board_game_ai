@@ -557,9 +557,13 @@ class MuZeroAgent(BaseLearningAgent):
                 transformed_state = self.network._apply_transforms(game_step.state)
                 value_target = value_targets[step_idx]
 
-                action_for_step = (
-                    game_step.action if unroll_index < num_unroll_steps else None
+                is_last_step = (unroll_index == num_unroll_steps) or (
+                    step_idx + 1 >= len(game_history)
                 )
+                if is_last_step:
+                    action_for_step = None
+                else:
+                    action_for_step = game_step.action
 
                 steps.append(
                     MuZeroTrainingStep(
@@ -600,7 +604,7 @@ class MuZeroAgent(BaseLearningAgent):
 
             if (
                 state_json is not None
-                and action is not None
+                # and action is not None # I believe this was filtering out terminal states
                 and policy_target_list is not None
                 and value_target is not None
             ):
@@ -714,7 +718,8 @@ class MuZeroAgent(BaseLearningAgent):
         # dim and batch must also be same
 
         loss_fn = SamplesLoss(loss="sinkhorn", p=2, blur=0.05)
-        return loss_fn(pred_actions, target_actions)
+        loss = loss_fn(pred_actions, target_actions)
+        return loss
 
     def _calculate_loss(
         self,
@@ -828,7 +833,7 @@ def wasserstein_distance_loss(
     sigma2 = torch.exp(0.5 * logvar2)
     std_diff_squared = torch.sum((sigma1 - sigma2).pow(2), dim=1)
     distance = mean_diff_squared + std_diff_squared
-    return torch.mean(distance)
+    return torch.mean(distance, dim=1)
 
 
 def make_pure_muzero(
