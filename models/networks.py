@@ -79,19 +79,16 @@ class BaseTokenizingNet(nn.Module):
         if not has_data:
             return torch.empty(1, 0, self.embedding_dim, device=device)
 
-        token_sequences, batch_size = self._batched_state_to_tokens(batched_state)
-
-        if not token_sequences:
-            return torch.empty(1, 0, self.embedding_dim, device=device)
+        token_sequences = self._batched_state_to_tokens(batched_state, batch_size=1)
 
         return token_sequences[0].unsqueeze(0)  # (1, num_tokens, dim)
 
     def _batched_state_to_tokens(
-        self, state_batch: Dict[str, DataFrame]
-    ) -> Tuple[List[torch.Tensor], int]:
+        self, state_batch: Dict[str, DataFrame], batch_size: int
+    ) -> List[torch.Tensor]:
         """
         Converts a batch of game states (represented as a dictionary of batched DataFrames)
-        into a list of token sequences and the batch size.
+        into a list of token sequences.
         """
         device = self.get_device()
         all_tokens = []
@@ -103,7 +100,7 @@ class BaseTokenizingNet(nn.Module):
                 continue
 
             columns = table_spec["columns"]
-            num_rows = len(df._data)
+            num_rows = df.height
             table_token_embeddings = torch.zeros(
                 num_rows, self.embedding_dim, device=device
             )
@@ -124,27 +121,21 @@ class BaseTokenizingNet(nn.Module):
                 torch.tensor(df["batch_idx"], dtype=torch.long, device=device)
             )
 
-        batch_size = 0
-        if all_batch_indices:
-            batch_indices_tensor = torch.cat(all_batch_indices, dim=0)
-            if batch_indices_tensor.numel() > 0:
-                batch_size = int(batch_indices_tensor.max().item() + 1)
-        else:
-            return [], 0
-
-        token_sequences = []
-        if all_tokens:
-            token_tensor = torch.cat(all_tokens, dim=0)
-            for i in range(batch_size):
-                mask = batch_indices_tensor == i
-                token_sequences.append(token_tensor[mask])
-        else:
-            token_sequences = [
+        if not all_tokens:
+            return [
                 torch.empty(0, self.embedding_dim, device=device)
                 for _ in range(batch_size)
             ]
 
-        return token_sequences, batch_size
+        token_tensor = torch.cat(all_tokens, dim=0)
+        batch_indices_tensor = torch.cat(all_batch_indices, dim=0)
+
+        token_sequences = []
+        for i in range(batch_size):
+            mask = batch_indices_tensor == i
+            token_sequences.append(token_tensor[mask])
+
+        return token_sequences
 
     def _actions_to_tokens(self, actions: List[ActionType]) -> torch.Tensor:
         """Converts a batch of actions into embedding tokens."""

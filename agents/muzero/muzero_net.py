@@ -131,14 +131,13 @@ class MuZeroNet(BaseTokenizingNet):
         self.action_generation_stop_head = nn.Linear(embedding_dim, 1)
 
     def get_hidden_state_vae(
-        self, state: StateType
+        self, state: StateType, batch_size: int
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Representation function (h): Encodes a batch of states into a stochastic hidden state distribution.
         """
-        tokens = self._state_to_tokens(state)
+        tokens = self._batched_state_to_tokens(state, batch_size=batch_size)
 
-        batch_size = tokens.shape[0]
         game_token = self.game_token.expand(batch_size, -1, -1)
         sequence = torch.cat([game_token, tokens], dim=1)
 
@@ -350,7 +349,9 @@ class MuZeroNet(BaseTokenizingNet):
         unrolled_pred_representation_mu = []
         unrolled_pred_representation_log_var = []
 
-        hidden_state_mu, hidden_state_log_var = self.get_hidden_state_vae(initial_state)
+        hidden_state_mu, hidden_state_log_var = self.get_hidden_state_vae(
+            initial_state, batch_size=batch_size
+        )
         current_hidden_state = vae_take_sample(hidden_state_mu, hidden_state_log_var)
         assert current_hidden_state.shape[0] == batch_size
 
@@ -392,7 +393,7 @@ class MuZeroNet(BaseTokenizingNet):
                 (
                     pred_representation_mu,
                     pred_representation_log_var,
-                ) = self.get_hidden_state_vae(unrolled_state[i])
+                ) = self.get_hidden_state_vae(unrolled_state[i], batch_size=batch_size)
                 unrolled_pred_representation_mu.append(pred_representation_mu)
                 unrolled_pred_representation_log_var.append(pred_representation_log_var)
 
