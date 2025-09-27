@@ -131,17 +131,26 @@ class MuZeroNet(BaseTokenizingNet):
         self.action_generation_stop_head = nn.Linear(embedding_dim, 1)
 
     def get_hidden_state_vae(
-        self, state: StateType, batch_size: int
+        self, state: StateType, batch_size: int = 1
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Representation function (h): Encodes a batch of states into a stochastic hidden state distribution.
         """
-        tokens = self._batched_state_to_tokens(state, batch_size=batch_size)
+        padded_tokens, padding_mask = self._batched_state_to_tokens(
+            state, batch_size=batch_size
+        )
 
         game_token = self.game_token.expand(batch_size, -1, -1)
-        sequence = torch.cat([game_token, tokens], dim=1)
+        sequence = torch.cat([game_token, padded_tokens], dim=1)
 
-        transformer_output = self.transformer_encoder(sequence)
+        game_token_mask = torch.zeros(
+            batch_size, 1, dtype=torch.bool, device=padded_tokens.device
+        )
+        full_padding_mask = torch.cat([game_token_mask, padding_mask], dim=1)
+
+        transformer_output = self.transformer_encoder(
+            sequence, src_key_padding_mask=full_padding_mask
+        )
         game_token_output = transformer_output[:, 0, :]
         mu = self.fc_hidden_state_mu(game_token_output)
         log_var = self.fc_hidden_state_log_var(game_token_output)
@@ -181,8 +190,8 @@ class MuZeroNet(BaseTokenizingNet):
         self.eval()
         with torch.no_grad():
             # Project hidden state to initial LSTM state
-            h = self.hidden_to_lstm_h(hidden_state)
-            c = self.hidden_to_lstm_c(hidden_state)
+            h = self.hidden_to_lstm_h(hidden_state).squeeze(dim=1)
+            c = self.hidden_to_lstm_c(hidden_state).squeeze(dim=1)
 
             # Start with the learnable start-of-action token, expanded for the batch.
             input_token_emb = self.start_action_token.expand(batch_size, -1)
@@ -296,16 +305,11 @@ class MuZeroNet(BaseTokenizingNet):
 
         return scores, num_actions_per_item
 
-    def get_policy_and_value(
+    def get_policy(
         self, hidden_state: torch.Tensor, legal_action_tokens: List[torch.Tensor]
-    ) -> Tuple[Dict[int, float], float]:
-        """
-        Prediction function (f): Predicts policy and value from a hidden state
-        and a list of candidate encoded actions.
-        """
+    ) -> Dict[int, float]:
         candidate_action_tokens_batch = [legal_action_tokens]
 
-        # POLICY
         pred_policy = self.get_policy_batched(
             hidden_state=hidden_state,
             candidate_action_tokens=candidate_action_tokens_batch,
@@ -319,11 +323,12 @@ class MuZeroNet(BaseTokenizingNet):
             # Policy dict maps action index to probability
             policy_dict = {i: prob.item() for i, prob in enumerate(policy_probs)}
 
-        # VALUE
+        return policy_dict
+
+    def get_value(self, hidden_state: torch.Tensor) -> float:
         pred_value = self.get_value_batched(hidden_state_batch=hidden_state)
         value = pred_value.squeeze().cpu().item()
-
-        return policy_dict, value
+        return value
 
     def forward(
         self,

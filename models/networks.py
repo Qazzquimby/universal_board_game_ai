@@ -79,16 +79,18 @@ class BaseTokenizingNet(nn.Module):
         if not has_data:
             return torch.empty(1, 0, self.embedding_dim, device=device)
 
-        token_sequences = self._batched_state_to_tokens(batched_state, batch_size=1)
+        token_sequences, token_mask = self._batched_state_to_tokens(
+            batched_state, batch_size=1
+        )
 
         return token_sequences[0].unsqueeze(0)  # (1, num_tokens, dim)
 
     def _batched_state_to_tokens(
         self, state_batch: Dict[str, DataFrame], batch_size: int
-    ) -> List[torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Converts a batch of game states (represented as a dictionary of batched DataFrames)
-        into a list of token sequences.
+        padding tokens, mask
         """
         device = self.get_device()
         all_tokens = []
@@ -117,15 +119,17 @@ class BaseTokenizingNet(nn.Module):
                 table_token_embeddings += self.embedding_layers[col_name](values_tensor)
 
             all_tokens.append(table_token_embeddings)
-            all_batch_indices.append(
-                torch.tensor(df["batch_idx"], dtype=torch.long, device=device)
-            )
+            if batch_size > 1:
+                all_batch_indices.append(
+                    torch.tensor(df["batch_idx"], dtype=torch.long, device=device)
+                )
+            else:
+                all_batch_indices.append(
+                    torch.ones(df.height, dtype=torch.long, device=device)
+                )
 
         if not all_tokens:
-            return [
-                torch.empty(0, self.embedding_dim, device=device)
-                for _ in range(batch_size)
-            ]
+            pass  # TODO handle escape return
 
         token_tensor = torch.cat(all_tokens, dim=0)
         batch_indices_tensor = torch.cat(all_batch_indices, dim=0)
@@ -135,7 +139,19 @@ class BaseTokenizingNet(nn.Module):
             mask = batch_indices_tensor == i
             token_sequences.append(token_tensor[mask])
 
-        return token_sequences
+        padded_tokens = nn.utils.rnn.pad_sequence(
+            token_sequences, batch_first=True, padding_value=0.0
+        )
+        # batch_size, max_token_len, embedding_dim
+
+        original_lengths = [len(t) for t in token_sequences]
+        max_len = padded_tokens.size(1)
+        padding_mask = (
+            torch.arange(max_len, device=padded_tokens.device)[None, :]
+            >= torch.tensor(original_lengths, device=padded_tokens.device)[:, None]
+        )
+
+        return padded_tokens, padding_mask
 
     def _actions_to_tokens(self, actions: List[ActionType]) -> torch.Tensor:
         """Converts a batch of actions into embedding tokens."""

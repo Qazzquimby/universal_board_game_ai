@@ -264,8 +264,8 @@ class MuZeroExpansion(ExpansionStrategy):
                 node.is_expanded = True
                 return
 
-        policy_dict, _ = self.network.get_policy_and_value(
-            node.hidden_state, node.action_tokens
+        policy_dict = self.network.get_policy(
+            hidden_state=node.hidden_state, legal_action_tokens=node.action_tokens
         )
 
         for action_idx, prior in policy_dict.items():
@@ -290,7 +290,7 @@ class MuZeroEvaluation(EvaluationStrategy):
                 return env.get_reward_for_player(player=env.get_current_player())
             return 0.0
 
-        _, value = self.network.get_policy_and_value(node.hidden_state, [])
+        value = self.network.get_value(hidden_state=node.hidden_state)
         return float(value)
 
 
@@ -697,7 +697,7 @@ class MuZeroAgent(BaseLearningAgent):
                     legal_actions=batch_data.candidate_actions,
                     unrolled_state=batch_data.target_states_batch,
                 )
-                loss_statistics = self._calculate_loss(
+                loss_statistics: MuZeroLossStatistics = self._calculate_loss(
                     network_output=network_output,
                     policy_targets=policy_targets_batch,
                     value_targets=value_targets_batch,
@@ -781,24 +781,16 @@ class MuZeroAgent(BaseLearningAgent):
                     target_actions_mask[batch_index, step_index]
                 ]
 
-                if pred_set.shape[0] == 0 and target_set.shape[0] == 0:
+                if target_set.shape[0] == 0:
+                    # no actions exist, means state is terminal, and we wouldn't ask it to generate actions anyway
                     continue
 
                 # geomloss' SamplesLoss crashes if one of the sets is empty.
-                # To handle this, if a set is empty, we replace it with a
-                # single zero vector. This provides a meaningful loss signal
-                # when one set is empty and the other isn't.
                 _pred_set = pred_set
                 if _pred_set.shape[0] == 0:
                     _pred_set = torch.zeros(1, pred_actions.shape[-1], device=device)
 
-                _target_set = target_set
-                if _target_set.shape[0] == 0:
-                    _target_set = torch.zeros(
-                        1, target_actions.shape[-1], device=device
-                    )
-
-                loss = loss_fn(_pred_set, _target_set)
+                loss = loss_fn(_pred_set, target_set)
                 batch_step_losses.append(loss)
 
             if batch_step_losses:
@@ -875,8 +867,6 @@ class MuZeroAgent(BaseLearningAgent):
             step_value_targets = value_targets[:, i]
 
             value_loss = F.mse_loss(step_value_preds, step_value_targets)
-            if i > 0:
-                value_loss = 0.5 * value_loss  # scale down unrolled losses # if i > 0
             value_losses_per_step.append(value_loss)
         value_losses_tensor = torch.stack(value_losses_per_step)
 
@@ -895,8 +885,6 @@ class MuZeroAgent(BaseLearningAgent):
             difference = step_policy_targets * log_probs
             difference = torch.nan_to_num(difference, nan=0.0)
             policy_loss = -torch.sum(difference, dim=1).mean()
-            if i > 0:
-                policy_loss = 0.5 * policy_loss  # scale down unrolled losses
             policy_losses_per_step.append(policy_loss)
         policy_losses_tensor = torch.stack(policy_losses_per_step)
         return policy_losses_tensor

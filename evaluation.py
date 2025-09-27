@@ -3,6 +3,7 @@ from statistics import mean
 from typing import Dict, Optional
 
 from tqdm import tqdm
+from wandb.errors import CommError
 
 from core.agent_interface import Agent
 from core.config import AppConfig
@@ -98,7 +99,10 @@ def run_test_games(
 
     profiler = GameProfiler()
 
-    config.init_wandb()
+    try:
+        config.init_wandb()
+    except CommError:
+        pass
 
     with tqdm(total=num_games, desc=f"{agent0_name} vs {agent1_name}") as pbar:
         for i in range(num_games):
@@ -148,7 +152,10 @@ def run_test_games(
         log_results[f"{agent1_name} avg seconds"] = mean(profiler.agent1_times)
 
     if config.wandb.enabled:
-        wandb.log(log_results)
+        try:
+            wandb.log(log_results)
+        except wandb.Error:
+            pass
 
     print(f"--- Results after {num_games} games ({agent0_name} vs {agent1_name}) ---")
     for key, value in log_results.items():
