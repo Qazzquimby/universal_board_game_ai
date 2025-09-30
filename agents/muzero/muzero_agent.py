@@ -810,20 +810,23 @@ class MuZeroAgent(BaseLearningAgent):
     ):
         """Calculates the MuZero loss over an unrolled trajectory."""
 
-        policy_losses_tensor = self._calculate_policy_loss(
+        policy_losses = self._calculate_policy_loss(
             pred_policies=network_output.pred_policies, policy_targets=policy_targets
         )
-        total_policy_loss = torch.sum(policy_losses_tensor)
+        scaled_policy_losses = scale_loss_by_step(policy_losses)
+        total_policy_loss = torch.sum(scaled_policy_losses)
 
-        value_losses_tensor = self._calculate_value_loss(
+        value_losses = self._calculate_value_loss(
             pred_values=network_output.pred_values, value_targets=value_targets
         )
-        total_value_loss = torch.sum(value_losses_tensor)
+        scaled_value_loss = scale_loss_by_step(value_losses)
+        total_value_loss = torch.sum(scaled_value_loss)
 
         hidden_state_losses = self._calculate_hidden_state_consistency_loss(
             network_output=network_output
         )
-        total_hidden_state_loss = torch.sum(hidden_state_losses)
+        scaled_hidden_state_loss = scale_loss_by_step(hidden_state_losses)
+        total_hidden_state_loss = torch.sum(scaled_hidden_state_loss)
 
         action_pred_losses = self._calculate_action_prediction_loss(
             pred_actions=network_output.pred_actions,
@@ -831,7 +834,8 @@ class MuZeroAgent(BaseLearningAgent):
             target_actions=network_output.candidate_action_tokens,
             target_actions_mask=network_output.candidate_action_tokens_mask,
         )
-        total_action_pred_loss = torch.sum(action_pred_losses)
+        scaled_action_pred_loss = scale_loss_by_step(action_pred_losses)
+        total_action_pred_loss = torch.sum(scaled_action_pred_loss)
 
         total_loss = (
             total_value_loss
@@ -844,10 +848,10 @@ class MuZeroAgent(BaseLearningAgent):
             batch_loss=total_loss,
             #
             total_value_loss=total_value_loss,
-            value_losses_per_step=value_losses_tensor,
+            value_losses_per_step=value_losses,
             #
             total_policy_loss=total_policy_loss,
-            policy_losses_per_step=policy_losses_tensor,
+            policy_losses_per_step=policy_losses,
             #
             total_hidden_state_loss=total_hidden_state_loss,
             hidden_state_losses_per_step=hidden_state_losses,
@@ -900,6 +904,14 @@ class MuZeroAgent(BaseLearningAgent):
             logvar2=network_output.target_representation_log_var,
         )
         return loss
+
+
+def scale_loss_by_step(loss: torch.Tensor, discount: float = 0.8):
+    scales = discount ** torch.arange(
+        0, loss.size(0), dtype=loss.dtype, device=loss.device
+    )
+    scaled = loss * scales
+    return scaled
 
 
 def wasserstein_distance_loss(
