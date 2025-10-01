@@ -306,6 +306,11 @@ class Hero(GameEntity):
         return f"<Hero {self.name}|p{self.player_owner_id}|hp:{self.health}>"
 
 
+# todo
+# start_of_turn = Selector(
+#     "when start of my turn",
+
+
 im_targeted = Selector(
     "when owner is target",
     lambda owner, event_target: event_target is owner,
@@ -371,6 +376,94 @@ class Axe(Hero):
             self.env.damage(actor=self, target=target, amount=1)
 
         self.after(target, self.env.end_of_turn, take_1_damage)
+
+
+class Lina(Hero):
+    def __init__(self, env: TTTF_1, name: str, player_owner_id: int):
+        super().__init__(
+            env=env,
+            name=name,
+            player_owner_id=player_owner_id,
+            max_health=6,
+        )
+        self.fiery_soul_charges = 0
+
+    @action(default=True, targeter=target_any_living_hero)
+    def lina_attack(self, target: Hero):
+        self.env.damage(
+            actor=self,
+            target=target,
+            amount=1 + self.fiery_soul_charges,
+            is_default_ability=True,
+            # hmm, dumb to repeat is_default_ability on every event, when the function is tagged default
+        )
+
+    @action(default=True, targeter=target_any_living_hero)
+    def dragon_slave(self, target: Hero):
+        self.env.damage(
+            actor=self,
+            target=target,
+            amount=1 + self.fiery_soul_charges,
+        )
+        # 1/game
+        # target gets dot token
+        # self.fiery_soul_charges += 1 # todo probably a gain token event
+
+    @action(targeter=target_any_living_hero)
+    def light_strike_array(self, target: Hero):
+        self.env.damage(
+            actor=self,
+            target=target,
+            amount=2 + self.fiery_soul_charges,
+        )
+        # 1/game
+        # "tap one of their abilities" - prevent using basic abilities till next turn?
+        # self.fiery_soul_charges += 1 # todo probably a gain token event
+
+    @action(targeter=target_any_living_hero)
+    def laguna_blade(self, target: Hero):
+        self.env.damage(
+            actor=self,
+            target=target,
+            amount=3 * self.fiery_soul_charges,
+        )
+        # 1/game
+        # self.fiery_soul_charges = 2 # todo...
+
+
+class Necrophos(Hero):
+    def __init__(self, env: TTTF_1, name: str, player_owner_id: int):
+        super().__init__(
+            env=env,
+            name=name,
+            player_owner_id=player_owner_id,
+            max_health=8,
+        )
+        # start of turn, enemies take irreducible 1 + kill counters // 2, and you heal killcounters
+        # on kill, if they had 4 or more health ,gain a kill counter
+
+    @action(default=True, targeter=target_any_living_hero)
+    def necrophos_attack(self, target: Hero):
+        pass
+
+        # enemies take 1 damage
+        # you and allies hael 1
+
+    # Ghost Shroud
+    # 1/Game, Instant +3
+    # Until the end of your next turn:
+    #   You cannot be affected by default abilities.
+    #   You deal +100% healing.
+    #   You receive +1 damage.
+    # Death Seeker
+    # 1/Game
+    # Teleport to a space adjacent to an enemy in range 3.
+    # Use a default ability.
+    # Reaper's Scythe
+    # 1/Game
+    # Range 3, immobilize.
+    # At the start of your next turn, deal irreducible damage the target equal to their missing health.
+    # On kill, gain 2 additional Kill counters.
 
 
 if __name__ == "__main__":
