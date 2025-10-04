@@ -2,9 +2,9 @@ import inspect
 import math
 import random
 from dataclasses import dataclass
-from typing import List, Tuple, Optional, Protocol, Callable
+from typing import List, Optional, Protocol, Callable
 
-from environments.base import (
+from environments.old_base import (
     BaseEnvironment,
     GameEntity,
     Selector,
