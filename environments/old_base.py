@@ -56,6 +56,48 @@ class Selector:
         self.event_attr = event_attr
         self.event_props = event_props or {}
 
+    def _resolve_event_prop(self, event, prop):
+        # 1) direct attribute on the event
+        if hasattr(event, prop):
+            return getattr(event, prop)
+
+        # 2) dotted path resolution
+        if "." in prop:
+            obj = event
+            parts = prop.split(".")
+            for part in parts:
+                obj = getattr(obj, part, None)
+                if obj is None:
+                    break
+            return obj
+
+        # 3) derived aliases (extendable in one place)
+        if prop == "is_default_ability":
+            cause = getattr(event, "cause", None)
+            action = getattr(cause, "action", None) if cause else None
+            return bool(action and getattr(action, "cause.action.is_default", False))
+
+        if prop == "action_name":
+            cause = getattr(event, "cause", None)
+            action = getattr(cause, "action", None) if cause else None
+            return action.__name__ if action else None
+
+        if prop == "source_actor":
+            cause = getattr(event, "cause", None)
+            return getattr(cause, "actor", None) if cause else None
+
+        return None
+
+    def matches(self, owner, event) -> bool:
+        target_obj = getattr(event, self.event_attr, None)
+        if not self.filter_func(owner, target_obj):
+            return False
+
+        for prop, expected in self.event_props.items():
+            if self._resolve_event_prop(event, prop) != expected:
+                return False
+        return True
+
     def matches(self, owner: Any, event: Any) -> bool:
         """Checks if a given instance matches the selector's criteria."""
         target_obj = getattr(event, self.event_attr, None)
@@ -443,7 +485,7 @@ class BaseEnvironment(abc.ABC):
 
         def action_caller(*args, **kwargs) -> None:
             event = event_dataclass(*args, **kwargs)
-            event._cause = self.current_action_cause()
+            event.cause = self.current_action_cause()
             self.event_stack.append((name, event))
             if not self.is_processing:
                 self.execute_event_stack()

@@ -28,9 +28,9 @@ def action(default=False, targeter: Callable[["Hero", "TTTF_1"], List["Hero"]] =
     """
 
     def decorator(func):
-        func._is_default = default
-        func._is_action = True
-        func._targeter = targeter
+        func.is_default = default
+        func.is_action = True
+        func.targeter = targeter
         return func
 
     return decorator
@@ -320,7 +320,9 @@ im_targeted_by_default_ability = Selector(
     "when owner is target of default ability",
     lambda owner, event_target: event_target is owner,
     event_attr="target",
-    event_props={"is_default_ability": True},  # todo get from context _cause action
+    event_props={
+        "cause.action.is_default": True
+    },  # todo get from context _cause action
 )
 
 
