@@ -48,7 +48,6 @@ class DamageEvent:
     actor: "Hero"
     target: "Hero"
     amount: int
-    is_default_ability: bool = False
 
     def resolve(self):
         self.target.health -= self.amount
@@ -71,7 +70,6 @@ class DamageProto(Protocol):
         actor: "Hero",
         target: "Hero",
         amount: int,
-        is_default_ability: bool = False,
     ) -> None:
         ...
 
@@ -152,7 +150,8 @@ class TTTF_1(BaseEnvironment):
         target_hero = self.heroes[target_id]
 
         action_method = getattr(acting_hero, action_name, None)
-        action_method(target_hero)
+        with self.action_context(actor=acting_hero, action=action_method):
+            action_method(target_hero)
         self.end_of_turn(actor=acting_hero)
         self._check_for_winner()
 
@@ -321,7 +320,7 @@ im_targeted_by_default_ability = Selector(
     "when owner is target of default ability",
     lambda owner, event_target: event_target is owner,
     event_attr="target",
-    event_props={"is_default_ability": True},
+    event_props={"is_default_ability": True},  # todo get from context _cause action
 )
 
 
@@ -365,7 +364,7 @@ class Axe(Hero):
 
     @action(default=True, targeter=target_any_living_hero)
     def axe_attack(self, target: Hero):
-        self.env.damage(actor=self, target=target, amount=2, is_default_ability=True)
+        self.env.damage(actor=self, target=target, amount=2)
 
     @action(targeter=target_any_living_hero)
     def battle_hunger(self, target: Hero):
@@ -394,11 +393,9 @@ class Lina(Hero):
             actor=self,
             target=target,
             amount=1 + self.fiery_soul_charges,
-            is_default_ability=True,
-            # hmm, dumb to repeat is_default_ability on every event, when the function is tagged default
         )
 
-    @action(default=True, targeter=target_any_living_hero)
+    @action(targeter=target_any_living_hero)
     def dragon_slave(self, target: Hero):
         self.env.damage(
             actor=self,

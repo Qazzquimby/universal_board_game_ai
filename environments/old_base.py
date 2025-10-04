@@ -16,10 +16,14 @@ from typing import (
     Generic,
     Iterable,
 )
+from contextlib import contextmanager
 
 from pydantic import BaseModel, model_validator, ConfigDict, PrivateAttr, Field
 
-# TODO this was designed for automatic model generation, which is being tabled for now.
+# IMPORTANT
+# This is meant to be a very easy to use, extensible, game scripting engine.
+# Naively making an engine more powerful tends to make it increasingly harder to write.
+# All changes must focus on scalability. Try very hard to avoid giving the scripter more work.
 
 ActionType = TypeVar("ActionType")
 StateType = Dict[str, Any]
@@ -27,6 +31,14 @@ StateType = Dict[str, Any]
 
 EventT = TypeVar("EventT")
 TriggerTiming = Literal["before", "after", "modify", "replace"]
+
+
+@dataclass(frozen=True)
+class ActionCause:
+    actor: Any
+    action: Callable[
+        ["GameEntity"], None
+    ]  # specifically something wrapped by the action decorator
 
 
 class Selector:
@@ -391,6 +403,7 @@ class BaseEnvironment(abc.ABC):
 
         self.entities: dict[str, "GameEntity"] = {}
         self.action_resolvers: dict[str, Callable[[Any], None]] = {}
+        self._action_context_stack: list[ActionCause] = []
         self.triggered_abilities: defaultdict[
             str, list[TriggeredAbility]
         ] = defaultdict(list)
@@ -430,6 +443,7 @@ class BaseEnvironment(abc.ABC):
 
         def action_caller(*args, **kwargs) -> None:
             event = event_dataclass(*args, **kwargs)
+            event._cause = self.current_action_cause()
             self.event_stack.append((name, event))
             if not self.is_processing:
                 self.execute_event_stack()
@@ -527,6 +541,25 @@ class BaseEnvironment(abc.ABC):
             if match:
                 matching_hooks.append(triggered_ability)
         return matching_hooks
+
+    def current_action_cause(self) -> Optional[ActionCause]:
+        if self._action_context_stack:
+            return self._action_context_stack[-1]
+        else:
+            return None
+
+    @contextmanager
+    def action_context(self, *, actor: Any, action: Callable[["GameEntity"], None]):
+        self._action_context_stack.append(
+            ActionCause(
+                actor=actor,
+                action=action,
+            )
+        )
+        try:
+            yield
+        finally:
+            self._action_context_stack.pop()
 
     @abc.abstractmethod
     def map_action_to_policy_index(self, action: ActionType) -> Optional[int]:
