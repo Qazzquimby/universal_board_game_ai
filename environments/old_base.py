@@ -98,18 +98,6 @@ class Selector:
                 return False
         return True
 
-    def matches(self, owner: Any, event: Any) -> bool:
-        """Checks if a given instance matches the selector's criteria."""
-        target_obj = getattr(event, self.event_attr, None)
-        if not self.filter_func(owner, target_obj):
-            return False
-
-        for prop, value in self.event_props.items():
-            if getattr(event, prop, None) != value:
-                return False
-
-        return True
-
 
 @dataclass
 class TriggeredAbility:

@@ -19,6 +19,19 @@ def halve(number: int):
     return int(math.ceil(number / 2))
 
 
+# Todo, want to handle things like
+#  "usable 3x per game" or "cooldown 1 turn" or "only usable on round 4+" or "only usable when you have 4 or less health"
+#  These are action-level, not tracked on the hero with the action. People can procedurally gain actions so they must be self contained.
+#  Actions can have multiple of these. Must be composable.
+#  Might overlap with action-prevention from other sources.
+#  Like an opponent could have "adjacent units cannot use non-default abilities" which should use the event system.
+
+# todo abilities can be tapped and untap at end of turn if not tapped that turn. Tapped abilities can't be used
+
+# todo "tap one of target unit's abilities" means abilities themselves need to be possible selection targets.
+#   An ability could also ask you to choose a number, or a space within range, or something
+
+
 def action(default=False, targeter: Callable[["Hero", "TTTF_1"], List["Hero"]] = None):
     """
     Decorator to mark a method as an action and provide a targeter function.
@@ -54,9 +67,16 @@ class DamageEvent:
 
 
 @dataclass
-class EndOfTurnEvent:
-    """Event that fires at the end of a hero's turn."""
+class StartOfTurnEvent:
+    actor: "Hero"  # The hero whose turn is starting
 
+    def resolve(self):
+        # This event is just a trigger, doesn't need to do anything on its own.
+        pass
+
+
+@dataclass
+class EndOfTurnEvent:
     actor: "Hero"  # The hero whose turn is ending
 
     def resolve(self):
@@ -71,6 +91,11 @@ class DamageProto(Protocol):
         target: "Hero",
         amount: int,
     ) -> None:
+        ...
+
+
+class StartOfTurnProto(Protocol):
+    def __call__(self, actor: "Hero") -> None:
         ...
 
 
@@ -105,6 +130,9 @@ class TTTF_1(BaseEnvironment):
         self.winner: Optional[int] = None
 
         self.damage: DamageProto = self.define_action("damage", DamageEvent)
+        self.start_of_turn: StartOfTurnProto = self.define_action(
+            "start_of_turn", StartOfTurnEvent
+        )
         self.end_of_turn: EndOfTurnProto = self.define_action(
             "end_of_turn", EndOfTurnEvent
         )
@@ -145,7 +173,16 @@ class TTTF_1(BaseEnvironment):
         acting_hero = self.heroes[self.turn_order_ids[self.current_turn_index]]
         acting_player_id = acting_hero.player_owner_id
 
+        self.start_of_turn(actor=acting_hero)
+        # todo in future not all actions will end the turn.
+
         # todo make this more generalizable targeting logic.
+        # - Goal: avoid hardcoding single-target tuple (action_name, target_id).
+        # - Minimal plan (no big engine rewrite):
+        #   - Standardize ActionType for this env to a small dict: {"name": str, "args": dict}. For single-target actions, args={"target_id": int}. This scales to multi-target later without changing step signature.
+        #   - Let @action keep its targeter returning actual entity instances. In Hero.get_legal_actions, convert instances to ids and return dict-shaped actions.
+        #   - In _step, resolve args by name (no positional coupling).
+        # - Why this scales: scripters define targeters and methods; environment stays generic; multi-arg actions are just more keys in args.
         action_name, target_id = action
         target_hero = self.heroes[target_id]
 
@@ -197,7 +234,9 @@ class TTTF_1(BaseEnvironment):
     def get_legal_actions(self) -> List[ActionType]:
         assert not self.done
 
-        # todo pass turn should always be a legal action
+        # todo pass turn should always be a legal action in tttf
+        # - Add a no-target action named "pass" exposed via Hero.get_legal_actions.
+        # - Implement pass by just calling end_of_turn(actor=acting_hero) and skipping action resolution.
 
         acting_hero = self.heroes[self.turn_order_ids[self.current_turn_index]]
         return acting_hero.get_legal_actions()
@@ -273,7 +312,7 @@ class Hero(GameEntity):
         # Discover methods decorated with @action
         self.actions = {}
         for name, method in inspect.getmembers(self, predicate=inspect.ismethod):
-            if hasattr(method, "_is_action"):
+            if hasattr(method, "is_action"):
                 self.actions[name] = method
 
     def get_legal_actions(self) -> List[ActionType]:
@@ -285,7 +324,7 @@ class Hero(GameEntity):
         hero_to_id = {hero: i for i, hero in enumerate(self.env.heroes)}
 
         for action_name, method in self.actions.items():
-            targeter = getattr(method, "_targeter", None)
+            targeter = getattr(method, "targeter", None)
             if not targeter:
                 # Action has no targets, e.g. a self-buff
                 # legal_actions.append((action_name, None)) # Not supported yet
@@ -406,7 +445,13 @@ class Lina(Hero):
         )
         # 1/game
         # target gets dot token
-        # self.fiery_soul_charges += 1 # todo probably a gain token event
+        # self.fiery_soul_charges += 1
+        # todo probably a gain token event
+        #  - Keep it simple and data-driven to serialize well:
+        #   - Add a generic TokenEvent and env.gain_token/action defined via define_action("gain_token", TokenEvent) with fields: actor, target, token_name, amount.
+        #   - Heroes hold tokens in a dict self.tokens: dict[str, int] with helpers add_token/remove_token/get.
+        #   - Abilities call env.gain_token(actor=self, target=self, token_name="fiery_soul", amount=1).
+        #  - This lets other abilities or passives trigger on token changes via the same event system, and serializes cleanly.
 
     @action(targeter=target_any_living_hero)
     def light_strike_array(self, target: Hero):
