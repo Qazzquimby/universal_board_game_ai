@@ -1,6 +1,4 @@
-from dataclasses import dataclass
-from dataclasses import dataclass
-from typing import List, Dict, Union, Tuple
+from typing import List, Union, Tuple
 import time
 
 import numpy as np
@@ -15,7 +13,6 @@ from environments.base import BaseEnvironment, DataFrame
 from agents.alphazero.alphazero_agent import AlphaZeroAgent, make_pure_az
 from agents.muzero.muzero_agent import make_pure_muzero, MuZeroAgent
 from factories import get_environment
-from utils.plotting import plot_losses
 from utils.training_reporter import TrainingReporter, BenchmarkResults
 
 
@@ -47,16 +44,12 @@ def run_training_loop(
     mcts_agent = make_pure_mcts(num_simulations=config.mcts.num_simulations)
     mcts_agent.name = "mcts"
     mcts_agent.model_name = "mcts"
-    has_checkpoint = current_agent.load()
-
-    if has_checkpoint:
-        logger.info(
-            f"Checkpoint found, starting with {current_agent.name} for self-play."
-        )
-        self_play_agent = current_agent
-    else:
-        logger.info("No checkpoint, starting with pure MCTS for self-play.")
-        self_play_agent = mcts_agent
+    self_play_agent, start_iteration = get_self_play_agent_and_start_iteration(
+        env=env,
+        model_type=model_type,
+        current_agent=current_agent,
+        base_agent=mcts_agent,
+    )
 
     self_play_agent.temperature = 0.15
 
@@ -67,8 +60,8 @@ def run_training_loop(
     logger.info(
         f"Starting {current_agent.name} training for {config.training.num_iterations} iterations...\n"
         f"({config.training.num_games_per_iteration} self-play games per iteration)"
-    )  # todo when continuing this doesn't start iteration at the previous iteration
-    outer_loop_iterator = range(config.training.num_iterations)
+    )
+    outer_loop_iterator = range(start_iteration, config.training.num_iterations)
     start_time = time.time()
     reporter = TrainingReporter(config, current_agent, start_time)
 
@@ -128,6 +121,48 @@ def run_training_loop(
     logger.info(f"\n--- {current_agent.name} Training Finished ---")
 
     reporter.finish()
+
+
+def get_self_play_agent_and_start_iteration(env, model_type, current_agent, base_agent):
+    start_iteration = 0
+    env_name = type(env).__name__.lower()
+    model_dir = DATA_DIR / env_name / "models"
+    latest_model_path = None
+    latest_iter = -1
+
+    # Check for versioned models first
+    if model_dir.exists():
+        for f in model_dir.glob(f"{model_type}_iter_*_net.pth"):
+            try:
+                # e.g. alphazero_iter_005_net.pth -> 5
+                iter_num_str = f.stem.split("_iter_")[1].split("_net")[0]
+                iter_num = int(iter_num_str)
+                if iter_num > latest_iter:
+                    latest_iter = iter_num
+                    latest_model_path = f
+            except (ValueError, IndexError):
+                continue
+
+    if latest_model_path:
+        logger.info(
+            f"Resuming from iteration {latest_iter + 1}. Loading {latest_model_path.name}"
+        )
+        has_checkpoint = current_agent.load(latest_model_path)
+        start_iteration = latest_iter + 1
+    else:
+        # Fallback to loading default model name if no versioned models found
+        has_checkpoint = current_agent.load()
+
+    if has_checkpoint:
+        logger.info(
+            f"Checkpoint found, starting with {current_agent.name} for self-play."
+        )
+        self_play_agent = current_agent
+    else:
+        logger.info("No checkpoint, starting with pure MCTS for self-play.")
+        self_play_agent = base_agent
+
+    return self_play_agent, start_iteration
 
 
 def run_self_play(
