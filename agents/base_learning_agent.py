@@ -15,7 +15,6 @@ import numpy as np
 from loguru import logger
 
 from agents.mcts_agent import BaseMCTSAgent
-from core.serialization import LOG_DIR
 from environments.base import BaseEnvironment, StateType, ActionType, DataFrame
 from algorithms.mcts import (
     SelectionStrategy,
@@ -301,12 +300,13 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
         replay buffers.
         """
         loaded_games = 0
-        if not LOG_DIR.exists():
-            logger.info("Log directory not found. Starting with empty buffers.")
+        log_dir = DATA_DIR / env_name / "game_logs"
+        if not log_dir.exists():
+            logger.info(f"Log directory '{log_dir}' not found. Starting with empty buffers.")
             return
 
-        logger.info(f"Scanning {LOG_DIR} for existing '{env_name}' game logs...")
-        log_files = sorted(LOG_DIR.glob(f"{env_name}_game*.json"), reverse=True)
+        logger.info(f"Scanning {log_dir} for existing '{env_name}' game logs...")
+        log_files = sorted(log_dir.glob("**/*.json"), reverse=True)
 
         if not log_files:
             logger.info("No existing game logs found for this environment.")
@@ -501,10 +501,12 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
         return train_loader, val_loader
 
     def _get_save_path(self) -> Path:
-        return DATA_DIR / f"{self.model_name}_net_{type(self.env).__name__}.pth"
+        env_name = type(self.env).__name__.lower()
+        return DATA_DIR / env_name / "models" / f"{self.model_name}_net.pth"
 
     def _get_optimizer_save_path(self) -> Path:
-        return DATA_DIR / f"{self.model_name}_optimizer_{type(self.env).__name__}.pth"
+        env_name = type(self.env).__name__.lower()
+        return DATA_DIR / env_name / "models" / f"{self.model_name}_optimizer.pth"
 
     def save(self, filepath: Optional[Path] = None):
         """Saves network and optimizer state."""

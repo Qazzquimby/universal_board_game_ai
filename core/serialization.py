@@ -8,8 +8,6 @@ from loguru import logger
 from core.config import DATA_DIR
 from environments.base import StateType, ActionType
 
-LOG_DIR = DATA_DIR / "game_logs"
-
 
 def _default_serializer(obj):
     """JSON serializer for objects not serializable by default json code"""
@@ -30,13 +28,15 @@ def save_game_log(
     iteration: int,
     game_index: int,
     env_name: str,
+    model_name: str,
 ):
     """Saves the processed game history to a JSON file."""
     try:
-        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        log_dir = DATA_DIR / env_name / "game_logs" / model_name
+        log_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        filename = f"{env_name}_game_{timestamp}_{game_index:04d}.json"
-        filepath = LOG_DIR / filename
+        filename = f"game_{timestamp}_{game_index:04d}.json"
+        filepath = log_dir / filename
 
         # Prepare data for JSON
         serializable_log = []

@@ -344,11 +344,6 @@ class Hero(GameEntity):
         return f"<Hero {self.name}|p{self.player_owner_id}|hp:{self.health}>"
 
 
-# todo
-# start_of_turn = Selector(
-#     "when start of my turn",
-
-
 im_targeted = Selector(
     "when owner is target",
     lambda owner, event_target: event_target is owner,

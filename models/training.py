@@ -45,6 +45,8 @@ def run_training_loop(
         raise ValueError(f"Unknown model type: {model_type}")
 
     mcts_agent = make_pure_mcts(num_simulations=config.mcts.num_simulations)
+    mcts_agent.name = "mcts"
+    mcts_agent.model_name = "mcts"
     has_checkpoint = current_agent.load()
 
     if has_checkpoint:
@@ -73,7 +75,11 @@ def run_training_loop(
     for iteration in outer_loop_iterator:
         reporter.log_iteration_start(iteration)
 
-        logger.info(f"Running self-play with '{type(self_play_agent).__name__}'...")
+        if isinstance(current_agent, BaseLearningAgent):
+            current_agent.model_name = f"{model_type}_iter_{iteration:03d}"
+            current_agent.name = current_agent.model_name.capitalize()
+
+        logger.info(f"Running self-play with '{self_play_agent.name}'...")
         all_experiences_iteration = run_self_play(
             agent=self_play_agent, env=env, config=config
         )
@@ -82,6 +88,7 @@ def run_training_loop(
             all_experiences_iteration=all_experiences_iteration,
             agent=current_agent,
             config=config,
+            model_name=self_play_agent.model_name,
         )
 
         logger.info("Running learning step...")
@@ -113,13 +120,8 @@ def run_training_loop(
         else:
             self_play_agent = current_agent
 
-        checkpoint_path = (
-            DATA_DIR
-            / f"{current_agent.model_name}_net_{config.env.name}_iter_{iteration + 1}.pth"
-        )
-        current_agent.save(checkpoint_path)
         current_agent.save()
-        logger.info(f"Saved checkpoint to {checkpoint_path}")
+        logger.info(f"Saved checkpoint for iteration {iteration + 1}")
 
     # plot_losses(total_losses, value_losses, policy_losses)
 
@@ -221,6 +223,7 @@ def check_if_agent_outperforms_mcts(
         all_experiences_iteration=tournament_experiences,
         agent=current_agent,
         config=config,
+        model_name=current_agent.model_name,
     )
     return eval_results
 
@@ -230,6 +233,7 @@ def add_results_to_buffer(
     all_experiences_iteration: list,
     agent: BaseLearningAgent,
     config: AppConfig,
+    model_name: str,
 ):
     total_experiences_added = 0
     total_games_processed = 0
@@ -254,6 +258,7 @@ def add_results_to_buffer(
             iteration=iteration + 1,
             game_index=current_game_log_index,
             env_name=config.env.name,
+            model_name=model_name,
         )
         total_games_processed += 1
 
