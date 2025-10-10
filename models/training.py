@@ -73,15 +73,12 @@ def run_training_loop(
             current_agent.name = current_agent.model_name.capitalize()
 
         logger.info(f"Running self-play with '{self_play_agent.name}'...")
-        all_experiences_iteration = run_self_play(
-            agent=self_play_agent, env=env, config=config
-        )
-        add_results_to_buffer(
-            iteration=iteration,
-            all_experiences_iteration=all_experiences_iteration,
-            agent=current_agent,
+        run_self_play(
+            learning_agent=current_agent,
+            self_play_agent=self_play_agent,
+            env=env,
             config=config,
-            model_name=self_play_agent.model_name,
+            iteration=iteration,
         )
 
         logger.info("Running learning step...")
@@ -166,37 +163,43 @@ def get_self_play_agent_and_start_iteration(env, model_type, current_agent, base
 
 
 def run_self_play(
-    agent: Union[AlphaZeroAgent, MuZeroAgent, MCTSAgent],
+    learning_agent: BaseLearningAgent,
+    self_play_agent: Union[AlphaZeroAgent, MuZeroAgent, MCTSAgent],
     env: BaseEnvironment,
     config: AppConfig,
-) -> List[Tuple[List[GameHistoryStep], float]]:
+    iteration: int,
+):
     logger.info("Running self play")
-    if hasattr(agent, "network") and agent.network:
-        agent.network.eval()
+    if hasattr(self_play_agent, "network") and self_play_agent.network:
+        self_play_agent.network.eval()
 
     num_games_total = config.training.num_games_per_iteration
-    all_experiences_iteration = []
+    game_log_index_offset = iteration * config.training.num_games_per_iteration
+    total_experiences_added = 0
+    total_games_processed = 0
 
-    for _ in tqdm(range(num_games_total), desc="Self-Play Games"):
+    for game_num in tqdm(range(num_games_total), desc="Self-Play Games"):
         game_env = env.copy()
         state_with_key = game_env.reset()
         game_history = []
-        agent.reset_game()
+        self_play_agent.reset_game()
 
         while not state_with_key.done:
             state = state_with_key.state
             legal_actions = game_env.get_legal_actions()
-            action = agent.act(game_env, train=True)
+            action = self_play_agent.act(game_env, train=True)
 
-            if isinstance(agent, AlphaZeroAgent) or isinstance(agent, MuZeroAgent):
-                policy_target = agent.get_policy_target(legal_actions)
-            elif isinstance(agent, MCTSAgent):
+            if isinstance(self_play_agent, AlphaZeroAgent) or isinstance(
+                self_play_agent, MuZeroAgent
+            ):
+                policy_target = self_play_agent.get_policy_target(legal_actions)
+            elif isinstance(self_play_agent, MCTSAgent):
                 policy_target = np.zeros(len(legal_actions), dtype=np.float32)
-                if not agent.root:
+                if not self_play_agent.root:
                     raise RuntimeError("MCTSAgent has no root after act()")
                 action_visits = {
                     edge_action: edge.num_visits
-                    for edge_action, edge in agent.root.edges.items()
+                    for edge_action, edge in self_play_agent.root.edges.items()
                 }
                 total_visits = sum(action_visits.values())
                 if total_visits > 0:
@@ -208,7 +211,9 @@ def run_self_play(
                         act_key = tuple(act) if isinstance(act, list) else act
                         policy_target[i] = visit_probs.get(act_key, 0.0)
             else:
-                raise TypeError(f"Unsupported agent type for self-play: {type(agent)}")
+                raise TypeError(
+                    f"Unsupported agent type for self-play: {type(self_play_agent)}"
+                )
 
             state_with_actions = state.copy()
             if legal_actions:
@@ -233,8 +238,31 @@ def run_self_play(
             state_with_key = action_result.next_state_with_key
 
         final_outcome = game_env.get_reward_for_player(player=0)
-        all_experiences_iteration.append((game_history, final_outcome))
-    return all_experiences_iteration
+
+        if not game_history:
+            logger.warning(f"Skipping game {game_num} with empty raw history.")
+            continue
+
+        episode_result = learning_agent.process_finished_episode(
+            game_history, final_outcome
+        )
+
+        learning_agent.add_experiences_to_buffer(episode_result.buffer_experiences)
+        total_experiences_added += len(episode_result.buffer_experiences)
+
+        current_game_log_index = game_log_index_offset + total_games_processed + 1
+        save_game_log(
+            logged_history=episode_result.logged_history,
+            iteration=iteration + 1,
+            game_index=current_game_log_index,
+            env_name=config.env.name,
+            model_name=self_play_agent.model_name,
+        )
+        total_games_processed += 1
+
+    logger.info(
+        f"Processed {total_games_processed} games, adding {total_experiences_added} experiences to replay buffer."
+    )
 
 
 def check_if_agent_outperforms_mcts(
