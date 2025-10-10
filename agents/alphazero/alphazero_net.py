@@ -99,7 +99,9 @@ class AlphaZeroNet(BaseTokenizingNet):
         legal actions for a state in the batch.
         """
         device = self.get_device()
-        token_sequences, batch_size = self._batched_state_to_tokens(state_batch)
+        token_sequences, batch_size = self._batched_state_to_tokens(
+            state_batch=state_batch, batch_size=len(legal_actions)
+        )
 
         if batch_size == 0:
             batch_size = len(legal_actions)
