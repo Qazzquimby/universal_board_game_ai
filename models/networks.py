@@ -79,13 +79,33 @@ class BaseTokenizingNet(nn.Module):
         if not has_data:
             return torch.empty(1, 0, self.embedding_dim, device=device)
 
-        token_sequences, token_mask = self._batched_state_to_tokens(
+        token_sequences, token_mask = self._batched_state_to_tokens_and_mask(
             batched_state, batch_size=1
         )
 
         return token_sequences[0].unsqueeze(0)  # (1, num_tokens, dim)
 
-    def _batched_state_to_tokens(
+    def _get_transformer_output(
+        self, state: StateType, batch_size: int = 1
+    ) -> torch.Tensor:
+        padded_tokens, padding_mask = self._batched_state_to_tokens_and_mask(
+            state, batch_size=batch_size
+        )
+
+        game_token = self.game_token.expand(batch_size, -1, -1)
+        sequence = torch.cat([game_token, padded_tokens], dim=1)
+
+        game_token_mask = torch.zeros(
+            batch_size, 1, dtype=torch.bool, device=padded_tokens.device
+        )
+        full_padding_mask = torch.cat([game_token_mask, padding_mask], dim=1)
+
+        transformer_output = self.transformer_encoder(
+            sequence, src_key_padding_mask=full_padding_mask
+        )
+        return transformer_output
+
+    def _batched_state_to_tokens_and_mask(
         self, state_batch: Dict[str, DataFrame], batch_size: int
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """

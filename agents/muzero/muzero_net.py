@@ -136,20 +136,8 @@ class MuZeroNet(BaseTokenizingNet):
         """
         Representation function (h): Encodes a batch of states into a stochastic hidden state distribution.
         """
-        padded_tokens, padding_mask = self._batched_state_to_tokens(
-            state, batch_size=batch_size
-        )
-
-        game_token = self.game_token.expand(batch_size, -1, -1)
-        sequence = torch.cat([game_token, padded_tokens], dim=1)
-
-        game_token_mask = torch.zeros(
-            batch_size, 1, dtype=torch.bool, device=padded_tokens.device
-        )
-        full_padding_mask = torch.cat([game_token_mask, padding_mask], dim=1)
-
-        transformer_output = self.transformer_encoder(
-            sequence, src_key_padding_mask=full_padding_mask
+        transformer_output = self._get_transformer_output(
+            state=state, batch_size=batch_size
         )
         game_token_output = transformer_output[:, 0, :]
         mu = self.fc_hidden_state_mu(game_token_output)

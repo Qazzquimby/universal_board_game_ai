@@ -89,7 +89,7 @@ class AlphaZeroNet(BaseTokenizingNet):
 
     def forward(
         self,
-        state_batch: Dict[str, "DataFrame"],
+        state: Dict[str, "DataFrame"],
         legal_actions: List[List[ActionType]],
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -98,36 +98,13 @@ class AlphaZeroNet(BaseTokenizingNet):
         `legal_actions` is a list of lists, where each inner list contains the
         legal actions for a state in the batch.
         """
-        device = self.get_device()
-        token_sequences, batch_size = self._batched_state_to_tokens(
-            state_batch=state_batch, batch_size=len(legal_actions)
-        )
-
-        if batch_size == 0:
-            batch_size = len(legal_actions)
-            if not token_sequences:
-                token_sequences = [
-                    torch.empty(0, self.embedding_dim, device=device)
-                    for _ in range(batch_size)
-                ]
-
-        if batch_size == 0:
-            return torch.empty(0, 0, device=device), torch.empty(0, device=device)
-
-        padded_tokens = nn.utils.rnn.pad_sequence(
-            token_sequences, batch_first=True, padding_value=0
-        )
-        src_key_padding_mask = padded_tokens.sum(dim=-1) == 0
-
-        game_tokens = self.game_token.expand(batch_size, -1, -1)
-        sequences = torch.cat([game_tokens, padded_tokens], dim=1)
-        game_token_mask = torch.zeros(batch_size, 1, dtype=torch.bool, device=device)
-        full_mask = torch.cat([game_token_mask, src_key_padding_mask], dim=1)
-
-        transformer_output = self.transformer_encoder(
-            src=sequences, src_key_padding_mask=full_mask
+        batch_size = len(legal_actions)
+        transformer_output = self._get_transformer_output(
+            state=state,
+            batch_size=len(legal_actions),
         )
         game_token_output = transformer_output[:, 0, :]  # (batch, dim)
+        device = transformer_output.device
 
         # --- Value Head ---
         value_preds = self.value_head(game_token_output).squeeze(-1)
