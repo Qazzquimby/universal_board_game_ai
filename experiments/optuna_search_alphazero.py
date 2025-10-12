@@ -3,7 +3,7 @@ import sys
 import optuna
 from loguru import logger
 
-from agents.alphazero.alphazero_agent import AlphaZeroAgent
+from agents.alphazero.alphazero_agent import make_pure_az
 from agents.alphazero.alphazero_net import AlphaZeroNet
 from core.config import AppConfig
 from factories import get_environment
@@ -25,6 +25,19 @@ def objective(trial: optuna.Trial):
     config.alphazero.value_loss_weight = trial.suggest_uniform(
         "value_loss_weight", 0.1, 1.0
     )
+
+    # --- State Model Hyperparameters ---
+    embedding_dim = trial.suggest_categorical("embedding_dim", [32, 64, 128])
+    num_heads = trial.suggest_categorical("num_heads", [2, 4, 8])
+    if embedding_dim % num_heads != 0:
+        # Prune trial if num_heads is not a divisor of embedding_dim
+        raise optuna.exceptions.TrialPruned()
+
+    config.alphazero.state_model_params["embedding_dim"] = embedding_dim
+    config.alphazero.state_model_params["num_heads"] = num_heads
+    config.alphazero.state_model_params["num_encoder_layers"] = trial.suggest_int(
+        "num_encoder_layers", 1, 4
+    )
     config.alphazero.state_model_params["dropout"] = trial.suggest_uniform(
         "dropout", 0.0, 0.5
     )
@@ -40,18 +53,14 @@ def objective(trial: optuna.Trial):
         dropout=config.alphazero.state_model_params["dropout"],
     )
 
-    agent = AlphaZeroAgent(
-        env=env, network=net, config=config.alphazero, training_config=config.training
+    agent = make_pure_az(
+        env=env,
+        config=config.alphazero,
+        training_config=config.training,
+        network=net,
     )
 
-    # --- Load a fixed dataset for consistent training across trials ---
     agent.load_game_logs(config.env.name, agent.config.replay_buffer_size)
-    if len(agent.replay_buffer) < agent.config.training_batch_size:
-        logger.error(
-            "Replay buffer has insufficient data for one batch. "
-            "Please generate more data by running train_alphazero.py for a few iterations."
-        )
-        raise ValueError("Replay buffer has insufficient data.")
 
     # --- Training Loop ---
     num_epochs = 10  # Train for a fixed number of epochs
@@ -65,7 +74,7 @@ def objective(trial: optuna.Trial):
             logger.warning(f"Trial {trial.number}: training failed, returning inf")
             return float("inf")  # Agent didn't train, e.g. buffer too small
 
-        final_loss = metrics["total_loss"]
+        final_loss = metrics.val.loss
         logger.info(
             f"Trial {trial.number} - Epoch {epoch+1}/{num_epochs} - Loss: {final_loss:.4f}"
         )
@@ -85,11 +94,18 @@ if __name__ == "__main__":
     logger.remove()
     logger.add(sys.stderr, level="INFO")
 
+    journal_path = "./optuna_journal_storage.log"
     study = optuna.create_study(
         study_name=f"alphazero_tuning_{config.env.name}",
         direction="minimize",
         pruner=optuna.pruners.MedianPruner(),
-        storage=f"sqlite:///data/{config.env.name}/optuna_study.db",
+        # storage=f"sqlite:///data/{config.env.name}/optuna_study.db",
+        storage=optuna.storages.JournalStorage(
+            optuna.storages.journal.JournalFileBackend(
+                journal_path,
+                lock_obj=optuna.storages.journal.JournalFileOpenLock(journal_path),
+            )
+        ),
         load_if_exists=True,
     )
     study.optimize(objective, n_trials=100)
