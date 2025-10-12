@@ -4,7 +4,7 @@ import json
 import random
 from collections import deque
 from pathlib import Path
-from typing import List, Tuple, Optional, Dict, Any
+from typing import List, Tuple, Optional, Dict, Any, Callable
 from dataclasses import dataclass
 
 import torch
@@ -427,8 +427,14 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
                     if isinstance(v, torch.Tensor):
                         state[k] = v.to(self.device)
 
-    def train_network(self) -> Optional[BestEpochMetrics]:
-        """Trains the network with early stopping."""
+    def train_network(
+        self, epoch_callback: Optional[Callable[[int, float], None]] = None
+    ) -> Optional[BestEpochMetrics]:
+        """
+        Trains the network with early stopping.
+        An optional callback can be provided to report metrics after each epoch,
+        which can also be used to prune trials in hyperparameter optimization.
+        """
         try:
             train_loader, val_loader = self._get_train_val_loaders()
         except ValueError as e:
@@ -454,6 +460,13 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
                 f"Train Loss=\t{train_metrics}\n"
                 f"Val Loss=\t{val_metrics}"
             )
+
+            if epoch_callback:
+                try:
+                    epoch_callback(epoch, val_metrics.loss)
+                except Exception:  # Catches optuna.exceptions.TrialPruned
+                    raise  # Re-raise to stop training
+
             if val_metrics.loss < best_val_loss:
                 best_val_loss = val_metrics.loss
                 epochs_no_improve = 0

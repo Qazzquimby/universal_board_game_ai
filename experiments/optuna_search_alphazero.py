@@ -1,3 +1,4 @@
+import random
 import sys
 
 import optuna
@@ -22,9 +23,9 @@ def objective(trial: optuna.Trial):
         "learning_rate", 1e-5, 1e-2
     )
     config.alphazero.weight_decay = trial.suggest_loguniform("weight_decay", 1e-6, 1e-2)
-    config.alphazero.value_loss_weight = trial.suggest_uniform(
-        "value_loss_weight", 0.1, 1.0
-    )
+    # config.alphazero.value_loss_weight = trial.suggest_uniform(
+    #     "value_loss_weight", 0.1, 1.0
+    # )
 
     # --- State Model Hyperparameters ---
     embedding_dim = trial.suggest_categorical("embedding_dim", [32, 64, 128])
@@ -60,32 +61,32 @@ def objective(trial: optuna.Trial):
         network=net,
     )
 
+    random.seed(0)
     agent.load_game_logs(config.env.name, agent.config.replay_buffer_size)
 
-    # --- Training Loop ---
-    num_epochs = 10  # Train for a fixed number of epochs
-    final_loss = float("inf")
-
+    # --- Training ---
     logger.info(f"Starting trial {trial.number} with params: {trial.params}")
 
-    for epoch in range(num_epochs):
-        metrics = agent.train_network()
-        if not metrics:
-            logger.warning(f"Trial {trial.number}: training failed, returning inf")
-            return float("inf")  # Agent didn't train, e.g. buffer too small
-
-        final_loss = metrics.val.loss
-        logger.info(
-            f"Trial {trial.number} - Epoch {epoch+1}/{num_epochs} - Loss: {final_loss:.4f}"
-        )
-
-        trial.report(final_loss, epoch)
+    def optuna_callback(epoch: int, val_loss: float):
+        """Callback to report progress to Optuna."""
+        trial.report(val_loss, epoch)
         if trial.should_prune():
-            logger.info(f"Trial {trial.number} pruned at epoch {epoch+1}.")
             raise optuna.exceptions.TrialPruned()
 
-    logger.info(f"Trial {trial.number} finished with loss: {final_loss:.4f}")
-    return final_loss
+    try:
+        metrics = agent.train_network(epoch_callback=optuna_callback)
+        if not metrics:
+            logger.warning(
+                f"Trial {trial.number}: training did not produce metrics, returning inf."
+            )
+            return float("inf")
+
+        final_loss = metrics.val.loss
+        logger.info(f"Trial {trial.number} finished with loss: {final_loss:.4f}")
+        return final_loss
+    except optuna.exceptions.TrialPruned:
+        logger.info(f"Trial {trial.number} pruned.")
+        raise
 
 
 if __name__ == "__main__":
