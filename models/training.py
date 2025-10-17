@@ -26,6 +26,10 @@ def run_training_loop(
 
     env = get_environment(config.env)
 
+    env_name_for_models = type(env).__name__.lower()
+    model_dir = DATA_DIR / env_name_for_models / "models"
+    promotion_sentinel_path = model_dir / "promoted_to_self_play.txt"
+
     if model_type == "alphazero":
         current_agent = make_pure_az(
             env=env,
@@ -102,6 +106,9 @@ def run_training_loop(
                     f"Promoting to use {current_agent.name} for self-play."
                 )
                 self_play_agent = current_agent
+                model_dir.mkdir(parents=True, exist_ok=True)
+                with promotion_sentinel_path.open("w") as f:
+                    f.write(f"Promoted at iteration {iteration}")
             else:
                 logger.info(
                     f"{current_agent.name} did not outperform MCTS (win rate: {eval_results.win_rate:.2f}). "
@@ -124,6 +131,7 @@ def get_self_play_agent_and_start_iteration(env, model_type, current_agent, base
     start_iteration = 0
     env_name = type(env).__name__.lower()
     model_dir = DATA_DIR / env_name / "models"
+    promotion_sentinel_path = model_dir / "promoted_to_self_play.txt"
     latest_model_path = None
     latest_iter = -1
 
@@ -150,13 +158,18 @@ def get_self_play_agent_and_start_iteration(env, model_type, current_agent, base
         # Fallback to loading default model name if no versioned models found
         has_checkpoint = current_agent.load()
 
-    if has_checkpoint:
+    if has_checkpoint and promotion_sentinel_path.exists():
         logger.info(
-            f"Checkpoint found, starting with {current_agent.name} for self-play."
+            f"Checkpoint found and agent was promoted, starting with {current_agent.name} for self-play."
         )
         self_play_agent = current_agent
     else:
-        logger.info("No checkpoint, starting with pure MCTS for self-play.")
+        if has_checkpoint:
+            logger.info(
+                "Checkpoint found but agent not yet promoted, continuing with MCTS for self-play."
+            )
+        else:
+            logger.info("No checkpoint, starting with pure MCTS for self-play.")
         self_play_agent = base_agent
 
     return self_play_agent, start_iteration
