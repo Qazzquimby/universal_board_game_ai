@@ -138,6 +138,8 @@ class GameHistoryStep:
 class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
     """Base agent for MCTS-based learning agents like AlphaZero and MuZero."""
 
+    model_type: str = NotImplemented
+
     def __init__(
         self,
         selection_strategy: SelectionStrategy,
@@ -172,6 +174,8 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
 
         self.config = config
         self.training_config = training_config
+
+        self.iteration_to_start_training_at: int = 0
 
         val_buffer_size = config.replay_buffer_size // 5
         train_buffer_size = config.replay_buffer_size - val_buffer_size
@@ -486,6 +490,75 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
         self.network.cache = {}
         return best_metrics
 
+    def _get_model_dir(self) -> Path:
+        env_name = type(self.env).__name__.lower()
+        return DATA_DIR / env_name / "models"
+
+    def get_latest_model_iter_num(self) -> Optional[int]:
+        if not self.model_type:
+            raise ValueError("model_type not set on agent")
+        model_dir = self._get_model_dir()
+        latest_iter = -1
+        if model_dir.exists():
+            for f in model_dir.glob(f"{self.model_type}_iter_*_net.pth"):
+                try:
+                    iter_num_str = f.stem.split("_iter_")[1].split("_net")[0]
+                    iter_num = int(iter_num_str)
+                    if iter_num > latest_iter:
+                        latest_iter = iter_num
+                except (ValueError, IndexError):
+                    continue
+        if latest_iter == -1:
+            return None
+        return latest_iter
+
+    def get_model_iter_path(self, iter_num: int, get_optimizer=False) -> Path:
+        if not self.model_type:
+            raise ValueError("model_type not set on agent")
+        iter_num_string = str(iter_num).zfill(3)
+        model_dir = self._get_model_dir()
+        suffix = "optimizer.pth" if get_optimizer else "net.pth"
+        return model_dir / f"{self.model_type}_iter_{iter_num_string}_{suffix}"
+
+    def load_latest_version(self) -> bool:
+        """Loads the latest version of the model and returns True if a checkpoint was loaded."""
+        latest_iter_num = self.get_latest_model_iter_num()
+        if latest_iter_num is None:
+            logger.info(
+                f"No existing models found for {self.model_type} for {type(self.env).__name__}. Starting fresh."
+            )
+            self.iteration_to_start_training_at = 0
+            return False  # Nothing loaded
+
+        latest_model_net_path = self.get_model_iter_path(iter_num=latest_iter_num)
+        logger.info(
+            f"Resuming from iteration {latest_iter_num + 1}. Loading {latest_model_net_path.name}"
+        )
+        self.iteration_to_start_training_at = latest_iter_num + 1
+        return self.load(latest_model_net_path)
+
+    def _get_self_play_version_path(self) -> Path:
+        if not self.model_type:
+            raise ValueError("model_type not set on agent")
+        model_dir = self._get_model_dir()
+        return model_dir / f"{self.model_type}_self_play_version.txt"
+
+    def get_self_play_agent_iter(self) -> Optional[int]:
+        version_path = self._get_self_play_version_path()
+        if version_path.exists():
+            with version_path.open("r") as f:
+                try:
+                    return int(f.read().strip())
+                except ValueError:
+                    return None
+        return None
+
+    def promote_to_self_play(self, iteration: int):
+        version_path = self._get_self_play_version_path()
+        version_path.parent.mkdir(parents=True, exist_ok=True)
+        with version_path.open("w") as f:
+            f.write(str(iteration))
+
     def _get_train_val_loaders(self) -> Tuple[DataLoader, DataLoader]:
         """Creates and returns training and validation data loaders."""
         if not self.network or not self.optimizer:
@@ -515,31 +588,22 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
         )
         return train_loader, val_loader
 
-    def _get_save_path(self) -> Path:
-        env_name = type(self.env).__name__.lower()
-        return DATA_DIR / env_name / "models" / f"{self.model_name}_net.pth"
-
-    def _get_optimizer_save_path(self) -> Path:
-        env_name = type(self.env).__name__.lower()
-        return DATA_DIR / env_name / "models" / f"{self.model_name}_optimizer.pth"
-
-    def save(self, filepath: Optional[Path] = None):
-        """Saves network and optimizer state."""
+    def save(self, iteration: int):
+        """Saves network and optimizer state for a given iteration."""
         if not self.network or not self.optimizer:
             return
-        net_path = filepath or self._get_save_path()
-        opt_path = net_path.with_name(
-            f"{net_path.stem.replace('_net', '_optimizer')}{net_path.suffix}"
-        )
+        net_path = self.get_model_iter_path(iteration)
+        opt_path = self.get_model_iter_path(iteration, get_optimizer=True)
+
         net_path.parent.mkdir(parents=True, exist_ok=True)
         torch.save(self.network.state_dict(), net_path)
         torch.save(self.optimizer.state_dict(), opt_path)
 
-    def load(self, filepath: Optional[Path] = None) -> bool:
-        """Loads network and optimizer state."""
+    def load(self, filepath: Path) -> bool:
+        """Loads network and optimizer state from a file."""
         if not self.network or not self.optimizer:
             return False
-        net_path = filepath or self._get_save_path()
+        net_path = filepath
         opt_path = net_path.with_name(
             f"{net_path.stem.replace('_net', '_optimizer')}{net_path.suffix}"
         )

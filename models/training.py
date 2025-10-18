@@ -1,4 +1,4 @@
-from typing import List, Union, Tuple, Optional
+from typing import List, Union, Tuple
 import time
 
 import numpy as np
@@ -7,12 +7,12 @@ from loguru import logger
 
 from agents.base_learning_agent import GameHistoryStep, BaseLearningAgent
 from agents.mcts_agent import MCTSAgent, make_pure_mcts
-from core.config import AppConfig, DATA_DIR
+from core.config import AppConfig
 from core.serialization import save_game_log
 from environments.base import BaseEnvironment, DataFrame
-from agents.alphazero.alphazero_agent import AlphaZeroAgent, make_pure_az
-from agents.muzero.muzero_agent import make_pure_muzero, MuZeroAgent
-from factories import get_environment
+from agents.alphazero.alphazero_agent import AlphaZeroAgent
+from agents.muzero.muzero_agent import MuZeroAgent
+from factories import get_environment, _create_learning_agent
 from utils.training_reporter import TrainingReporter, BenchmarkResults
 
 
@@ -26,30 +26,13 @@ def run_training_loop(
 
     env = get_environment(config.env)
 
-    env_name_for_models = type(env).__name__.lower()
-    model_dir = DATA_DIR / env_name_for_models / "models"
-    promotion_sentinel_path = model_dir / "promoted_to_self_play.txt"
-
-    if model_type == "alphazero":
-        current_agent = make_pure_az(
-            env=env,
-            config=config.alphazero,
-            training_config=config.training,
-        )
-    elif model_type == "muzero":
-        current_agent = make_pure_muzero(
-            env=env,
-            config=config.muzero,
-            training_config=config.training,
-        )
-    else:
-        raise ValueError(f"Unknown model type: {model_type}")
-
+    current_agent = _create_learning_agent(model_type, env, config)
     mcts_agent = make_pure_mcts(num_simulations=config.mcts.num_simulations)
     mcts_agent.name = "mcts"
     mcts_agent.model_name = "mcts"
     self_play_agent, start_iteration = get_self_play_agent_and_start_iteration(
         env=env,
+        config=config,
         model_type=model_type,
         current_agent=current_agent,
         base_agent=mcts_agent,
@@ -72,9 +55,8 @@ def run_training_loop(
     for iteration in outer_loop_iterator:
         reporter.log_iteration_start(iteration)
 
-        if isinstance(current_agent, BaseLearningAgent):
-            current_agent.model_name = f"{model_type}_iter_{iteration:03d}"
-            current_agent.name = current_agent.model_name.capitalize()
+        current_agent.model_name = f"{model_type}_iter_{iteration:03d}"
+        current_agent.name = current_agent.model_name.capitalize()
 
         logger.info(f"Running self-play with '{self_play_agent.name}'...")
         run_self_play(
@@ -89,6 +71,9 @@ def run_training_loop(
         metrics = current_agent.train_network()
         if metrics:
             reporter.log_iteration_end(iteration=iteration, metrics=metrics)
+
+        current_agent.save(iteration=iteration)
+        logger.info(f"Saved checkpoint for iteration {iteration}")
 
         if isinstance(self_play_agent, MCTSAgent):
             eval_results = check_if_agent_outperforms_mcts(
@@ -105,20 +90,26 @@ def run_training_loop(
                     f"{current_agent.name} outperformed MCTS with win rate: {eval_results.win_rate:.2f}. "
                     f"Promoting to use {current_agent.name} for self-play."
                 )
-                self_play_agent = current_agent
-                model_dir.mkdir(parents=True, exist_ok=True)
-                with promotion_sentinel_path.open("w") as f:
-                    f.write(f"Promoted at iteration {iteration}")
+                current_agent.promote_to_self_play(iteration)
+                self_play_agent = _create_learning_agent(model_type, env, config)
+                model_path = current_agent.get_model_iter_path(iteration)
+                self_play_agent.load(model_path)
+                self_play_agent.model_name = f"{model_type}_iter_{iteration:03d}"
+                self_play_agent.name = self_play_agent.model_name.capitalize()
             else:
                 logger.info(
                     f"{current_agent.name} did not outperform MCTS (win rate: {eval_results.win_rate:.2f}). "
                     "Continuing with MCTS for self-play."
                 )
         else:
-            self_play_agent = current_agent
-
-        current_agent.save()
-        logger.info(f"Saved checkpoint for iteration {iteration + 1}")
+            # Once promoted, the self-play agent is a learning agent.
+            # We should have logic here to see if the new agent is better than the current self-play agent.
+            # For now, we just update to the latest agent.
+            self_play_agent = _create_learning_agent(model_type, env, config)
+            model_path = current_agent.get_model_iter_path(iteration)
+            self_play_agent.load(model_path)
+            self_play_agent.model_name = f"{model_type}_iter_{iteration:03d}"
+            self_play_agent.name = self_play_agent.model_name.capitalize()
 
     # plot_losses(total_losses, value_losses, policy_losses)
 
@@ -127,79 +118,22 @@ def run_training_loop(
     reporter.finish()
 
 
-def get_latest_model_iter_num(env, model_type: str) -> Optional[int]:
-    env_name = type(env).__name__.lower()
-    model_dir = DATA_DIR / env_name / "models"
+def get_self_play_agent_and_start_iteration(
+    env, config, model_type, current_agent, base_agent
+):
+    current_agent.load_latest_version()
+    start_iteration = current_agent.iteration_to_start_training_at
 
-    latest_iter = -1
-
-    if model_dir.exists():
-        for f in model_dir.glob(f"{model_type}_iter_*_net.pth"):
-            try:
-                # e.g. alphazero_iter_005_net.pth -> 5
-                iter_num_str = f.stem.split("_iter_")[1].split("_net")[0]
-                iter_num = int(iter_num_str)
-                if iter_num > latest_iter:
-                    latest_iter = iter_num
-            except (ValueError, IndexError):
-                continue
-    if latest_iter == -1:
-        return None
-    return latest_iter
-
-
-def get_model_iter_path(env, model_type: str, iter_num: int, get_optimizer=False):
-    iter_num_string = str(iter_num).zfill(3)
-    env_name = type(env).__name__.lower()
-    model_dir = DATA_DIR / env_name / "models"
-
-    if get_optimizer:
-        suffix = "optimizer.pth"
+    self_play_iter = current_agent.get_self_play_agent_iter()
+    if self_play_iter is not None:
+        logger.info(f"Loading agent from iter {self_play_iter} for self-play.")
+        self_play_agent = _create_learning_agent(model_type, env, config)
+        model_path = self_play_agent.get_model_iter_path(self_play_iter)
+        self_play_agent.load(model_path)
+        self_play_agent.model_name = f"{model_type}_iter_{self_play_iter:03d}"
+        self_play_agent.name = self_play_agent.model_name.capitalize()
     else:
-        suffix = "net.pth"
-
-    return model_dir / f"{model_type}_iter_{iter_num_string}_{suffix}"
-
-
-def load_latest_agent_version(env, model_type):
-    latest_iter_num = get_latest_model_iter_num(env=env, model_type=model_type)
-
-    env_name = type(env).__name__.lower()
-    promotion_sentinel_path = (
-        DATA_DIR / env_name / "models" / "promoted_to_self_play.txt"
-    )
-
-    if latest_iter_num is None:
-        logger.info(f"Starting new model {env_name} {model_type}")
-        has_checkpoint = current_agent.load()
-        start_iteration = 0
-    else:
-        latest_model_net_path = get_model_iter_path(
-            env=env, model_type=model_type, iter_num=latest_iter_num
-        )
-        logger.info(
-            f"Resuming from iteration {latest_iter_num + 1}. Loading {latest_model_net_path.name}"
-        )
-        start_iteration = latest_iter_num + 1
-
-        has_checkpoint = current_agent.load(latest_model_net_path)
-
-
-def get_self_play_agent_and_start_iteration(env, model_type, current_agent, base_agent):
-    latest_agent_version = load_latest_agent_version()
-
-    if has_checkpoint and promotion_sentinel_path.exists():
-        logger.info(
-            f"Checkpoint found and agent was promoted, starting with {current_agent.name} for self-play."
-        )
-        self_play_agent = current_agent
-    else:
-        if has_checkpoint:
-            logger.info(
-                "Checkpoint found but agent not yet promoted, continuing with MCTS for self-play."
-            )
-        else:
-            logger.info("No checkpoint, starting with pure MCTS for self-play.")
+        logger.info("No promoted self-play agent found. Using pure MCTS.")
         self_play_agent = base_agent
 
     return self_play_agent, start_iteration

@@ -92,6 +92,7 @@ class AlphaZeroDataset(Dataset):
 class AlphaZeroAgent(BaseLearningAgent):
     """Agent implementing the AlphaZero algorithm."""
 
+    model_type = "alphazero"
     config: AlphaZeroConfig
 
     def __init__(

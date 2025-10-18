@@ -1,16 +1,14 @@
-import re
-from pathlib import Path
-from typing import Dict
-from loguru import logger
+from typing import Dict, Union
 
 import torch.optim as optim
+
 from agents.alphazero.alphazero_agent import (
     AlphaZeroAgent,
     AlphaZeroExpansion,
     AlphaZeroEvaluation,
+    make_pure_az,
 )
 from agents.alphazero.alphazero_net import AlphaZeroNet
-from agents.base_learning_agent import BaseLearningAgent
 from agents.muzero.muzero_agent import MuZeroAgent, make_pure_muzero
 from core.agent_interface import Agent
 from core.config import (
@@ -21,7 +19,6 @@ from environments.base import BaseEnvironment
 from environments.connect4 import Connect4
 from agents.mcts_agent import make_pure_mcts
 from algorithms.mcts import UCB1Selection, StandardBackpropagation
-from models.training import get_self_play_agent_and_start_iteration
 
 
 def _create_az_agent(env: BaseEnvironment, config: AppConfig) -> AlphaZeroAgent:
@@ -56,17 +53,6 @@ def _create_mz_agent(env: BaseEnvironment, config: AppConfig) -> MuZeroAgent:
     return mz_agent
 
 
-def _load_and_prepare_agent(agent: BaseLearningAgent, agent_name_base: str):
-    if not agent.load():
-        logger.warning(
-            f"Could not load pre-trained {agent_name_base} weights. Agent will play randomly/poorly."
-        )
-    else:
-        logger.info(f"Loaded pre-trained {agent_name_base} agent.")
-    if agent.network:
-        agent.network.eval()
-
-
 def get_environment(env_config: EnvConfig) -> BaseEnvironment:
     """Factory function to create environment instances."""
     if env_config.name.lower() == "connect4":
@@ -81,14 +67,13 @@ def get_agents(env: BaseEnvironment, config: AppConfig) -> Dict[str, Agent]:
     agents = {}
 
     # AlphaZero agent
-    # az_agent_name = f"AZ_{config.mcts.num_simulations}"
+    az_agent_name = f"AZ_{config.mcts.num_simulations}"
     # az_agent = _create_az_agent(env, config)
     # _load_and_prepare_agent(az_agent, "AlphaZero")
-    az_agent, _ = get_self_play_agent_and_start_iteration(
-        env=env,
+    az_agent = _create_learning_agent(
         model_type="alphazero",
-        current_agent=..?,
-        base_agent=..?
+        env=env,
+        config=config,
     )
     agents[az_agent_name] = az_agent
 
@@ -106,3 +91,25 @@ def get_agents(env: BaseEnvironment, config: AppConfig) -> Dict[str, Agent]:
     agents[mcts_agent_name] = mcts_agent
 
     return agents
+
+
+def _create_learning_agent(
+    model_type: str,
+    env: BaseEnvironment,
+    config: AppConfig,
+) -> Union[AlphaZeroAgent, MuZeroAgent]:
+    if model_type == "alphazero":
+        agent = make_pure_az(
+            env=env,
+            config=config.alphazero,
+            training_config=config.training,
+        )
+    elif model_type == "muzero":
+        agent = make_pure_muzero(
+            env=env,
+            config=config.muzero,
+            training_config=config.training,
+        )
+    else:
+        raise ValueError(f"Unknown model type: {model_type}")
+    return agent

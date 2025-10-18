@@ -463,6 +463,7 @@ class MuZeroEpochMetrics:
 class MuZeroAgent(BaseLearningAgent):
     """Agent implementing the MuZero algorithm."""
 
+    model_type = "muzero"
     config: MuZeroConfig
 
     def __init__(
