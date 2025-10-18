@@ -3,8 +3,8 @@ import numpy as np
 
 from core.config import AppConfig
 from environments.base import BaseEnvironment, SanityCheckState
-from agents.mcts_agent import MCTSAgent
-from agents.alphazero.alphazero_agent import AlphaZeroAgent
+from agents.mcts_agent import MCTSAgent, make_pure_mcts
+from agents.alphazero.alphazero_agent import AlphaZeroAgent, make_pure_az
 from factories import get_environment
 
 # Helper to generate descriptive IDs
@@ -309,10 +309,8 @@ class TestSanityChecks:
         """Runs MCTS action selection sanity checks for various cases."""
         config = self._get_config(env_name)
         env = get_environment(config.env)
-        agent = MCTSAgent(
-            env,
+        agent = make_pure_mcts(
             num_simulations=config.mcts.num_simulations,
-            exploration_constant=config.mcts.exploration_constant,
         )
         self._run_single_mcts_check(agent, env, check_case)
 
@@ -324,7 +322,11 @@ class TestSanityChecks:
         config = self._get_config(env_name)
         config.alphazero.should_use_network = load_weights
         env = get_environment(config.env)
-        agent = AlphaZeroAgent(env, config.alphazero, config.training)
+        agent = make_pure_az(
+            env=env,
+            config=config.alphazero,
+            training_config=config.training,
+        )
         self._run_single_alphazero_mcts_check(agent, env, check_case)
 
     @pytest.mark.parametrize("env_name, check_case", AZ_NET_PARAMS)

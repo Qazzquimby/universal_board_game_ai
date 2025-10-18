@@ -1,4 +1,4 @@
-from typing import List, Union, Tuple
+from typing import List, Union, Tuple, Optional
 import time
 
 import numpy as np
@@ -127,15 +127,12 @@ def run_training_loop(
     reporter.finish()
 
 
-def get_self_play_agent_and_start_iteration(env, model_type, current_agent, base_agent):
-    start_iteration = 0
+def get_latest_model_iter_num(env, model_type: str) -> Optional[int]:
     env_name = type(env).__name__.lower()
     model_dir = DATA_DIR / env_name / "models"
-    promotion_sentinel_path = model_dir / "promoted_to_self_play.txt"
-    latest_model_path = None
+
     latest_iter = -1
 
-    # Check for versioned models first
     if model_dir.exists():
         for f in model_dir.glob(f"{model_type}_iter_*_net.pth"):
             try:
@@ -144,19 +141,52 @@ def get_self_play_agent_and_start_iteration(env, model_type, current_agent, base
                 iter_num = int(iter_num_str)
                 if iter_num > latest_iter:
                     latest_iter = iter_num
-                    latest_model_path = f
             except (ValueError, IndexError):
                 continue
+    if latest_iter == -1:
+        return None
+    return latest_iter
 
-    if latest_model_path:
-        logger.info(
-            f"Resuming from iteration {latest_iter + 1}. Loading {latest_model_path.name}"
-        )
-        has_checkpoint = current_agent.load(latest_model_path)
-        start_iteration = latest_iter + 1
+
+def get_model_iter_path(env, model_type: str, iter_num: int, get_optimizer=False):
+    iter_num_string = str(iter_num).zfill(3)
+    env_name = type(env).__name__.lower()
+    model_dir = DATA_DIR / env_name / "models"
+
+    if get_optimizer:
+        suffix = "optimizer.pth"
     else:
-        # Fallback to loading default model name if no versioned models found
+        suffix = "net.pth"
+
+    return model_dir / f"{model_type}_iter_{iter_num_string}_{suffix}"
+
+
+def load_latest_agent_version(env, model_type):
+    latest_iter_num = get_latest_model_iter_num(env=env, model_type=model_type)
+
+    env_name = type(env).__name__.lower()
+    promotion_sentinel_path = (
+        DATA_DIR / env_name / "models" / "promoted_to_self_play.txt"
+    )
+
+    if latest_iter_num is None:
+        logger.info(f"Starting new model {env_name} {model_type}")
         has_checkpoint = current_agent.load()
+        start_iteration = 0
+    else:
+        latest_model_net_path = get_model_iter_path(
+            env=env, model_type=model_type, iter_num=latest_iter_num
+        )
+        logger.info(
+            f"Resuming from iteration {latest_iter_num + 1}. Loading {latest_model_net_path.name}"
+        )
+        start_iteration = latest_iter_num + 1
+
+        has_checkpoint = current_agent.load(latest_model_net_path)
+
+
+def get_self_play_agent_and_start_iteration(env, model_type, current_agent, base_agent):
+    latest_agent_version = load_latest_agent_version()
 
     if has_checkpoint and promotion_sentinel_path.exists():
         logger.info(

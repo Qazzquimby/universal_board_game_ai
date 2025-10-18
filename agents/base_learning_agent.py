@@ -302,7 +302,9 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
         loaded_games = 0
         log_dir = DATA_DIR / env_name / "game_logs"
         if not log_dir.exists():
-            logger.info(f"Log directory '{log_dir}' not found. Starting with empty buffers.")
+            logger.info(
+                f"Log directory '{log_dir}' not found. Starting with empty buffers."
+            )
             return
 
         logger.info(f"Scanning {log_dir} for existing '{env_name}' game logs...")

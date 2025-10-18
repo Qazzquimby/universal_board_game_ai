@@ -21,6 +21,7 @@ from environments.base import BaseEnvironment
 from environments.connect4 import Connect4
 from agents.mcts_agent import make_pure_mcts
 from algorithms.mcts import UCB1Selection, StandardBackpropagation
+from models.training import get_self_play_agent_and_start_iteration
 
 
 def _create_az_agent(env: BaseEnvironment, config: AppConfig) -> AlphaZeroAgent:
@@ -80,16 +81,22 @@ def get_agents(env: BaseEnvironment, config: AppConfig) -> Dict[str, Agent]:
     agents = {}
 
     # AlphaZero agent
-    az_agent_name = f"AZ_{config.mcts.num_simulations}"
-    az_agent = _create_az_agent(env, config)
-    _load_and_prepare_agent(az_agent, "AlphaZero")
+    # az_agent_name = f"AZ_{config.mcts.num_simulations}"
+    # az_agent = _create_az_agent(env, config)
+    # _load_and_prepare_agent(az_agent, "AlphaZero")
+    az_agent, _ = get_self_play_agent_and_start_iteration(
+        env=env,
+        model_type="alphazero",
+        current_agent=..?,
+        base_agent=..?
+    )
     agents[az_agent_name] = az_agent
 
-    # MuZero agent
-    mz_agent_name = f"MZ_{config.mcts.num_simulations}"
-    mz_agent = _create_mz_agent(env, config)
-    _load_and_prepare_agent(mz_agent, "MuZero")
-    agents[mz_agent_name] = mz_agent
+    # # MuZero agent
+    # mz_agent_name = f"MZ_{config.mcts.num_simulations}"
+    # mz_agent = _create_mz_agent(env, config)
+    # _load_and_prepare_agent(mz_agent, "MuZero")
+    # agents[mz_agent_name] = mz_agent
 
     # MCTS agent
     mcts_agent_name = f"MCTS_{config.mcts.num_simulations}"

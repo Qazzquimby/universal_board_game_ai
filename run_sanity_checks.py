@@ -24,7 +24,7 @@ def predict(
             logger.warning("Agent has no network, cannot predict.")
             return None, None
         agent.network.eval()
-        policy_dict, value = agent.network.predict(
+        policy_dict, value = agent.network.predict_single(
             env.get_state_with_key(), legal_actions
         )
         return policy_dict, value
@@ -116,14 +116,6 @@ def main():
 
     env = get_environment(config.env)
     agents = get_agents(env, config)
-
-    # Load checkpoints for agents that support it
-    for agent_name, agent in agents.items():
-        if hasattr(agent, "load"):
-            if agent.load():
-                logger.info(f"Loaded checkpoint for '{agent_name}'")
-            else:
-                logger.warning(f"No checkpoint found for '{agent_name}'")
 
     agents_to_check = []
     for agent_name, agent in agents.items():
