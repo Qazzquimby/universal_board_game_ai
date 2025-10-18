@@ -139,13 +139,13 @@ class BaseTokenizingNet(nn.Module):
                 table_token_embeddings += self.embedding_layers[col_name](values_tensor)
 
             all_tokens.append(table_token_embeddings)
-            if batch_size > 1:
+            if batch_size > 1 or "batch_idx" in df.columns:
                 all_batch_indices.append(
                     torch.tensor(df["batch_idx"], dtype=torch.long, device=device)
                 )
             else:
                 all_batch_indices.append(
-                    torch.ones(df.height, dtype=torch.long, device=device)
+                    torch.zeros(df.height, dtype=torch.long, device=device)
                 )
 
         if not all_tokens:

@@ -100,6 +100,7 @@ def run_sanity_checks_for_agent(
                 if sorted_probs and action == sorted_probs[0][0]:
                     highlight += " (BEST)"
                 logger.info(f"    - {action}: {prob:.4f}{highlight}")
+        print("")
 
 
 def main():
