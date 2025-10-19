@@ -1,7 +1,9 @@
 import json
+from pathlib import Path
 import numpy as np
 from tqdm import tqdm
 
+from environments.base import DataFrame
 from environments.connect4 import Connect4
 from experiments.architectures.shared import (
     BOARD_WIDTH,
@@ -50,6 +52,35 @@ def _process_raw_item(item, env: Connect4):
     return input_tensor, policy_label, value
 
 
+def _state_dict_to_numpy(state: dict) -> np.ndarray:
+    game_df = state.get("game")
+    board_df = state.get("board")
+
+    if not game_df or not board_df or game_df.is_empty():
+        return None
+
+    if "current_player" not in game_df.columns:
+        return None
+    current_player = game_df._data[0][game_df._col_to_idx["current_player"]]
+    opponent_player = 1 - current_player
+
+    p1_board = np.zeros((6, BOARD_WIDTH), dtype=np.float32)
+    p2_board = np.zeros((6, BOARD_WIDTH), dtype=np.float32)
+
+    if not board_df.is_empty():
+        row_idx = board_df._col_to_idx["row"]
+        col_idx = board_df._col_to_idx["col"]
+        player_id_idx = board_df._col_to_idx["player_id"]
+
+        for piece in board_df._data:
+            row, col, player_id = piece[row_idx], piece[col_idx], piece[player_id_idx]
+            if player_id == current_player:
+                p1_board[row, col] = 1.0
+            elif player_id == opponent_player:
+                p2_board[row, col] = 1.0
+    return np.stack([p1_board, p2_board])
+
+
 def _augment_and_append(
     input_tensor, policy_label, value, inputs, policy_labels, value_labels
 ):
@@ -81,8 +112,8 @@ def _augment_and_append(
     value_labels.append(swapped_value)
 
 
-def load_and_process_data(tiny_run=False):
-    print("Loading and processing data...")
+def _load_and_process_data_old(tiny_run=False):
+    print("Loading and processing data from old db...")
     with open(DATA_PATH, "r") as f:
         raw_data = json.load(f)
 
@@ -95,7 +126,7 @@ def load_and_process_data(tiny_run=False):
 
     env = Connect4()
 
-    for item in tqdm(raw_data):
+    for item in tqdm(raw_data, desc="Processing old data"):
         processed_item = _process_raw_item(item, env)
         if processed_item:
             input_tensor, policy_label, value = processed_item
@@ -107,6 +138,85 @@ def load_and_process_data(tiny_run=False):
                 policy_labels,
                 value_labels,
             )
+
+    print(f"Data augmentation complete. Total samples: {len(inputs)}")
+    return (
+        np.array(inputs),
+        np.array(policy_labels),
+        np.array(value_labels, dtype=np.float32),
+    )
+
+
+def load_and_process_data(tiny_run=False):
+    print("Loading and processing data from game logs...")
+    log_dir = DATA_PATH.parent / "connect4" / "game_logs"
+    assert log_dir.exists()
+
+    log_files = sorted(list(log_dir.glob("**/*.json")))
+    assert log_files
+
+    if tiny_run:
+        log_files = log_files[-2:]  # Take last 2 files for tiny run
+
+    inputs = []
+    policy_labels = []
+    value_labels = []
+
+    all_steps = []
+    for log_file in tqdm(log_files, desc="Scanning log files"):
+        with open(log_file, "r") as f:
+            try:
+                game_data = json.load(f)
+                all_steps.extend(game_data)
+            except json.JSONDecodeError:
+                print(f"Warning: Could not decode JSON from {log_file}. Skipping.")
+                continue
+
+    if tiny_run and len(all_steps) > 100:
+        all_steps = all_steps[-100:]
+
+    for step_data in tqdm(all_steps, desc="Processing game steps"):
+        state_json = step_data.get("state")
+        policy_target_list = step_data.get("policy_target")
+        value_target = step_data.get("value_target")
+
+        if not all([state_json, policy_target_list, value_target is not None]):
+            continue
+
+        state = {
+            table_name: DataFrame(
+                data=table_data.get("_data"),
+                columns=table_data.get("columns"),
+            )
+            for table_name, table_data in state_json.items()
+        }
+
+        input_tensor = _state_dict_to_numpy(state)
+        if input_tensor is None:
+            continue
+
+        legal_actions_df = state.get("legal_actions")
+        if legal_actions_df is None or legal_actions_df.is_empty():
+            continue
+        legal_actions = [row[0] for row in legal_actions_df.rows()]
+
+        policy_target = np.array(policy_target_list)
+        if len(policy_target) != len(legal_actions):
+            continue
+
+        best_action_idx = np.argmax(policy_target)
+        policy_label = legal_actions[best_action_idx]
+
+        _augment_and_append(
+            input_tensor,
+            policy_label,
+            value_target,
+            inputs,
+            policy_labels,
+            value_labels,
+        )
+
+    assert inputs
 
     print(f"Data augmentation complete. Total samples: {len(inputs)}")
     return (

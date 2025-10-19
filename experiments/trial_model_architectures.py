@@ -10,33 +10,20 @@ from torch.utils.data import DataLoader
 from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 import pandas as pd
-
 import wandb
+import numpy as np
 
 from core.config import TRAINING_DEVICE
-from experiments.architectures.detached import (
-    DetachedPolicyNet,
-)
+from agents.alphazero.alphazero_net import AlphaZeroNet
+from agents.base_learning_agent import BaseCollation, _get_batched_state
+from environments.connect4 import Connect4
 from experiments.architectures.graph_transformers import (
-    CellGraphTransformer,
-    CellColumnGraphTransformer,
     graph_collate_fn,
-    create_cell_graph,
-    create_cell_column_graph,
-    create_cell_piece_graph,
-    create_combined_graph,
-    CellColumnPieceGraphTransformer,
-    create_cell_column_piece_graph,
-    create_piece_column_graph,
-    PieceColumnGraphTransformer,
 )
 from experiments.data_utils import load_and_process_data
 from experiments.architectures.basic import (
     AZDataset,
     AZIrregularInputsDataset,
-    CNNNet,
-    MLPNet,
-    ResNet,
 )
 from experiments.architectures.shared import (
     LEARNING_RATE,
@@ -47,8 +34,6 @@ from experiments.architectures.transformers import (
     create_transformer_input,
     _process_batch_transformer,
     transformer_collate_fn,
-    PieceTransformer_EncoderSum_SimpleOut_ParamGameToken,
-    PieceTransformerNet,
 )
 
 TINY_RUN = True
@@ -73,6 +58,30 @@ def _process_batch(model, data_batch, device, policy_criterion, value_criterion)
     _, predicted_policies = torch.max(policy_logits, 1)
     policy_acc = (predicted_policies == policy_labels).int().sum().item()
     value_mse = F.mse_loss(value_preds.squeeze(), value_labels).item()
+
+    return loss, loss_p.item(), loss_v.item(), policy_acc, value_mse
+
+
+def _process_batch_az(model, data_batch, device, policy_criterion, value_criterion):
+    # data_batch is a BaseCollation object
+    policy_targets = data_batch.policy_targets.to(device)
+    value_labels = data_batch.value_targets.to(device)
+
+    policy_logits, value_preds = model(
+        data_batch.batched_state,
+        legal_actions=data_batch.legal_actions_batch,
+    )
+
+    # Assuming policy_targets are distributions, convert to indices for CrossEntropyLoss
+    policy_target_indices = torch.argmax(policy_targets, dim=1)
+
+    loss_p = policy_criterion(policy_logits, policy_target_indices)
+    loss_v = value_criterion(value_preds.squeeze(), value_labels.squeeze(-1))
+    loss = loss_p + loss_v
+
+    _, predicted_policies = torch.max(policy_logits, 1)
+    policy_acc = (predicted_policies == policy_target_indices).int().sum().item()
+    value_mse = F.mse_loss(value_preds.squeeze(), value_labels.squeeze(-1)).item()
 
     return loss, loss_p.item(), loss_v.item(), policy_acc, value_mse
 
@@ -561,6 +570,71 @@ def run_piece_transformer_experiments(all_results: dict, data: TestData):
     )
 
 
+c4_env_for_conversion = Connect4()
+
+
+def create_az_input(board_tensor: torch.Tensor):
+    board_numpy = np.zeros((6, 7), dtype=int)
+    p1_pieces = torch.nonzero(board_tensor[0])
+    p2_pieces = torch.nonzero(board_tensor[1])
+    # In board, player 0 is 1, player 1 is 2.
+    board_numpy[p1_pieces[:, 0], p1_pieces[:, 1]] = 1
+    board_numpy[p2_pieces[:, 0], p2_pieces[:, 1]] = 2
+
+    num_pieces = (board_numpy != 0).sum()
+    c4_env_for_conversion.set_state((board_numpy, int(num_pieces)))
+    state_dict = c4_env_for_conversion._get_state()
+    legal_actions = c4_env_for_conversion.get_legal_actions()
+    return (state_dict, legal_actions)
+
+
+def alphazero_collate_fn(batch):
+    inputs, policy_targets, value_targets = zip(*batch)
+    state_dicts, legal_actions_batch = zip(*inputs)
+
+    batched_state = _get_batched_state(state_dicts=state_dicts)
+
+    policy_targets = nn.utils.rnn.pad_sequence(
+        list(policy_targets), batch_first=True, padding_value=0.0
+    )
+    value_targets = torch.stack(list(value_targets), 0)
+
+    return BaseCollation(
+        batched_state=batched_state,
+        policy_targets=policy_targets,
+        value_targets=value_targets,
+        legal_actions_batch=legal_actions_batch,
+    )
+
+
+def run_alphazero_experiments(all_results: dict, data: TestData):
+    c4_env = Connect4()
+    experiments = [
+        {
+            "name": "AlphaZeroNet_v1",
+            "model_class": AlphaZeroNet,
+            "params": {
+                "env": c4_env,
+                "embedding_dim": 128,
+                "num_heads": 8,
+                "num_encoder_layers": 4,
+                "dropout": 0.1,
+            },
+        },
+    ]
+
+    run_experiments(
+        all_results=all_results,
+        data=data,
+        name="AlphaZero",
+        input_creator=create_az_input,
+        dataset_class=AZIrregularInputsDataset,
+        experiments=experiments,
+        collate_function=alphazero_collate_fn,
+        process_batch_fn=_process_batch_az,
+    )
+
+
 def run_graph_transformer_experiments(all_results: dict, data: TestData):
     experiments = [
         # {
@@ -734,6 +808,8 @@ def main():
     run_basic_experiments(all_results=all_results, data=data)
 
     run_piece_transformer_experiments(all_results=all_results, data=data)
+
+    run_alphazero_experiments(all_results=all_results, data=data)
 
     run_graph_transformer_experiments(all_results=all_results, data=data)
 
