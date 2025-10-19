@@ -54,13 +54,13 @@ def _process_raw_item(item, env: Connect4):
 
 def _state_dict_to_numpy(state: dict) -> np.ndarray:
     game_df = state.get("game")
-    board_df = state.get("board")
+    board_df = state.get("pieces")
 
     if not game_df or not board_df or game_df.is_empty():
-        return None
+        raise ValueError
 
     if "current_player" not in game_df.columns:
-        return None
+        raise ValueError
     current_player = game_df._data[0][game_df._col_to_idx["current_player"]]
     opponent_player = 1 - current_player
 
@@ -149,7 +149,7 @@ def _load_and_process_data_old(tiny_run=False):
 
 def load_and_process_data(tiny_run=False):
     print("Loading and processing data from game logs...")
-    log_dir = DATA_PATH.parent / "connect4" / "game_logs"
+    log_dir = DATA_PATH / "connect4" / "game_logs"
     assert log_dir.exists()
 
     log_files = sorted(list(log_dir.glob("**/*.json")))
@@ -192,17 +192,13 @@ def load_and_process_data(tiny_run=False):
         }
 
         input_tensor = _state_dict_to_numpy(state)
-        if input_tensor is None:
-            continue
 
         legal_actions_df = state.get("legal_actions")
-        if legal_actions_df is None or legal_actions_df.is_empty():
-            continue
+        assert legal_actions_df and not legal_actions_df.is_empty()
         legal_actions = [row[0] for row in legal_actions_df.rows()]
 
         policy_target = np.array(policy_target_list)
-        if len(policy_target) != len(legal_actions):
-            continue
+        assert len(policy_target) == len(legal_actions)
 
         best_action_idx = np.argmax(policy_target)
         policy_label = legal_actions[best_action_idx]

@@ -16,6 +16,7 @@ import numpy as np
 from core.config import TRAINING_DEVICE
 from agents.alphazero.alphazero_net import AlphaZeroNet
 from agents.base_learning_agent import BaseCollation, _get_batched_state
+from environments.base import DataFrame
 from environments.connect4 import Connect4
 from experiments.architectures.graph_transformers import (
     graph_collate_fn,
@@ -574,15 +575,35 @@ c4_env_for_conversion = Connect4()
 
 
 def create_az_input(board_tensor: torch.Tensor):
-    board_numpy = np.zeros((6, 7), dtype=int)
+    pieces_data = []
+    # board_tensor[0] is for the current player, which we'll set as player 0
     p1_pieces = torch.nonzero(board_tensor[0])
-    p2_pieces = torch.nonzero(board_tensor[1])
-    # In board, player 0 is 1, player 1 is 2.
-    board_numpy[p1_pieces[:, 0], p1_pieces[:, 1]] = 1
-    board_numpy[p2_pieces[:, 0], p2_pieces[:, 1]] = 2
+    for r, c in p1_pieces:
+        pieces_data.append([r.item(), c.item(), 0])
 
-    num_pieces = (board_numpy != 0).sum()
-    c4_env_for_conversion.set_state((board_numpy, int(num_pieces)))
+    # board_tensor[1] is for the opponent, player 1
+    p2_pieces = torch.nonzero(board_tensor[1])
+    for r, c in p2_pieces:
+        pieces_data.append([r.item(), c.item(), 1])
+
+    pieces_df = DataFrame(data=pieces_data, columns=["row", "col", "player_id"])
+
+    winner = Connect4.check_for_winner_from_pieces(
+        pieces_df, width=Connect4.width, height=Connect4.height
+    )
+    is_draw = (winner is None) and (
+        pieces_df.height == Connect4.width * Connect4.height
+    )
+    done = (winner is not None) or is_draw
+
+    game_df = DataFrame(
+        data=[[0, done, winner]],  # current_player=0
+        columns=["current_player", "done", "winner"],
+    )
+
+    state_to_set = {"pieces": pieces_df, "game": game_df}
+    c4_env_for_conversion.set_state(state_to_set)
+
     state_dict = c4_env_for_conversion._get_state()
     legal_actions = c4_env_for_conversion.get_legal_actions()
     return (state_dict, legal_actions)
@@ -594,14 +615,23 @@ def alphazero_collate_fn(batch):
 
     batched_state = _get_batched_state(state_dicts=state_dicts)
 
-    policy_targets = nn.utils.rnn.pad_sequence(
-        list(policy_targets), batch_first=True, padding_value=0.0
+    policy_dist_targets = []
+    for i, legal_actions in enumerate(legal_actions_batch):
+        policy_target_action = policy_targets[i].item()
+        policy_dist = torch.zeros(len(legal_actions), dtype=torch.float32)
+        if legal_actions and policy_target_action in legal_actions:
+            action_idx = legal_actions.index(policy_target_action)
+            policy_dist[action_idx] = 1.0
+        policy_dist_targets.append(policy_dist)
+
+    padded_policy_targets = nn.utils.rnn.pad_sequence(
+        policy_dist_targets, batch_first=True, padding_value=0.0
     )
     value_targets = torch.stack(list(value_targets), 0)
 
     return BaseCollation(
         batched_state=batched_state,
-        policy_targets=policy_targets,
+        policy_targets=padded_policy_targets,
         value_targets=value_targets,
         legal_actions_batch=legal_actions_batch,
     )
