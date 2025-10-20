@@ -11,7 +11,6 @@ from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 import pandas as pd
 import wandb
-import numpy as np
 
 from core.config import TRAINING_DEVICE
 from agents.alphazero.alphazero_net import AlphaZeroNet
@@ -20,11 +19,16 @@ from environments.base import DataFrame
 from environments.connect4 import Connect4
 from experiments.architectures.graph_transformers import (
     graph_collate_fn,
+    CellColumnGraphTransformer,
+    create_cell_column_graph,
 )
 from experiments.data_utils import load_and_process_data
 from experiments.architectures.basic import (
     AZDataset,
     AZIrregularInputsDataset,
+    MLPNet,
+    CNNNet,
+    ResNet,
 )
 from experiments.architectures.shared import (
     LEARNING_RATE,
@@ -35,10 +39,12 @@ from experiments.architectures.transformers import (
     create_transformer_input,
     _process_batch_transformer,
     transformer_collate_fn,
+    PieceTransformerNet,
 )
 
-TINY_RUN = True
-MAX_TRAINING_TIME_SECONDS = 2 * 3600  # 2h
+TINY_RUN = False
+# MAX_TRAINING_TIME_SECONDS = 2 * 3600  # 2h
+MAX_TRAINING_TIME_SECONDS = 1 * 3600
 
 if TINY_RUN:
     MAX_TRAINING_TIME_SECONDS = 20
@@ -328,7 +334,7 @@ def run_experiments(
     Run experiments for a specific architecture defined by `name` and `input_creator`.
     """
     if not experiments:
-        print("No transformer experiments defined.")
+        print(f"No {name} experiments defined.")
         return
 
     print(f"\n--- Pre-processing data for {name} ---")
@@ -381,7 +387,7 @@ def run_basic_experiments(all_results: dict, data: TestData):
     experiments = [
         # {"name": "MLP", "model_class": MLPNet, "params": {}},
         # {"name": "CNN", "model_class": CNNNet, "params": {}},
-        # {"name": "ResNet", "model_class": ResNet, "params": {}},
+        {"name": "ResNet", "model_class": ResNet, "params": {}},
     ]
     run_experiments(
         all_results=all_results,
@@ -410,10 +416,10 @@ def run_piece_transformer_experiments(all_results: dict, data: TestData):
         #         },
         #     },
         # },
-        # {
-        #     "name": "PieceTransformer_v2",
-        #     "model_class": PieceTransformerNet,
-        # },
+        {
+            "name": "PieceTransformer_v2",
+            "model_class": PieceTransformerNet,
+        },
         # {
         #     "name": "PieceTransformer_Sinusoidal",
         #     "model_class": PieceTransformerNet_Sinusoidal,

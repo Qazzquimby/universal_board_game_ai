@@ -147,6 +147,9 @@ def _load_and_process_data_old(tiny_run=False):
     )
 
 
+MAX_FILES = 100
+
+
 def load_and_process_data(tiny_run=False):
     print("Loading and processing data from game logs...")
     log_dir = DATA_PATH / "connect4" / "game_logs"
@@ -157,6 +160,8 @@ def load_and_process_data(tiny_run=False):
 
     if tiny_run:
         log_files = log_files[-2:]  # Take last 2 files for tiny run
+    elif MAX_FILES:
+        log_files = log_files[-MAX_FILES:]
 
     inputs = []
     policy_labels = []
