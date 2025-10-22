@@ -171,7 +171,7 @@ class AlphaZeroAgent(BaseLearningAgent):
                 node.edges[action].prior * (1 - eps) + noise[i] * eps
             )
 
-    # todo determine how mucht his can be sahred with muzero agent
+    # todo determine how much this can be shared with muzero agent
     def _calculate_loss(
         self, policy_logits, value_preds, policy_targets, value_targets
     ):

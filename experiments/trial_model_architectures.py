@@ -11,6 +11,7 @@ from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 import pandas as pd
 import wandb
+import optuna
 
 from core.config import TRAINING_DEVICE
 from agents.alphazero.alphazero_net import AlphaZeroNet
@@ -43,11 +44,14 @@ from experiments.architectures.transformers import (
 )
 
 TINY_RUN = False
+USE_OPTUNA = False
+OPTUNA_N_TRIALS = 20
 # MAX_TRAINING_TIME_SECONDS = 2 * 3600  # 2h
 MAX_TRAINING_TIME_SECONDS = 1 * 3600
 
 if TINY_RUN:
     MAX_TRAINING_TIME_SECONDS = 20
+    OPTUNA_N_TRIALS = 3
 
 
 def _process_batch(model, data_batch, device, policy_criterion, value_criterion):
@@ -99,13 +103,17 @@ def train_and_evaluate(
     train_loader,
     test_loader,
     learning_rate=LEARNING_RATE,
+    weight_decay=0.0,
     process_batch_fn=_process_batch,
+    trial: "optuna.Trial" = None,
 ):
     if process_batch_fn is None:
         process_batch_fn = _process_batch
     print(f"\n--- Training {model_name} on {TRAINING_DEVICE} ---")
     start_time = time.time()
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    optimizer = optim.Adam(
+        model.parameters(), lr=learning_rate, weight_decay=weight_decay
+    )
     policy_criterion = nn.CrossEntropyLoss()
     value_criterion = nn.MSELoss()
 
@@ -188,9 +196,15 @@ def train_and_evaluate(
             "test_mse": test_mse,
         }
 
-        if not TINY_RUN:
+        if not TINY_RUN and not trial:
             wandb.log(log_info)
         results.append(log_info)
+
+        if trial:
+            trial.report(test_loss, epoch)
+            if trial.should_prune():
+                pbar.close()
+                raise optuna.exceptions.TrialPruned()
 
         if test_loss < best_test_loss:
             best_test_loss = test_loss
@@ -212,13 +226,13 @@ def train_and_evaluate(
     final_epoch = len(results)
     if not results:
         print("No epochs were completed.")
-        return pd.DataFrame(), training_time
+        return pd.DataFrame(), training_time, float("inf")
     final_results = results[-1]
     print(f"Finished training after {final_epoch} epochs.")
     print(
         f"Final Results | Test Loss: {final_results['test_loss']:.4f}, Test Acc: {final_results['test_acc']:.4f}, Test MSE: {final_results['test_mse']:.4f}"
     )
-    return pd.DataFrame(results), training_time
+    return pd.DataFrame(results), training_time, final_results["test_loss"]
 
 
 def _run_and_log_experiment(
@@ -234,6 +248,7 @@ def _run_and_log_experiment(
     name = exp["name"]
     params = exp.get("params", {})
     lr = exp.get("lr", LEARNING_RATE)
+    weight_decay = exp.get("weight_decay", 0.0)
 
     if not TINY_RUN:
         wandb.init(
@@ -243,18 +258,20 @@ def _run_and_log_experiment(
             reinit=True,
             config={
                 "learning_rate": lr,
+                "weight_decay": weight_decay,
                 "batch_size": BATCH_SIZE,
                 "architecture": model.__class__.__name__,
                 **params,
             },
         )
 
-    results_df, training_time = train_and_evaluate(
+    results_df, training_time, _ = train_and_evaluate(
         model=model,
         model_name=name,
         train_loader=train_loader,
         test_loader=test_loader,
         learning_rate=lr,
+        weight_decay=weight_decay,
         process_batch_fn=process_batch_fn,
     )
     all_results[name] = {
@@ -353,8 +370,6 @@ def run_experiments(
         data_processing_time = time.time() - start_time
 
     for experiment in experiments:
-        params = experiment.get("params", {})
-
         current_data_proc_time = data_processing_time
         if get_loader_per_experiment:
             start_time = time.time()
@@ -367,9 +382,45 @@ def run_experiments(
                 dataset_class=AZIrregularInputsDataset,
             )
             current_data_proc_time = time.time() - start_time
-
         assert train_loader and test_loader
 
+        if USE_OPTUNA and "param_space" in experiment:
+            print(f"\n--- Running Optuna search for {experiment['name']} ---")
+
+            def objective(trial):
+                param_generator = experiment["param_space"]
+                hyperparams = param_generator(trial)
+
+                lr = hyperparams.pop("learning_rate", LEARNING_RATE)
+                weight_decay = hyperparams.pop("weight_decay", 0.0)
+                model_params = {**experiment.get("params", {}), **hyperparams}
+
+                model = experiment["model_class"](**model_params).to(TRAINING_DEVICE)
+                _, _, loss = train_and_evaluate(
+                    model=model,
+                    model_name=f"{experiment['name']}_trial_{trial.number}",
+                    train_loader=train_loader,
+                    test_loader=test_loader,
+                    learning_rate=lr,
+                    weight_decay=weight_decay,
+                    process_batch_fn=process_batch_fn,
+                    trial=trial,
+                )
+                return loss
+
+            study = optuna.create_study(direction="minimize")
+            study.optimize(objective, n_trials=OPTUNA_N_TRIALS)
+
+            print(f"Best trial for {experiment['name']}:")
+            print(f"  Value: {study.best_value}")
+            print(f"  Params: {study.best_params}")
+
+            best_params = study.best_params
+            experiment["lr"] = best_params.pop("learning_rate", LEARNING_RATE)
+            experiment["weight_decay"] = best_params.pop("weight_decay", 0.0)
+            experiment.setdefault("params", {}).update(best_params)
+
+        params = experiment.get("params", {})
         model = experiment["model_class"](**params).to(TRAINING_DEVICE)
         _run_and_log_experiment(
             exp=experiment,
@@ -387,7 +438,15 @@ def run_basic_experiments(all_results: dict, data: TestData):
     experiments = [
         # {"name": "MLP", "model_class": MLPNet, "params": {}},
         # {"name": "CNN", "model_class": CNNNet, "params": {}},
-        {"name": "ResNet", "model_class": ResNet, "params": {}},
+        {
+            "name": "ResNet",
+            "model_class": ResNet,
+            "params": {},
+            "param_space": lambda trial: {
+                "learning_rate": trial.suggest_loguniform("learning_rate", 1e-4, 1e-2),
+                "weight_decay": trial.suggest_loguniform("weight_decay", 1e-6, 1e-2),
+            },
+        },
     ]
     run_experiments(
         all_results=all_results,
@@ -400,6 +459,20 @@ def run_basic_experiments(all_results: dict, data: TestData):
 
 
 def run_piece_transformer_experiments(all_results: dict, data: TestData):
+    def piece_transformer_param_space(trial: optuna.Trial):
+        embedding_dim = trial.suggest_categorical("embedding_dim", [32, 64, 128])
+        num_heads = trial.suggest_categorical("num_heads", [2, 4, 8])
+        if embedding_dim % num_heads != 0:
+            raise optuna.exceptions.TrialPruned()
+        return {
+            "learning_rate": trial.suggest_loguniform("learning_rate", 1e-5, 1e-2),
+            "weight_decay": trial.suggest_loguniform("weight_decay", 1e-6, 1e-2),
+            "embedding_dim": embedding_dim,
+            "num_heads": num_heads,
+            "num_encoder_layers": trial.suggest_int("num_encoder_layers", 1, 4),
+            "dropout": trial.suggest_uniform("dropout", 0.0, 0.5),
+        }
+
     experiments = [
         # {
         #     "name": "DetachedPolicy_v1",
@@ -419,6 +492,7 @@ def run_piece_transformer_experiments(all_results: dict, data: TestData):
         {
             "name": "PieceTransformer_v2",
             "model_class": PieceTransformerNet,
+            "param_space": piece_transformer_param_space,
         },
         # {
         #     "name": "PieceTransformer_Sinusoidal",
@@ -645,17 +719,29 @@ def alphazero_collate_fn(batch):
 
 def run_alphazero_experiments(all_results: dict, data: TestData):
     c4_env = Connect4()
+
+    def alphazero_param_space(trial: optuna.Trial):
+        embedding_dim = trial.suggest_categorical("embedding_dim", [32, 64, 128])
+        num_heads = trial.suggest_categorical("num_heads", [2, 4, 8])
+        if embedding_dim % num_heads != 0:
+            raise optuna.exceptions.TrialPruned()
+        return {
+            "learning_rate": trial.suggest_loguniform("learning_rate", 1e-5, 1e-2),
+            "weight_decay": trial.suggest_loguniform("weight_decay", 1e-6, 1e-2),
+            "embedding_dim": embedding_dim,
+            "num_heads": num_heads,
+            "num_encoder_layers": trial.suggest_int("num_encoder_layers", 1, 4),
+            "dropout": trial.suggest_uniform("dropout", 0.0, 0.5),
+        }
+
     experiments = [
         {
             "name": "AlphaZeroNet_v1",
             "model_class": AlphaZeroNet,
             "params": {
                 "env": c4_env,
-                "embedding_dim": 128,
-                "num_heads": 8,
-                "num_encoder_layers": 4,
-                "dropout": 0.1,
             },
+            "param_space": alphazero_param_space,
         },
     ]
 

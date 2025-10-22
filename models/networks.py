@@ -126,7 +126,7 @@ class BaseTokenizingNet(nn.Module):
             table_token_embeddings = torch.zeros(
                 num_rows, self.embedding_dim, device=device
             )
-
+            # todo handle numeric columns
             for col_name in columns:
                 raw_values = df[col_name]
                 # Convert None to -1 for later processing
