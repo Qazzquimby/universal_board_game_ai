@@ -39,7 +39,7 @@ class BaseCollation:
     legal_actions_batch: Tuple[ActionType]
 
 
-def _get_batched_state(state_dicts: Dict[str, DataFrame]) -> Dict:
+def _get_batched_state(state_dicts: List[Dict[str, DataFrame]]) -> Dict:
     batched_state = {}
     if state_dicts:
         # Get table names from the first sample, assuming all samples have the same tables.
