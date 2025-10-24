@@ -489,11 +489,13 @@ def run_piece_transformer_experiments(all_results: dict, data: TestData):
         #         },
         #     },
         # },
-        {
-            "name": "PieceTransformer_v2",
-            "model_class": PieceTransformerNet,
-            "param_space": piece_transformer_param_space,
-        },
+        ##
+        # {
+        #     "name": "PieceTransformer_v2",
+        #     "model_class": PieceTransformerNet,
+        #     "param_space": piece_transformer_param_space,
+        # },
+        ##
         # {
         #     "name": "PieceTransformer_Sinusoidal",
         #     "model_class": PieceTransformerNet_Sinusoidal,

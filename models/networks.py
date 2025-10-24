@@ -110,7 +110,7 @@ class BaseTokenizingNet(nn.Module):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Converts a batch of game states (represented as a dictionary of batched DataFrames)
-        padding tokens, mask
+        into padded token sequences and a padding mask, using a vectorized approach.
         """
         device = self.get_device()
         all_tokens = []
@@ -149,27 +149,37 @@ class BaseTokenizingNet(nn.Module):
                 )
 
         if not all_tokens:
-            pass  # TODO handle escape return
+            # Handle case with no data across the entire batch
+            return (
+                torch.empty(batch_size, 0, self.embedding_dim, device=device),
+                torch.empty(batch_size, 0, dtype=torch.bool, device=device),
+            )
 
         token_tensor = torch.cat(all_tokens, dim=0)
         batch_indices_tensor = torch.cat(all_batch_indices, dim=0)
 
-        token_sequences = []
-        for i in range(batch_size):
-            mask = batch_indices_tensor == i
-            token_sequences.append(token_tensor[mask])
+        # --- Vectorized Padding ---
 
-        padded_tokens = nn.utils.rnn.pad_sequence(
-            token_sequences, batch_first=True, padding_value=0.0
-        )
-        # batch_size, max_token_len, embedding_dim
+        # Sort tokens by batch index to group them.
+        sorted_indices = torch.argsort(batch_indices_tensor)
+        sorted_batch_indices = batch_indices_tensor[sorted_indices]
+        sorted_tokens = token_tensor[sorted_indices]
 
-        original_lengths = [len(t) for t in token_sequences]
-        max_len = padded_tokens.size(1)
-        padding_mask = (
-            torch.arange(max_len, device=padded_tokens.device)[None, :]
-            >= torch.tensor(original_lengths, device=padded_tokens.device)[:, None]
+        lengths = torch.bincount(sorted_batch_indices, minlength=batch_size)
+        max_len = lengths.max().item()
+
+        # Create sequence indices (i.e., token position within each sequence)
+        seq_indices = torch.cat(
+            [torch.arange(L, device=device) for L in lengths.tolist()]
         )
+
+        padded_tokens = torch.zeros(
+            batch_size, max_len, self.embedding_dim, device=device
+        )
+        if sorted_tokens.numel() > 0:
+            padded_tokens[sorted_batch_indices, seq_indices] = sorted_tokens
+
+        padding_mask = torch.arange(max_len, device=device)[None, :] >= lengths[:, None]
 
         return padded_tokens, padding_mask
 
