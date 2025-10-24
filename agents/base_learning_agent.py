@@ -41,29 +41,28 @@ class BaseCollation:
 
 def _get_batched_state(state_dicts: List[Dict[str, DataFrame]]) -> Dict:
     batched_state = {}
-    if state_dicts:
-        # Get table names from the first sample, assuming all samples have the same tables.
-        table_names = state_dicts[0].keys()
-        for table_name in table_names:
-            # For each table, gather all the DataFrames from the batch, adding a batch index.
-            all_dfs_for_table = []
-            for i, state_dict in enumerate(state_dicts):
-                original_df = state_dict.get(table_name)
-                # Skip if a state is missing this table or the table is empty.
-                if original_df is None or original_df.is_empty():
-                    continue
+    if not state_dicts:
+        return batched_state
 
-                new_data = [row + [i] for row in original_df._data]
-                new_columns = original_df.columns + ["batch_idx"]
-                new_df = DataFrame(data=new_data, columns=new_columns)
-                all_dfs_for_table.append(new_df)
+    # Get table names from the first sample, assuming all samples have the same tables.
+    table_names = state_dicts[0].keys()
+    for table_name in table_names:
+        all_rows = []
+        final_columns = None
+        for i, state_dict in enumerate(state_dicts):
+            original_df = state_dict.get(table_name)
+            # Skip if a state is missing this table or the table is empty.
+            if original_df is None or original_df.is_empty():
+                continue
 
-            if all_dfs_for_table:
-                # Concatenate the list of DataFrames into a single DataFrame.
-                concatenated_df = all_dfs_for_table[0].clone()
-                for df in all_dfs_for_table[1:]:
-                    concatenated_df = concatenated_df.concat(df)
-                batched_state[table_name] = concatenated_df
+            if final_columns is None:
+                final_columns = original_df.columns + ["batch_idx"]
+
+            for row in original_df._data:
+                all_rows.append(row + [i])
+
+        if all_rows:
+            batched_state[table_name] = DataFrame(data=all_rows, columns=final_columns)
     return batched_state
 
 
