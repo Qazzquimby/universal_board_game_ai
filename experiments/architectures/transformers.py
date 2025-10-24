@@ -62,7 +62,7 @@ class PieceTransformerNet(nn.Module):
         self,
         num_encoder_layers=4,
         embedding_dim=128,
-        num_heads=8,
+        num_heads=4,
         dropout=0.1,
     ):
         super().__init__()

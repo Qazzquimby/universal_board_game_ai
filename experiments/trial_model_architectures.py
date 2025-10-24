@@ -438,15 +438,15 @@ def run_basic_experiments(all_results: dict, data: TestData):
     experiments = [
         # {"name": "MLP", "model_class": MLPNet, "params": {}},
         # {"name": "CNN", "model_class": CNNNet, "params": {}},
-        {
-            "name": "ResNet",
-            "model_class": ResNet,
-            "params": {},
-            "param_space": lambda trial: {
-                "learning_rate": trial.suggest_loguniform("learning_rate", 1e-4, 1e-2),
-                "weight_decay": trial.suggest_loguniform("weight_decay", 1e-6, 1e-2),
-            },
-        },
+        # {
+        #     "name": "ResNet",
+        #     "model_class": ResNet,
+        #     "params": {},
+        #     "param_space": lambda trial: {
+        #         "learning_rate": trial.suggest_loguniform("learning_rate", 1e-4, 1e-2),
+        #         "weight_decay": trial.suggest_loguniform("weight_decay", 1e-6, 1e-2),
+        #     },
+        # },
     ]
     run_experiments(
         all_results=all_results,
