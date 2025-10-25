@@ -114,21 +114,22 @@ class AlphaZeroNet(BaseTokenizingNet):
         # different number of legal actions. We process them all together and then
         # group the results.
 
-        flat_action_tokens = []
+        # Flatten all legal actions from the batch into a single list to process them
+        # all at once for efficiency.
+        flat_legal_actions = []
         batch_indices_for_policy = []
-        for i in range(batch_size):
-            if not legal_actions[i]:
-                continue
-            action_tokens = self._actions_to_tokens(legal_actions[i])
-            flat_action_tokens.append(action_tokens)
-            batch_indices_for_policy.extend([i] * len(legal_actions[i]))
+        for i, actions in enumerate(legal_actions):
+            if actions:
+                flat_legal_actions.extend(actions)
+                batch_indices_for_policy.extend([i] * len(actions))
 
         if not batch_indices_for_policy:
             # If no legal actions in the entire batch, return empty logits.
             # This needs to be handled by the caller/loss function.
             return torch.empty(batch_size, 0, device=device), value_preds
 
-        flat_action_tokens_tensor = torch.cat(flat_action_tokens, dim=0)
+        # Get embeddings for all actions in one go
+        flat_action_tokens_tensor = self._actions_to_tokens(flat_legal_actions)
         batch_indices_tensor = torch.tensor(
             batch_indices_for_policy, device=device, dtype=torch.long
         )

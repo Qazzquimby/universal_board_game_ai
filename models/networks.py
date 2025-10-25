@@ -184,7 +184,7 @@ class BaseTokenizingNet(nn.Module):
         return padded_tokens, padding_mask
 
     def _actions_to_tokens(self, actions: List[ActionType]) -> torch.Tensor:
-        """Converts a batch of actions into embedding tokens."""
+        """Converts a batch of actions into embedding tokens using vectorized operations."""
         device = self.get_device()
         if not actions:
             return torch.empty(0, self.embedding_dim, device=device)
@@ -192,22 +192,27 @@ class BaseTokenizingNet(nn.Module):
         action_spec = self.network_spec["action_space"]
         action_components = action_spec["components"]
         batch_size = len(actions)
-        action_embeddings = torch.zeros(batch_size, self.embedding_dim, device=device)
 
-        # Normalize actions to be list of lists, e.g. [1, 2] -> [[1], [2]]
-        if not isinstance(actions[0], (list, tuple)):
-            normalized_actions = [[a] for a in actions]
-        else:
-            normalized_actions = actions
+        # Convert list of actions to a tensor.
+        # This handles both flat lists of ints and lists of lists/tuples.
+        actions_tensor = torch.tensor(actions, dtype=torch.long, device=device)
 
-        # Transpose for batch processing: [[a1,b1], [a2,b2]] -> [[a1,a2], [b1,b2]]
-        transposed_actions = list(zip(*normalized_actions))
+        # If actions were a flat list, actions_tensor will be 1D. Reshape to 2D.
+        if actions_tensor.dim() == 1:
+            actions_tensor = actions_tensor.unsqueeze(1)
 
+        # Add 1 to shift values for padding_idx=0
+        actions_tensor += 1
+
+        # Sum embeddings for each component
+        action_embeddings = torch.zeros(
+            batch_size, self.embedding_dim, device=device
+        )
         for i, comp_name in enumerate(action_components):
-            vals = transposed_actions[i]
-            # Add 1 to shift values for padding_idx=0
-            val_tensor = torch.tensor(vals, device=device, dtype=torch.long) + 1
-            action_embeddings += self.embedding_layers[comp_name](val_tensor)
+            # Get the i-th component for all actions in the batch
+            component_values = actions_tensor[:, i]
+            action_embeddings += self.embedding_layers[comp_name](component_values)
+
         return action_embeddings
 
     def _action_to_token(self, action: ActionType) -> torch.Tensor:
