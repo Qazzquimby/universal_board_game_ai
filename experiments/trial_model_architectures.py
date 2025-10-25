@@ -16,9 +16,7 @@ import optuna
 from core.config import TRAINING_DEVICE
 from agents.alphazero.alphazero_net import AlphaZeroNet
 from agents.base_learning_agent import (
-    BaseCollation,
     _get_batched_state,
-    get_tokenizing_collate_fn,
 )
 from environments.base import DataFrame
 from environments.connect4 import Connect4
@@ -46,6 +44,15 @@ from experiments.architectures.transformers import (
     transformer_collate_fn,
     PieceTransformerNet,
 )
+
+
+@dataclass
+class AZTrialCollation:
+    batched_state: dict
+    policy_targets: torch.Tensor
+    value_targets: torch.Tensor
+    legal_actions_batch: tuple
+
 
 TINY_RUN = False
 USE_OPTUNA = False
@@ -78,12 +85,20 @@ def _process_batch(model, data_batch, device, policy_criterion, value_criterion)
 
 
 def _process_batch_az(model, data_batch, device, policy_criterion, value_criterion):
-    # data_batch is a BaseCollation object
+    # data_batch is an AZTrialCollation object
+    batch_size = len(data_batch.legal_actions_batch)
+    state_tokens, state_padding_mask = model.tokenize_state_batch(
+        data_batch.batched_state, batch_size=batch_size
+    )
+    state_tokens = state_tokens.to(device)
+    state_padding_mask = state_padding_mask.to(device)
+
     policy_targets = data_batch.policy_targets.to(device)
     value_labels = data_batch.value_targets.to(device)
 
     policy_logits, value_preds = model(
-        data_batch.batched_state,
+        state_tokens=state_tokens,
+        state_padding_mask=state_padding_mask,
         legal_actions=data_batch.legal_actions_batch,
     )
 
@@ -695,9 +710,6 @@ def create_az_input(board_tensor: torch.Tensor):
     return (state_dict, legal_actions)
 
 
-alphazero_collate_fn = get_tokenizing_collate_fn(self.network)
-
-
 def alphazero_collate_fn(batch):
     inputs, policy_targets, value_targets = zip(*batch)
     state_dicts, legal_actions_batch = zip(*inputs)
@@ -718,7 +730,7 @@ def alphazero_collate_fn(batch):
     )
     value_targets = torch.stack(list(value_targets), 0)
 
-    return BaseCollation(
+    return AZTrialCollation(
         batched_state=batched_state,
         policy_targets=padded_policy_targets,
         value_targets=value_targets,
@@ -762,7 +774,7 @@ def run_alphazero_experiments(all_results: dict, data: TestData):
             input_creator=create_az_input,
             dataset_class=AZIrregularInputsDataset,
             experiments=experiments,
-            collate_function=get_tokenizing_collate_fn(experiments[0]["model_class"]),
+            collate_function=alphazero_collate_fn,
             process_batch_fn=_process_batch_az,
         )
 
