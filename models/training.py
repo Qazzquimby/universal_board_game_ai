@@ -15,6 +15,8 @@ from agents.muzero.muzero_agent import MuZeroAgent
 from factories import get_environment, _create_learning_agent
 from utils.training_reporter import TrainingReporter, BenchmarkResults
 
+SELF_PLAY_ON_FIRST_ITER = False
+
 
 def run_training_loop(
     config: AppConfig, model_type: str, env_name_override: str = None
@@ -58,14 +60,15 @@ def run_training_loop(
         current_agent.model_name = f"{model_type}_iter_{iteration:03d}"
         current_agent.name = current_agent.model_name.capitalize()
 
-        logger.info(f"Running self-play with '{self_play_agent.name}'...")
-        run_self_play(
-            learning_agent=current_agent,
-            self_play_agent=self_play_agent,
-            env=env,
-            config=config,
-            iteration=iteration,
-        )
+        if iteration > start_iteration or SELF_PLAY_ON_FIRST_ITER:
+            logger.info(f"Running self-play with '{self_play_agent.name}'...")
+            run_self_play(
+                learning_agent=current_agent,
+                self_play_agent=self_play_agent,
+                env=env,
+                config=config,
+                iteration=iteration,
+            )
 
         logger.info("Running learning step...")
         metrics = current_agent.train_network()
