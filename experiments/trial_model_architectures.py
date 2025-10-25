@@ -93,13 +93,27 @@ def _process_batch_az(model, data_batch, device, policy_criterion, value_criteri
     state_tokens = state_tokens.to(device)
     state_padding_mask = state_padding_mask.to(device)
 
+    # Tokenize actions
+    flat_legal_actions = []
+    batch_indices_for_policy = []
+    for i, actions in enumerate(data_batch.legal_actions_batch):
+        if actions:
+            flat_legal_actions.extend(actions)
+            batch_indices_for_policy.extend([i] * len(actions))
+
+    action_tokens = model.tokenize_actions(flat_legal_actions).to(device)
+    action_batch_indices = torch.tensor(
+        batch_indices_for_policy, dtype=torch.long, device=device
+    )
+
     policy_targets = data_batch.policy_targets.to(device)
     value_labels = data_batch.value_targets.to(device)
 
     policy_logits, value_preds = model(
         state_tokens=state_tokens,
         state_padding_mask=state_padding_mask,
-        legal_actions=data_batch.legal_actions_batch,
+        action_tokens=action_tokens,
+        action_batch_indices=action_batch_indices,
     )
 
     # Assuming policy_targets are distributions, convert to indices for CrossEntropyLoss

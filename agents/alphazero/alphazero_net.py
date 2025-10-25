@@ -91,15 +91,14 @@ class AlphaZeroNet(BaseTokenizingNet):
         self,
         state_tokens: torch.Tensor,
         state_padding_mask: torch.Tensor,
-        legal_actions: List[List[ActionType]],
+        action_tokens: torch.Tensor,
+        action_batch_indices: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Performs a forward pass for a batch of states during training.
-        The input is pre-tokenized state tensors.
-        `legal_actions` is a list of lists, where each inner list contains the
-        legal actions for a state in the batch.
+        The input is pre-tokenized state and action tensors.
         """
-        batch_size = len(legal_actions)
+        batch_size = state_tokens.size(0)
         device = state_tokens.device
 
         game_token = self.game_token.expand(batch_size, -1, -1)
@@ -119,57 +118,31 @@ class AlphaZeroNet(BaseTokenizingNet):
         value_preds = self.value_head(game_token_output).squeeze(-1)
 
         # --- Policy Head ---
-        # This part becomes more complex because each item in the batch can have a
-        # different number of legal actions. We process them all together and then
-        # group the results.
-
-        # Flatten all legal actions from the batch into a single list to process them
-        # all at once for efficiency.
-        flat_legal_actions = []
-        batch_indices_for_policy = []
-        for i, actions in enumerate(legal_actions):
-            if actions:
-                flat_legal_actions.extend(actions)
-                batch_indices_for_policy.extend([i] * len(actions))
-
-        if not batch_indices_for_policy:
-            # If no legal actions in the entire batch, return empty logits.
-            # This needs to be handled by the caller/loss function.
+        if action_tokens.numel() == 0:
+            # No legal actions in the entire batch.
             return torch.empty(batch_size, 0, device=device), value_preds
 
-        # Get embeddings for all actions in one go
-        flat_action_tokens_tensor = self.tokenize_actions(flat_legal_actions)
-        batch_indices_tensor = torch.tensor(
-            batch_indices_for_policy, device=device, dtype=torch.long
-        )
-
         # Select the corresponding state embeddings for each action
-        state_embs_for_policy = game_token_output[batch_indices_tensor]
+        state_embs_for_policy = game_token_output[action_batch_indices]
 
         # Combine state and action embeddings and get scores
-        policy_input = torch.cat(
-            [state_embs_for_policy, flat_action_tokens_tensor], dim=1
-        )
+        policy_input = torch.cat([state_embs_for_policy, action_tokens], dim=1)
         scores = self.policy_head(policy_input).squeeze(-1)
 
-        # The output `scores` is a flat tensor. The loss function will need to
-        # handle this. We'll return the raw scores and let the loss function apply softmax.
-        # However, CrossEntropyLoss expects logits in a (N, C) tensor.
-        # We will pad the scores for each batch item.
-        scores_by_item = []
-        start_idx = 0
-        for i in range(batch_size):
-            num_actions = len(legal_actions[i])
-            if num_actions > 0:
-                scores_by_item.append(scores[start_idx : start_idx + num_actions])
-                start_idx += num_actions
-            else:
-                scores_by_item.append(torch.empty(0, device=device))
+        # The output `scores` is a flat tensor. We need to pad them into a
+        # (batch_size, max_actions) tensor for the loss function.
+        action_lengths = torch.bincount(action_batch_indices, minlength=batch_size)
+        max_actions = action_lengths.max().item()
 
-        # Pad the list of score tensors to create a single (batch_size, max_actions) tensor.
-        policy_logits = nn.utils.rnn.pad_sequence(
-            scores_by_item, batch_first=True, padding_value=-torch.inf
+        policy_logits = torch.full(
+            (batch_size, max_actions), -torch.inf, device=device
         )
+
+        # Create a mask for scattering the scores into the padded tensor
+        action_indices = torch.cat(
+            [torch.arange(L, device=device) for L in action_lengths.tolist()]
+        )
+        policy_logits[action_batch_indices, action_indices] = scores
 
         return policy_logits, value_preds
 
