@@ -46,7 +46,7 @@ class AlphaZeroNet(BaseTokenizingNet):
         self, state: StateType
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Processes a single state to get its embedding and value."""
-        tokens = self._state_to_tokens(state)  # (1, num_tokens, dim)
+        tokens = self.tokenize_state(state)  # (1, num_tokens, dim)
 
         # Prepend game token
         game_token = self.game_token.expand(1, -1, -1)
@@ -67,7 +67,7 @@ class AlphaZeroNet(BaseTokenizingNet):
         """
         self.eval()
         with torch.no_grad():
-            state = self._apply_transforms(state_with_key.state)
+            state = self.apply_transforms(state_with_key.state)
             game_embedding, value_tensor = self._get_state_embedding_and_value(state)
             value = value_tensor.squeeze().cpu().item()
 
@@ -75,7 +75,7 @@ class AlphaZeroNet(BaseTokenizingNet):
                 return {}, value
 
             # Score legal actions
-            action_tokens = self._actions_to_tokens(legal_actions)
+            action_tokens = self.tokenize_actions(legal_actions)
             state_embedding_expanded = game_embedding.expand(len(legal_actions), -1)
             policy_input = torch.cat([state_embedding_expanded, action_tokens], dim=1)
             scores = self.policy_head(policy_input).squeeze(-1)
@@ -89,22 +89,31 @@ class AlphaZeroNet(BaseTokenizingNet):
 
     def forward(
         self,
-        state: Dict[str, "DataFrame"],
+        state_tokens: torch.Tensor,
+        state_padding_mask: torch.Tensor,
         legal_actions: List[List[ActionType]],
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Performs a forward pass for a batch of states during training.
-        The input is a dictionary of batched DataFrames.
+        The input is pre-tokenized state tensors.
         `legal_actions` is a list of lists, where each inner list contains the
         legal actions for a state in the batch.
         """
         batch_size = len(legal_actions)
-        transformer_output = self._get_transformer_output(
-            state=state,
-            batch_size=len(legal_actions),
+        device = state_tokens.device
+
+        game_token = self.game_token.expand(batch_size, -1, -1)
+        sequence = torch.cat([game_token, state_tokens], dim=1)
+
+        game_token_mask = torch.zeros(
+            batch_size, 1, dtype=torch.bool, device=state_tokens.device
+        )
+        full_padding_mask = torch.cat([game_token_mask, state_padding_mask], dim=1)
+
+        transformer_output = self.transformer_encoder(
+            sequence, src_key_padding_mask=full_padding_mask
         )
         game_token_output = transformer_output[:, 0, :]  # (batch, dim)
-        device = transformer_output.device
 
         # --- Value Head ---
         value_preds = self.value_head(game_token_output).squeeze(-1)
@@ -129,7 +138,7 @@ class AlphaZeroNet(BaseTokenizingNet):
             return torch.empty(batch_size, 0, device=device), value_preds
 
         # Get embeddings for all actions in one go
-        flat_action_tokens_tensor = self._actions_to_tokens(flat_legal_actions)
+        flat_action_tokens_tensor = self.tokenize_actions(flat_legal_actions)
         batch_indices_tensor = torch.tensor(
             batch_indices_for_policy, device=device, dtype=torch.long
         )

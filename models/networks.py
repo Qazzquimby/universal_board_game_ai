@@ -23,7 +23,7 @@ class BaseTokenizingNet(nn.Module):
                 cardinality + 2, embedding_dim, padding_idx=0
             )
 
-    def _apply_transforms(self, state: StateType) -> StateType:
+    def apply_transforms(self, state: StateType) -> StateType:
         """Applies transformations to a state dictionary of DataFrames, returning a new state dict."""
         transformed_state = {}
         transforms = self.network_spec.get("transforms", {})
@@ -57,7 +57,7 @@ class BaseTokenizingNet(nn.Module):
 
         return transformed_state
 
-    def _state_to_tokens(self, state: StateType) -> torch.Tensor:
+    def tokenize_state(self, state: StateType) -> torch.Tensor:
         """
         Converts a game state (dict of DataFrames) into a tensor of token embeddings.
         Assumes that any necessary transformations have already been applied to the state.
@@ -79,33 +79,13 @@ class BaseTokenizingNet(nn.Module):
         if not has_data:
             return torch.empty(1, 0, self.embedding_dim, device=device)
 
-        token_sequences, token_mask = self._batched_state_to_tokens_and_mask(
+        token_sequences, token_mask = self.tokenize_state_batch(
             batched_state, batch_size=1
         )
 
         return token_sequences[0].unsqueeze(0)  # (1, num_tokens, dim)
 
-    def _get_transformer_output(
-        self, state: StateType, batch_size: int = 1
-    ) -> torch.Tensor:
-        padded_tokens, padding_mask = self._batched_state_to_tokens_and_mask(
-            state, batch_size=batch_size
-        )
-
-        game_token = self.game_token.expand(batch_size, -1, -1)
-        sequence = torch.cat([game_token, padded_tokens], dim=1)
-
-        game_token_mask = torch.zeros(
-            batch_size, 1, dtype=torch.bool, device=padded_tokens.device
-        )
-        full_padding_mask = torch.cat([game_token_mask, padding_mask], dim=1)
-
-        transformer_output = self.transformer_encoder(
-            sequence, src_key_padding_mask=full_padding_mask
-        )
-        return transformer_output
-
-    def _batched_state_to_tokens_and_mask(
+    def tokenize_state_batch(
         self, state_batch: Dict[str, DataFrame], batch_size: int
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -183,7 +163,7 @@ class BaseTokenizingNet(nn.Module):
 
         return padded_tokens, padding_mask
 
-    def _actions_to_tokens(self, actions: List[ActionType]) -> torch.Tensor:
+    def tokenize_actions(self, actions: List[ActionType]) -> torch.Tensor:
         """Converts a batch of actions into embedding tokens using vectorized operations."""
         device = self.get_device()
         if not actions:
@@ -215,9 +195,9 @@ class BaseTokenizingNet(nn.Module):
 
         return action_embeddings
 
-    def _action_to_token(self, action: ActionType) -> torch.Tensor:
+    def tokenize_action(self, action: ActionType) -> torch.Tensor:
         """Converts a single action into an embedding token."""
-        return self._actions_to_tokens([action]).squeeze(0)
+        return self.tokenize_actions([action]).squeeze(0)
 
     def get_device(self):
         return next(self.parameters()).device

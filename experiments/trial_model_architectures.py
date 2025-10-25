@@ -15,7 +15,11 @@ import optuna
 
 from core.config import TRAINING_DEVICE
 from agents.alphazero.alphazero_net import AlphaZeroNet
-from agents.base_learning_agent import BaseCollation, _get_batched_state
+from agents.base_learning_agent import (
+    BaseCollation,
+    _get_batched_state,
+    get_tokenizing_collate_fn,
+)
 from environments.base import DataFrame
 from environments.connect4 import Connect4
 from experiments.architectures.graph_transformers import (
@@ -691,6 +695,9 @@ def create_az_input(board_tensor: torch.Tensor):
     return (state_dict, legal_actions)
 
 
+alphazero_collate_fn = get_tokenizing_collate_fn(self.network)
+
+
 def alphazero_collate_fn(batch):
     inputs, policy_targets, value_targets = zip(*batch)
     state_dicts, legal_actions_batch = zip(*inputs)
@@ -747,16 +754,17 @@ def run_alphazero_experiments(all_results: dict, data: TestData):
         },
     ]
 
-    run_experiments(
-        all_results=all_results,
-        data=data,
-        name="AlphaZero",
-        input_creator=create_az_input,
-        dataset_class=AZIrregularInputsDataset,
-        experiments=experiments,
-        collate_function=alphazero_collate_fn,
-        process_batch_fn=_process_batch_az,
-    )
+    if experiments:
+        run_experiments(
+            all_results=all_results,
+            data=data,
+            name="AlphaZero",
+            input_creator=create_az_input,
+            dataset_class=AZIrregularInputsDataset,
+            experiments=experiments,
+            collate_function=get_tokenizing_collate_fn(experiments[0]["model_class"]),
+            process_batch_fn=_process_batch_az,
+        )
 
 
 def run_graph_transformer_experiments(all_results: dict, data: TestData):

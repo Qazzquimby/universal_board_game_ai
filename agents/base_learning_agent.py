@@ -33,7 +33,8 @@ from core.config import (
 
 @dataclass
 class BaseCollation:
-    batched_state: Dict[str, DataFrame]
+    state_tokens: torch.Tensor
+    state_padding_mask: torch.Tensor
     policy_targets: torch.Tensor
     value_targets: torch.Tensor
     legal_actions_batch: Tuple[ActionType]
@@ -66,28 +67,35 @@ def _get_batched_state(state_dicts: List[Dict[str, DataFrame]]) -> Dict:
     return batched_state
 
 
-def base_collate_fn(
-    batch: Tuple[Dict, torch.Tensor, torch.Tensor, List[ActionType]]
-) -> BaseCollation:
+def get_tokenizing_collate_fn(network: nn.Module) -> callable:
     """
-    Custom collate function to handle batches of experiences, where states are
-    dictionaries of DataFrames.
+    Returns a collate function that tokenizes game states using the provided network.
     """
-    state_dicts, policy_targets, value_targets, legal_actions_batch = zip(*batch)
-    batched_state = _get_batched_state(state_dicts=state_dicts)
 
-    # Pad the policy targets to have the same length.
-    policy_targets = nn.utils.rnn.pad_sequence(
-        list(policy_targets), batch_first=True, padding_value=0.0
-    )
-    value_targets = torch.stack(list(value_targets), 0)
+    def collate_fn(
+        batch: Tuple[Dict, torch.Tensor, torch.Tensor, List[ActionType]]
+    ) -> BaseCollation:
+        state_dicts, policy_targets, value_targets, legal_actions_batch = zip(*batch)
+        batched_state = _get_batched_state(state_dicts=state_dicts)
 
-    return BaseCollation(
-        batched_state=batched_state,
-        policy_targets=policy_targets,
-        value_targets=value_targets,
-        legal_actions_batch=legal_actions_batch,
-    )
+        state_tokens, state_padding_mask = network.tokenize_state_batch(
+            batched_state, batch_size=len(state_dicts)
+        )
+
+        policy_targets = nn.utils.rnn.pad_sequence(
+            list(policy_targets), batch_first=True, padding_value=0.0
+        )
+        value_targets = torch.stack(list(value_targets), 0)
+
+        return BaseCollation(
+            state_tokens=state_tokens,
+            state_padding_mask=state_padding_mask,
+            policy_targets=policy_targets,
+            value_targets=value_targets,
+            legal_actions_batch=legal_actions_batch,
+        )
+
+    return collate_fn
 
 
 @dataclass
@@ -373,7 +381,10 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
                     self.optimizer.zero_grad()
 
                 policy_logits, value_preds = self.network(
-                    batch_data.batched_state,
+                    state_tokens=batch_data.state_tokens.to(self.device),
+                    state_padding_mask=batch_data.state_padding_mask.to(
+                        self.device
+                    ),
                     legal_actions=batch_data.legal_actions_batch,
                 )
                 loss_statistics = self._calculate_loss(

@@ -11,7 +11,7 @@ import numpy as np
 from agents.alphazero.alphazero_net import AlphaZeroNet
 from agents.base_learning_agent import (
     BaseLearningAgent,
-    base_collate_fn,
+    get_tokenizing_collate_fn,
     LossStatistics,
     GameHistoryStep,
 )
@@ -134,7 +134,7 @@ class AlphaZeroAgent(BaseLearningAgent):
                 continue
 
             legal_actions = [row[0] for row in legal_actions_df.rows()]
-            transformed_state = self.network._apply_transforms(game_history.state)
+            transformed_state = self.network.apply_transforms(game_history.state)
             experiences.append(
                 AlphaZeroExperience(
                     state=transformed_state,
@@ -151,7 +151,7 @@ class AlphaZeroAgent(BaseLearningAgent):
 
     def _get_collate_fn(self) -> callable:
         """Returns the collate function for the DataLoader."""
-        return base_collate_fn
+        return get_tokenizing_collate_fn(self.network)
 
     def _expand_leaf(self, leaf_node: MCTSNode, leaf_env: BaseEnvironment, train: bool):
         if not leaf_node.is_expanded and not leaf_env.is_done:
