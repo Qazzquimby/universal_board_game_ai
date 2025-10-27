@@ -88,7 +88,7 @@ def run_training_loop(
                 config=config,
             )
 
-            if eval_results.win_rate > 0.6:
+            if eval_results.win_rate >= 0.6:
                 logger.info(
                     f"{current_agent.name} outperformed MCTS with win rate: {eval_results.win_rate:.2f}. "
                     f"Promoting to use {current_agent.name} for self-play."
