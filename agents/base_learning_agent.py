@@ -206,7 +206,16 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
         self.train_replay_buffer = deque(maxlen=train_buffer_size)
         self.val_replay_buffer = deque(maxlen=val_buffer_size)
 
+        self.loaded = False
+        self.printed_not_loaded_warning = False
+
+    def print_not_loaded_warning(self):
+        if not self.loaded and not self.printed_not_loaded_warning:
+            print("WARN: Network weights not loaded")
+            self.printed_not_loaded_warning = True
+
     def act(self, env: BaseEnvironment, train: bool = False) -> ActionType:
+        self.print_not_loaded_warning()
         self.search(env=env, train=train)
 
         temperature = self.config.temperature if train else 0.0
@@ -643,4 +652,5 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
             self.optimizer.load_state_dict(
                 torch.load(opt_path, map_location=map_location)
             )
+        self.loaded = True
         return True

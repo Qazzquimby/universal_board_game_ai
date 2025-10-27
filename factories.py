@@ -21,38 +21,6 @@ from agents.mcts_agent import make_pure_mcts
 from algorithms.mcts import UCB1Selection, StandardBackpropagation
 
 
-def _create_az_agent(env: BaseEnvironment, config: AppConfig) -> AlphaZeroAgent:
-    az_config = config.alphazero
-    training_config = config.training
-    network = AlphaZeroNet(env=env)
-    network.init_zero()
-    optimizer = optim.AdamW(network.parameters(), lr=training_config.learning_rate)
-
-    az_agent = AlphaZeroAgent(
-        selection_strategy=UCB1Selection(exploration_constant=az_config.cpuct),
-        expansion_strategy=AlphaZeroExpansion(network=network),
-        evaluation_strategy=AlphaZeroEvaluation(network=network),
-        backpropagation_strategy=StandardBackpropagation(),
-        network=network,
-        optimizer=optimizer,
-        env=env,
-        config=az_config,
-        training_config=training_config,
-    )
-    return az_agent
-
-
-def _create_mz_agent(env: BaseEnvironment, config: AppConfig) -> MuZeroAgent:
-    mz_config = config.muzero
-    training_config = config.training
-    mz_agent = make_pure_muzero(
-        env=env,
-        config=mz_config,
-        training_config=training_config,
-    )
-    return mz_agent
-
-
 def get_environment(env_config: EnvConfig) -> BaseEnvironment:
     """Factory function to create environment instances."""
     if env_config.name.lower() == "connect4":
@@ -112,4 +80,6 @@ def _create_learning_agent(
         )
     else:
         raise ValueError(f"Unknown model type: {model_type}")
+
+    agent.load_latest_version()
     return agent

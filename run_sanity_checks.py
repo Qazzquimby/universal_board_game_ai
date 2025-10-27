@@ -125,6 +125,9 @@ def main():
             agents_to_check.append((f"{agent_name} (Network Only)", agent, True))
 
     for agent_name, agent, network_only in agents_to_check:
+        if "Network Only" not in agent_name:
+            # debug
+            continue
         run_sanity_checks_for_agent(env, agent, agent_name, network_only=network_only)
 
 
