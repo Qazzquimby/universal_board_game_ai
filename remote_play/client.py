@@ -96,20 +96,40 @@ class RemotePlayClient:
                 ip: filename for ip, filename in zip(self.ips, model_filenames)
             }
 
-            # todo We'd like to make another request after it finishes its first, not dump all requests at the start.
-            tasks = []
-            for i in range(num_games):
-                ip = self.ips[i % len(self.ips)]
-                task = asyncio.create_task(
-                    self._run_game_on_server(
-                        session, ip, model_filenames_map[ip], config, model_type
-                    )
-                )
-                tasks.append(task)
+            game_queue = list(range(num_games))
 
-            for task in asyncio.as_completed(tasks):
-                try:
-                    result = await task
-                    yield result
-                except Exception as e:
-                    logger.error(f"A game task failed: {e}")
+            # Start initial tasks (one per server)
+            active_tasks = {}
+            for ip in self.ips:
+                if game_queue:
+                    game_queue.pop(0)
+                    task = asyncio.create_task(
+                        self._run_game_on_server(
+                            session, ip, model_filenames_map[ip], config, model_type
+                        )
+                    )
+                    active_tasks[task] = ip
+
+            # Process completed tasks and start new ones
+            while active_tasks:
+                done, pending = await asyncio.wait(
+                    active_tasks.keys(), return_when=asyncio.FIRST_COMPLETED
+                )
+
+                for task in done:
+                    ip = active_tasks.pop(task)
+                    try:
+                        result = await task
+                        yield result
+                    except Exception as e:
+                        logger.error(f"A game task failed: {e}")
+
+                    # Start a new game on the now-free server
+                    if game_queue:
+                        game_queue.pop(0)
+                        new_task = asyncio.create_task(
+                            self._run_game_on_server(
+                                session, ip, model_filenames_map[ip], config, model_type
+                            )
+                        )
+                        active_tasks[new_task] = ip
