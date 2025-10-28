@@ -266,36 +266,40 @@ def run_remote_self_play(
     model_path = learning_agent.get_model_iter_path(iteration)
     num_games = config.training.num_games_per_iteration
 
-    game_results = asyncio.run(
-        client.run_self_play_games(str(model_path), num_games, config, model_type)
-    )
-    if not game_results:
-        logger.warning("Remote self-play did not return any game results.")
+    async def _run_remote_and_process():
+        game_log_index_offset = iteration * config.training.num_games_per_iteration
+        total_experiences_added = 0
+        total_games_processed = 0
+        pbar = tqdm(total=num_games, desc="Remote Self-Play Games")
 
-    game_log_index_offset = iteration * config.training.num_games_per_iteration
-    total_experiences_added = 0
-    total_games_processed = 0
+        async for game_history, final_outcome in client.run_self_play_games(
+            str(model_path), num_games, config, model_type
+        ):
+            if not game_history:
+                continue
 
-    for game_history, final_outcome in game_results:
-        if not game_history:
-            continue
+            current_game_log_index = (
+                game_log_index_offset + total_games_processed + 1
+            )
+            experiences_added = _process_and_save_game_results(
+                game_history=game_history,
+                final_outcome=final_outcome,
+                learning_agent=learning_agent,
+                game_log_index=current_game_log_index,
+                iteration=iteration,
+                config=config,
+                model_name=self_play_agent.model_name,
+            )
+            total_experiences_added += experiences_added
+            total_games_processed += 1
+            pbar.update(1)
 
-        current_game_log_index = game_log_index_offset + total_games_processed + 1
-        experiences_added = _process_and_save_game_results(
-            game_history=game_history,
-            final_outcome=final_outcome,
-            learning_agent=learning_agent,
-            game_log_index=current_game_log_index,
-            iteration=iteration,
-            config=config,
-            model_name=self_play_agent.model_name,
+        pbar.close()
+        logger.info(
+            f"Processed {total_games_processed} games, adding {total_experiences_added} experiences to replay buffer."
         )
-        total_experiences_added += experiences_added
-        total_games_processed += 1
 
-    logger.info(
-        f"Processed {total_games_processed} games, adding {total_experiences_added} experiences to replay buffer."
-    )
+    asyncio.run(_run_remote_and_process())
 
 
 def run_self_play(

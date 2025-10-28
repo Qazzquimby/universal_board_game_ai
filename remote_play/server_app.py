@@ -21,7 +21,6 @@ MODEL_DIR.mkdir(exist_ok=True)
 
 class SelfPlayRequest(BaseModel):
     model_filename: str
-    num_games: int
     config_yaml: str
     model_type: str
 
@@ -52,7 +51,7 @@ async def upload_model(file: UploadFile = File(...)):
 @app.post("/run-self-play/")
 async def run_self_play_endpoint(
     request: SelfPlayRequest,
-) -> List[Tuple[List[Dict[str, Any]], float]]:
+) -> Tuple[List[Dict[str, Any]], float]:
     config = AppConfig.parse_obj(yaml.safe_load(request.config_yaml))
     env = get_environment(config.env)
 
@@ -66,10 +65,6 @@ async def run_self_play_endpoint(
     if agent.network:
         agent.network.eval()
 
-    results = []
-    for _ in range(request.num_games):
-        game_history, final_outcome = _run_one_self_play_game(env, agent)
-        serializable_history = [serialize_game_step(step) for step in game_history]
-        results.append((serializable_history, final_outcome))
-
-    return results
+    game_history, final_outcome = _run_one_self_play_game(env, agent)
+    serializable_history = [serialize_game_step(step) for step in game_history]
+    return serializable_history, final_outcome

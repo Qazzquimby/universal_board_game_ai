@@ -37,89 +37,79 @@ class RemotePlayClient:
             response.raise_for_status()
             return (await response.json())["filename"]
 
-    def _deserialize_game_results(
-        self, raw_results: List[Tuple[list, float]]
-    ) -> List[Tuple[List[GameHistoryStep], float]]:
-        deserialized_results = []
-        for raw_history, final_outcome in raw_results:
-            history = []
-            for step_dict in raw_history:
-                state_dict = step_dict["state"]
-                state = {}
-                for k, df_dict in state_dict.items():
-                    df = DataFrame(data=df_dict["_data"], columns=df_dict["columns"])
-                    state[k] = df
+    def _deserialize_game_result(
+        self, raw_result: Tuple[list, float]
+    ) -> Tuple[List[GameHistoryStep], float]:
+        raw_history, final_outcome = raw_result
+        history = []
+        for step_dict in raw_history:
+            state_dict = step_dict["state"]
+            state = {}
+            for k, df_dict in state_dict.items():
+                df = DataFrame(data=df_dict["_data"], columns=df_dict["columns"])
+                state[k] = df
 
-                step = GameHistoryStep(
-                    state=state,
-                    action=step_dict["action"],
-                    policy=np.array(step_dict["policy"], dtype=np.float32),
-                    legal_actions=step_dict["legal_actions"],
-                )
-                history.append(step)
-            deserialized_results.append((history, final_outcome))
-        return deserialized_results
+            step = GameHistoryStep(
+                state=state,
+                action=step_dict["action"],
+                policy=np.array(step_dict["policy"], dtype=np.float32),
+                legal_actions=step_dict["legal_actions"],
+            )
+            history.append(step)
+        return history, final_outcome
 
-    async def _run_games_on_server(
+    async def _run_game_on_server(
         self,
         session: aiohttp.ClientSession,
         ip: str,
         model_filename: str,
-        num_games: int,
         config: AppConfig,
         model_type: str,
-    ) -> List[Tuple[List[GameHistoryStep], float]]:
+    ) -> Tuple[List[GameHistoryStep], float]:
         url = f"http://{ip}:8000/run-self-play/"
         payload = {
             "model_filename": model_filename,
-            "num_games": num_games,
             "config_yaml": yaml.dump(config.dict()),
             "model_type": model_type,
         }
         try:
             async with session.post(url, json=payload, timeout=3600) as response:
                 response.raise_for_status()
-                raw_results = await response.json()
-                return self._deserialize_game_results(raw_results)
+                raw_result = await response.json()
+                return self._deserialize_game_result(raw_result)
         except aiohttp.ClientError as e:
-            logger.error(f"Error running games on server {ip}: {e}")
-            return []
+            logger.error(f"Error running game on server {ip}: {e}")
+            raise
 
     async def run_self_play_games(
         self, model_path: str, num_games: int, config: AppConfig, model_type: str
-    ) -> List[Tuple[List[GameHistoryStep], float]]:
+    ):
         if not self.ips:
-            return []
-
-        num_servers = len(self.ips)
-        games_per_server = [num_games // num_servers] * num_servers
-        for i in range(num_games % num_servers):
-            games_per_server[i] += 1
+            return
 
         async with aiohttp.ClientSession() as session:
             upload_tasks = [
                 self._upload_model_to_server(session, ip, model_path) for ip in self.ips
             ]
             model_filenames = await asyncio.gather(*upload_tasks)
+            model_filenames_map = {
+                ip: filename for ip, filename in zip(self.ips, model_filenames)
+            }
 
-            game_tasks = []
-            for ip, model_filename, games_count in zip(
-                self.ips, model_filenames, games_per_server
-            ):
-                if games_count > 0:
-                    game_tasks.append(
-                        self._run_games_on_server(
-                            session,
-                            ip,
-                            model_filename,
-                            games_count,
-                            config,
-                            model_type,
-                        )
+            # todo We'd like to make another request after it finishes its first, not dump all requests at the start.
+            tasks = []
+            for i in range(num_games):
+                ip = self.ips[i % len(self.ips)]
+                task = asyncio.create_task(
+                    self._run_game_on_server(
+                        session, ip, model_filenames_map[ip], config, model_type
                     )
+                )
+                tasks.append(task)
 
-            results_from_all_servers = await asyncio.gather(*game_tasks)
-
-        return [
-            item for sublist in results_from_all_servers for item in sublist
-        ]  # flatten list
+            for task in asyncio.as_completed(tasks):
+                try:
+                    result = await task
+                    yield result
+                except Exception as e:
+                    logger.error(f"A game task failed: {e}")
