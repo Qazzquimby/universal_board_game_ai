@@ -72,6 +72,7 @@ def run_training_loop(
                     env=env,
                     config=config,
                     iteration=iteration,
+                    model_type=model_type,
                 )
             else:
                 run_self_play(
@@ -154,6 +155,71 @@ def get_self_play_agent_and_start_iteration(
     return self_play_agent, start_iteration
 
 
+def _run_one_self_play_game(
+    env: BaseEnvironment, self_play_agent: Union[AlphaZeroAgent, MuZeroAgent, MCTSAgent]
+) -> Tuple[List[GameHistoryStep], float]:
+    """Runs a single game of self-play and returns the history."""
+    game_env = env.copy()
+    state_with_key = game_env.reset()
+    game_history = []
+    self_play_agent.reset_game()
+
+    while not state_with_key.done:
+        state = state_with_key.state
+        legal_actions = game_env.get_legal_actions()
+        action = self_play_agent.act(game_env, train=True)
+
+        if isinstance(self_play_agent, AlphaZeroAgent) or isinstance(
+            self_play_agent, MuZeroAgent
+        ):
+            policy_target = self_play_agent.get_policy_target(legal_actions)
+        elif isinstance(self_play_agent, MCTSAgent):
+            policy_target = np.zeros(len(legal_actions), dtype=np.float32)
+            if not self_play_agent.root:
+                raise RuntimeError("MCTSAgent has no root after act()")
+            action_visits = {
+                edge_action: edge.num_visits
+                for edge_action, edge in self_play_agent.root.edges.items()
+            }
+            total_visits = sum(action_visits.values())
+            if total_visits > 0:
+                visit_probs = {
+                    act: visits / total_visits for act, visits in action_visits.items()
+                }
+                for i, act in enumerate(legal_actions):
+                    act_key = tuple(act) if isinstance(act, list) else act
+                    policy_target[i] = visit_probs.get(act_key, 0.0)
+        else:
+            raise TypeError(
+                f"Unsupported agent type for self-play: {type(self_play_agent)}"
+            )
+
+        state_with_actions = state.copy()
+        if legal_actions:
+            action_data = [[a] for a in legal_actions]
+            state_with_actions["legal_actions"] = DataFrame(
+                data=action_data, columns=["action_id"]
+            )
+        else:
+            state_with_actions["legal_actions"] = DataFrame(
+                data=[], columns=["action_id"]
+            )
+
+        game_history.append(
+            GameHistoryStep(
+                state=state_with_actions,
+                action=action,
+                policy=policy_target,
+                legal_actions=legal_actions,
+            )
+        )
+        action_result = game_env.step(action)
+        state_with_key = action_result.next_state_with_key
+
+    final_outcome = game_env.get_reward_for_player(player=0)
+    return game_history, final_outcome
+
+
 def _process_and_save_game_results(
     game_history: List[GameHistoryStep],
     final_outcome: float,
@@ -186,6 +252,7 @@ def run_remote_self_play(
     env: BaseEnvironment,
     config: AppConfig,
     iteration: int,
+    model_type: str,
 ):
     logger.info("Running remote self play")
     client = RemotePlayClient()
@@ -199,7 +266,9 @@ def run_remote_self_play(
     model_path = learning_agent.get_model_iter_path(iteration)
     num_games = config.training.num_games_per_iteration
 
-    game_results = asyncio.run(client.run_self_play_games(str(model_path), num_games))
+    game_results = asyncio.run(
+        client.run_self_play_games(str(model_path), num_games, config, model_type)
+    )
     if not game_results:
         logger.warning("Remote self-play did not return any game results.")
 
@@ -246,65 +315,7 @@ def run_self_play(
     total_games_processed = 0
 
     for game_num in tqdm(range(num_games_total), desc="Self-Play Games"):
-        game_env = env.copy()
-        state_with_key = game_env.reset()
-        game_history = []
-        self_play_agent.reset_game()
-
-        while not state_with_key.done:
-            state = state_with_key.state
-            legal_actions = game_env.get_legal_actions()
-            action = self_play_agent.act(game_env, train=True)
-
-            if isinstance(self_play_agent, AlphaZeroAgent) or isinstance(
-                self_play_agent, MuZeroAgent
-            ):
-                policy_target = self_play_agent.get_policy_target(legal_actions)
-            elif isinstance(self_play_agent, MCTSAgent):
-                policy_target = np.zeros(len(legal_actions), dtype=np.float32)
-                if not self_play_agent.root:
-                    raise RuntimeError("MCTSAgent has no root after act()")
-                action_visits = {
-                    edge_action: edge.num_visits
-                    for edge_action, edge in self_play_agent.root.edges.items()
-                }
-                total_visits = sum(action_visits.values())
-                if total_visits > 0:
-                    visit_probs = {
-                        act: visits / total_visits
-                        for act, visits in action_visits.items()
-                    }
-                    for i, act in enumerate(legal_actions):
-                        act_key = tuple(act) if isinstance(act, list) else act
-                        policy_target[i] = visit_probs.get(act_key, 0.0)
-            else:
-                raise TypeError(
-                    f"Unsupported agent type for self-play: {type(self_play_agent)}"
-                )
-
-            state_with_actions = state.copy()
-            if legal_actions:
-                action_data = [[a] for a in legal_actions]
-                state_with_actions["legal_actions"] = DataFrame(
-                    data=action_data, columns=["action_id"]
-                )
-            else:
-                state_with_actions["legal_actions"] = DataFrame(
-                    data=[], columns=["action_id"]
-                )
-
-            game_history.append(
-                GameHistoryStep(
-                    state=state_with_actions,
-                    action=action,
-                    policy=policy_target,
-                    legal_actions=legal_actions,
-                )
-            )
-            action_result = game_env.step(action)
-            state_with_key = action_result.next_state_with_key
-
-        final_outcome = game_env.get_reward_for_player(player=0)
+        game_history, final_outcome = _run_one_self_play_game(env, self_play_agent)
 
         if not game_history:
             logger.warning(f"Skipping game {game_num} with empty raw history.")

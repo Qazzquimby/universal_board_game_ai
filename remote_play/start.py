@@ -8,6 +8,7 @@ from os import environ
 from hcloud import Client
 from hcloud.images import Image
 from hcloud.server_types import ServerType
+from pathlib import Path
 
 assert "HCLOUD_TOKEN" in environ, "Please set HCLOUD_TOKEN"
 token = environ["HCLOUD_TOKEN"]
@@ -15,7 +16,13 @@ token = environ["HCLOUD_TOKEN"]
 client = Client(token=token)
 
 N_SERVERS = 1
-APP_FILES = ["main.py", "requirements.txt"]
+APP_FILES = [
+    "requirements.txt",
+    "factories.py",
+    "remote_play/server_app.py",
+    "config.yaml",
+]
+APP_DIRS = ["agents", "algorithms", "core", "environments", "models", "utils"]
 SERVER_TYPE = "cx22"
 IMAGE = "ubuntu-24.04"
 
@@ -36,10 +43,18 @@ async def setup_server(server):
     await wait_for_ssh(ip)
     async with asyncssh.connect(ip, username="root", known_hosts=None) as conn:
         await conn.run("apt update -y && apt install -y python3 python3-pip")
+
+        for d in APP_DIRS:
+            await asyncssh.scp(d, (conn, d), recurse=True)
         for f in APP_FILES:
-            await asyncssh.scp(f, (conn, f))
+            target_name = "main.py" if "server_app.py" in f else Path(f).name
+            await asyncssh.scp(f, (conn, target_name))
+
         await conn.run("pip install -r requirements.txt")
-        conn.create_process("nohup python3 main.py > app.log 2>&1 &")
+        # Ensure uvicorn, fastapi, etc. are in requirements.txt
+        conn.create_process(
+            "nohup python3 -m uvicorn main:app --host 0.0.0.0 --port 8000 > app.log 2>&1 &"
+        )
     return ip
 
 
