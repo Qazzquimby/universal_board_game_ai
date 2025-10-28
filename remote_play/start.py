@@ -14,7 +14,7 @@ token = environ["HCLOUD_TOKEN"]
 
 client = Client(token=token)
 
-N_SERVERS = 3
+N_SERVERS = 1
 APP_FILES = ["main.py", "requirements.txt"]
 SERVER_TYPE = "cx22"
 IMAGE = "ubuntu-24.04"
@@ -69,14 +69,16 @@ async def main():
     print("Waiting for servers...")
     client.servers.wait_for_actions([resp.action for resp in servers])
 
-    ips = []
+    servers_data = []
     for s in servers:
         ip = await setup_server(s)
-        ips.append(ip)
+        servers_data.append({"id": s.id, "ip": ip})
+
+    ips = [s["ip"] for s in servers_data]
     print("Servers ready:", ips)
 
     with open("servers.json", "w") as f:
-        json.dump([s.id for s in servers], f)
+        json.dump(servers_data, f)
 
     await send_requests(ips)
 

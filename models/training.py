@@ -1,5 +1,7 @@
 from typing import List, Union, Tuple
 import time
+import os
+import asyncio
 
 import numpy as np
 from tqdm import tqdm
@@ -13,6 +15,7 @@ from environments.base import BaseEnvironment, DataFrame
 from agents.alphazero.alphazero_agent import AlphaZeroAgent
 from agents.muzero.muzero_agent import MuZeroAgent
 from factories import get_environment, _create_learning_agent
+from remote_play.client import RemotePlayClient
 from utils.training_reporter import TrainingReporter, BenchmarkResults
 
 SELF_PLAY_ON_FIRST_ITER = False
@@ -62,13 +65,22 @@ def run_training_loop(
 
         if iteration > start_iteration or SELF_PLAY_ON_FIRST_ITER:
             logger.info(f"Running self-play with '{self_play_agent.name}'...")
-            run_self_play(
-                learning_agent=current_agent,
-                self_play_agent=self_play_agent,
-                env=env,
-                config=config,
-                iteration=iteration,
-            )
+            if os.path.exists("servers.json"):
+                run_remote_self_play(
+                    learning_agent=current_agent,
+                    self_play_agent=self_play_agent,
+                    env=env,
+                    config=config,
+                    iteration=iteration,
+                )
+            else:
+                run_self_play(
+                    learning_agent=current_agent,
+                    self_play_agent=self_play_agent,
+                    env=env,
+                    config=config,
+                    iteration=iteration,
+                )
 
         logger.info("Running learning step...")
         metrics = current_agent.train_network()
@@ -140,6 +152,81 @@ def get_self_play_agent_and_start_iteration(
         self_play_agent = base_agent
 
     return self_play_agent, start_iteration
+
+
+def _process_and_save_game_results(
+    game_history: List[GameHistoryStep],
+    final_outcome: float,
+    learning_agent: BaseLearningAgent,
+    game_log_index: int,
+    iteration: int,
+    config: AppConfig,
+    model_name: str,
+) -> int:
+    """Processes a single game's results and saves them."""
+    episode_result = learning_agent.process_finished_episode(
+        game_history, final_outcome
+    )
+
+    learning_agent.add_experiences_to_buffer(episode_result.buffer_experiences)
+
+    save_game_log(
+        logged_history=episode_result.logged_history,
+        iteration=iteration + 1,
+        game_index=game_log_index,
+        env_name=config.env.name,
+        model_name=model_name,
+    )
+    return len(episode_result.buffer_experiences)
+
+
+def run_remote_self_play(
+    learning_agent: BaseLearningAgent,
+    self_play_agent: Union[AlphaZeroAgent, MuZeroAgent, MCTSAgent],
+    env: BaseEnvironment,
+    config: AppConfig,
+    iteration: int,
+):
+    logger.info("Running remote self play")
+    client = RemotePlayClient()
+    if not client.ips:
+        logger.warning(
+            "No remote servers found in servers.json, falling back to local self-play."
+        )
+        run_self_play(learning_agent, self_play_agent, env, config, iteration)
+        return
+
+    model_path = learning_agent.get_model_iter_path(iteration)
+    num_games = config.training.num_games_per_iteration
+
+    game_results = asyncio.run(client.run_self_play_games(str(model_path), num_games))
+    if not game_results:
+        logger.warning("Remote self-play did not return any game results.")
+
+    game_log_index_offset = iteration * config.training.num_games_per_iteration
+    total_experiences_added = 0
+    total_games_processed = 0
+
+    for game_history, final_outcome in game_results:
+        if not game_history:
+            continue
+
+        current_game_log_index = game_log_index_offset + total_games_processed + 1
+        experiences_added = _process_and_save_game_results(
+            game_history=game_history,
+            final_outcome=final_outcome,
+            learning_agent=learning_agent,
+            game_log_index=current_game_log_index,
+            iteration=iteration,
+            config=config,
+            model_name=self_play_agent.model_name,
+        )
+        total_experiences_added += experiences_added
+        total_games_processed += 1
+
+    logger.info(
+        f"Processed {total_games_processed} games, adding {total_experiences_added} experiences to replay buffer."
+    )
 
 
 def run_self_play(
@@ -223,21 +310,17 @@ def run_self_play(
             logger.warning(f"Skipping game {game_num} with empty raw history.")
             continue
 
-        episode_result = learning_agent.process_finished_episode(
-            game_history, final_outcome
-        )
-
-        learning_agent.add_experiences_to_buffer(episode_result.buffer_experiences)
-        total_experiences_added += len(episode_result.buffer_experiences)
-
         current_game_log_index = game_log_index_offset + total_games_processed + 1
-        save_game_log(
-            logged_history=episode_result.logged_history,
-            iteration=iteration + 1,
-            game_index=current_game_log_index,
-            env_name=config.env.name,
+        experiences_added = _process_and_save_game_results(
+            game_history=game_history,
+            final_outcome=final_outcome,
+            learning_agent=learning_agent,
+            game_log_index=current_game_log_index,
+            iteration=iteration,
+            config=config,
             model_name=self_play_agent.model_name,
         )
+        total_experiences_added += experiences_added
         total_games_processed += 1
 
     logger.info(
