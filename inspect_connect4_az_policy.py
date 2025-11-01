@@ -8,7 +8,7 @@ from loguru import logger
 
 from core.config import AppConfig
 from environments.base import DataFrame, StateType
-from environments.connect4 import Connect4
+from environments.connect4.connect4 import Connect4
 from factories import get_agents, get_environment
 
 

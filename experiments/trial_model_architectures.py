@@ -19,19 +19,14 @@ from agents.base_learning_agent import (
     _get_batched_state,
 )
 from environments.base import DataFrame
-from environments.connect4 import Connect4
+from environments.connect4.connect4 import Connect4
 from experiments.architectures.graph_transformers import (
     graph_collate_fn,
-    CellColumnGraphTransformer,
-    create_cell_column_graph,
 )
 from experiments.data_utils import load_and_process_data
 from experiments.architectures.basic import (
     AZDataset,
     AZIrregularInputsDataset,
-    MLPNet,
-    CNNNet,
-    ResNet,
 )
 from experiments.architectures.shared import (
     LEARNING_RATE,
@@ -42,7 +37,6 @@ from experiments.architectures.transformers import (
     create_transformer_input,
     _process_batch_transformer,
     transformer_collate_fn,
-    PieceTransformerNet,
 )
 
 

@@ -25,7 +25,7 @@ from algorithms.mcts import (
     StandardBackpropagation,
 )
 from environments.base import BaseEnvironment
-from environments.connect4 import Connect4
+from environments.connect4.connect4 import Connect4
 
 # --- Constants ---
 TARGET_NUM_STATES = 15_000

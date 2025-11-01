@@ -1,10 +1,9 @@
 import json
-from pathlib import Path
 import numpy as np
 from tqdm import tqdm
 
 from environments.base import DataFrame
-from environments.connect4 import Connect4
+from environments.connect4.connect4 import Connect4
 from experiments.architectures.shared import (
     BOARD_WIDTH,
     DATA_PATH,

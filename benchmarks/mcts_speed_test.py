@@ -3,7 +3,7 @@ from typing import Dict
 
 from agents.mcts_agent import BaseMCTSAgent
 from environments.base import BaseEnvironment, ActionType
-from environments.connect4 import Connect4 as OldConnect4
+from environments.connect4.connect4 import Connect4 as OldConnect4
 from environments_new.connect4 import Connect4 as NewConnect4
 
 

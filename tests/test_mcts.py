@@ -10,7 +10,7 @@ from algorithms.mcts import (
     RandomRolloutEvaluation,
     StandardBackpropagation,
 )
-from environments.connect4 import Connect4, ActionResult
+from environments.connect4.connect4 import Connect4, ActionResult
 from environments.base import ActionType
 import numpy as np
 
