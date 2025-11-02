@@ -1,14 +1,9 @@
 from typing import Dict, Union
 
-import torch.optim as optim
-
 from agents.alphazero.alphazero_agent import (
     AlphaZeroAgent,
-    AlphaZeroExpansion,
-    AlphaZeroEvaluation,
     make_pure_az,
 )
-from agents.alphazero.alphazero_net import AlphaZeroNet
 from agents.muzero.muzero_agent import MuZeroAgent, make_pure_muzero
 from core.agent_interface import Agent
 from core.config import (
@@ -16,9 +11,8 @@ from core.config import (
     EnvConfig,
 )
 from environments.base import BaseEnvironment
-from environments.connect4 import Connect4
+from environments.connect4.connect4 import Connect4
 from agents.mcts_agent import make_pure_mcts
-from algorithms.mcts import UCB1Selection, StandardBackpropagation
 
 
 def get_environment(env_config: EnvConfig) -> BaseEnvironment:
@@ -38,7 +32,7 @@ def get_agents(env: BaseEnvironment, config: AppConfig) -> Dict[str, Agent]:
     az_agent_name = f"AZ_{config.mcts.num_simulations}"
     # az_agent = _create_az_agent(env, config)
     # _load_and_prepare_agent(az_agent, "AlphaZero")
-    az_agent = _create_learning_agent(
+    az_agent = create_learning_agent(
         model_type="alphazero",
         env=env,
         config=config,
@@ -61,7 +55,7 @@ def get_agents(env: BaseEnvironment, config: AppConfig) -> Dict[str, Agent]:
     return agents
 
 
-def _create_learning_agent(
+def create_learning_agent(
     model_type: str,
     env: BaseEnvironment,
     config: AppConfig,

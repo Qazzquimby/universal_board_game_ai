@@ -10,7 +10,7 @@ from loguru import logger
 
 from agents.base_learning_agent import GameHistoryStep
 from core.config import AppConfig
-from factories import get_environment, _create_learning_agent
+from factories import get_environment, create_learning_agent
 from models.training import _run_one_self_play_game
 
 app = FastAPI()
@@ -56,7 +56,7 @@ async def run_self_play_endpoint(
     env = get_environment(config.env)
 
     # Note: MCTSAgent is not a learning agent and is handled differently
-    agent = _create_learning_agent(request.model_type, env, config)
+    agent = create_learning_agent(request.model_type, env, config)
     model_path = MODEL_DIR / request.model_filename
     if not model_path.exists():
         raise HTTPException(status_code=404, detail="Model not found")

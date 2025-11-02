@@ -14,7 +14,7 @@ from core.serialization import save_game_log
 from environments.base import BaseEnvironment, DataFrame
 from agents.alphazero.alphazero_agent import AlphaZeroAgent
 from agents.muzero.muzero_agent import MuZeroAgent
-from factories import get_environment, _create_learning_agent
+from factories import get_environment, create_learning_agent
 from remote_play.client import RemotePlayClient
 from utils.training_reporter import TrainingReporter, BenchmarkResults
 
@@ -31,7 +31,7 @@ def run_training_loop(
 
     env = get_environment(config.env)
 
-    current_agent = _create_learning_agent(model_type, env, config)
+    current_agent = create_learning_agent(model_type, env, config)
     mcts_agent = make_pure_mcts(num_simulations=config.mcts.num_simulations)
     mcts_agent.name = "mcts"
     mcts_agent.model_name = "mcts"
@@ -107,7 +107,7 @@ def run_training_loop(
                     f"Promoting to use {current_agent.name} for self-play."
                 )
                 current_agent.promote_to_self_play(iteration)
-                self_play_agent = _create_learning_agent(model_type, env, config)
+                self_play_agent = create_learning_agent(model_type, env, config)
                 model_path = current_agent.get_model_iter_path(iteration)
                 self_play_agent.load(model_path)
                 self_play_agent.model_name = f"{model_type}_iter_{iteration:03d}"
@@ -121,7 +121,7 @@ def run_training_loop(
             # Once promoted, the self-play agent is a learning agent.
             # We should have logic here to see if the new agent is better than the current self-play agent.
             # For now, we just update to the latest agent.
-            self_play_agent = _create_learning_agent(model_type, env, config)
+            self_play_agent = create_learning_agent(model_type, env, config)
             model_path = current_agent.get_model_iter_path(iteration)
             self_play_agent.load(model_path)
             self_play_agent.model_name = f"{model_type}_iter_{iteration:03d}"
@@ -143,7 +143,7 @@ def get_self_play_agent_and_start_iteration(
     self_play_iter = current_agent.get_self_play_agent_iter()
     if self_play_iter is not None:
         logger.info(f"Loading agent from iter {self_play_iter} for self-play.")
-        self_play_agent = _create_learning_agent(model_type, env, config)
+        self_play_agent = create_learning_agent(model_type, env, config)
         model_path = self_play_agent.get_model_iter_path(self_play_iter)
         self_play_agent.load(model_path)
         self_play_agent.model_name = f"{model_type}_iter_{self_play_iter:03d}"
@@ -278,9 +278,7 @@ def run_remote_self_play(
             if not game_history:
                 continue
 
-            current_game_log_index = (
-                game_log_index_offset + total_games_processed + 1
-            )
+            current_game_log_index = game_log_index_offset + total_games_processed + 1
             experiences_added = _process_and_save_game_results(
                 game_history=game_history,
                 final_outcome=final_outcome,
