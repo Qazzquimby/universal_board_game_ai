@@ -154,7 +154,7 @@ class LossStatistics:
 @dataclass
 class GameHistoryStep:
     state: StateType
-    action: ActionType
+    action_index: int
     policy: np.ndarray
     legal_actions: List[ActionType]  # Only used by muzero for training
 
@@ -246,7 +246,7 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
             logged_history.append(
                 (
                     game_history_step.state,
-                    game_history_step.action,
+                    game_history_step.action_index,
                     game_history_step.policy,
                     value_targets[i],
                 )

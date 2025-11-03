@@ -82,7 +82,7 @@ async def main():
         )
         servers.append(resp.server)
     print("Waiting for servers...")
-    client.servers.wait_for_actions([resp.action for resp in servers])
+    client.servers.wait_for_actions([resp.action_index for resp in servers])
 
     servers_data = []
     for s in servers:

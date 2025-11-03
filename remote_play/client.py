@@ -51,7 +51,7 @@ class RemotePlayClient:
 
             step = GameHistoryStep(
                 state=state,
-                action=step_dict["action"],
+                action_index=step_dict["action_index"],
                 policy=np.array(step_dict["policy"], dtype=np.float32),
                 legal_actions=step_dict["legal_actions"],
             )

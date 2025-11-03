@@ -2,6 +2,7 @@ from core.agent_interface import Agent
 from core.config import AppConfig
 from environments.base import BaseEnvironment
 from environments.connect4.connect4 import Connect4
+from environments.gobblet.gobblet import Gobblet
 from factories import create_learning_agent
 
 
@@ -43,14 +44,15 @@ def play_game(env: BaseEnvironment, agent0: Agent, agent1: Agent):
 
         if isinstance(current_agent, HumanAgent):
             print(f"\nYour turn (Player {current_player_idx}).")
-            action = current_agent.act(env=env)
+            action_index = current_agent.act(env=env)
         else:
             print(f"\nAI's turn (Player {current_player_idx})...")
-            action = current_agent.act(env=env)
-            print(f"AI chose action: {action}")
+            action_index = current_agent.act(env=env)
+            print(f"AI chose action: {action_index}")
 
-        assert action is not None
-
+        assert action_index is not None
+        legal_actions = env.get_legal_actions()
+        action = legal_actions[action_index]
         result = env.step(action)
         done = result.done
 
@@ -66,7 +68,8 @@ def play_game(env: BaseEnvironment, agent0: Agent, agent1: Agent):
 
 def main():
     """Main function to run a human vs. AI game."""
-    env = Connect4()
+    # env = Connect4()
+    env = Gobblet()
 
     ai_agent = create_learning_agent(
         model_type="alphazero",

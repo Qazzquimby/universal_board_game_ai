@@ -356,7 +356,7 @@ class UCB1Selection(SelectionStrategy):
                 return SelectionResult(path=path, leaf_env=sim_env)
 
             best_score = -float("inf")
-            best_action: Optional[ActionType] = None
+            best_action_index: Optional[ActionType] = None
 
             edges_to_consider = current_node.edges
             if current_node is node and contender_actions is not None:
@@ -366,28 +366,32 @@ class UCB1Selection(SelectionStrategy):
                     if action in contender_actions
                 }
 
-            for action, edge in edges_to_consider.items():
+            for action_index, edge in edges_to_consider.items():
                 score = self._score_edge(
                     edge=edge, parent_node_num_visits=current_node.num_visits
                 )
                 if score > best_score:
                     best_score = score
-                    best_action = action
+                    best_action_index = action_index
 
-            assert best_action is not None
+            assert best_action_index is not None
 
+            legal_actions = sim_env.get_legal_actions()
+
+            best_action = legal_actions[best_action_index]
             step_result = sim_env.step(best_action)
+
             next_node = cache.get_matching_node(key=step_result.next_state_with_key.key)
             if not next_node:
                 next_node = MCTSNode(state_with_key=step_result.next_state_with_key)
                 cache.cache_node(
                     key=step_result.next_state_with_key.key, node=next_node
                 )
-                path.add(node=next_node, action_leading_to_node=best_action)
+                path.add(node=next_node, action_leading_to_node=best_action_index)
                 return SelectionResult(path=path, leaf_env=sim_env)
 
             current_node = next_node
-            path.add(current_node, best_action)
+            path.add(current_node, best_action_index)
         return SelectionResult(path=path, leaf_env=sim_env)
 
 
@@ -401,9 +405,8 @@ class UniformExpansion(ExpansionStrategy):
         legal_actions = env_at_node.get_legal_actions()
         assert legal_actions
         assert not node.edges
-        for action in legal_actions:
-            action_key = tuple(action) if isinstance(action, list) else action
-            node.edges[action_key] = Edge(prior=1.0)
+        for action_index, action in enumerate(legal_actions):
+            node.edges[action_index] = Edge(prior=1.0)
         node.is_expanded = True
 
 

@@ -167,7 +167,7 @@ def _run_one_self_play_game(
     while not state_with_key.done:
         state = state_with_key.state
         legal_actions = game_env.get_legal_actions()
-        action = self_play_agent.act(game_env, train=True)
+        action_index = self_play_agent.act(game_env, train=True)
 
         if isinstance(self_play_agent, AlphaZeroAgent) or isinstance(
             self_play_agent, MuZeroAgent
@@ -208,11 +208,12 @@ def _run_one_self_play_game(
         game_history.append(
             GameHistoryStep(
                 state=state_with_actions,
-                action=action,
+                action_index=action_index,
                 policy=policy_target,
                 legal_actions=legal_actions,
             )
         )
+        action = legal_actions[action_index]
         action_result = game_env.step(action)
         state_with_key = action_result.next_state_with_key
 
@@ -450,7 +451,7 @@ def run_eval_against_benchmark(
 
             state = state_with_key.state
             legal_actions = game_env.get_legal_actions()
-            action = agent_for_turn.act(game_env, train=False)
+            action_index = agent_for_turn.act(game_env, train=False)
 
             if isinstance(agent_for_turn, AlphaZeroAgent) or isinstance(
                 agent_for_turn, MuZeroAgent
@@ -468,8 +469,7 @@ def run_eval_against_benchmark(
                             k: v / total_visits for k, v in action_visits.items()
                         }
                         for i, act in enumerate(legal_actions):
-                            act_key = tuple(act) if isinstance(act, list) else act
-                            policy_target[i] = visit_probs.get(act_key, 0.0)
+                            policy_target[i] = visit_probs.get(i, 0.0)
             else:
                 raise ValueError(f"Unsupported agent type {agent_for_turn}")
 
@@ -485,11 +485,12 @@ def run_eval_against_benchmark(
                 )
             game_history_step = GameHistoryStep(
                 state=state_with_actions,
-                action=action,
+                action_index=action_index,
                 policy=policy_target,
                 legal_actions=legal_actions,
             )
             game_history.append(game_history_step)
+            action = legal_actions[action_index]
             action_result = game_env.step(action)
             state_with_key = action_result.next_state_with_key
 

@@ -29,7 +29,7 @@ def serialize_game_step(step: GameHistoryStep) -> Dict[str, Any]:
     """Manually serialize a GameHistoryStep to be JSON-compatible."""
     return {
         "state": {k: vars(v) for k, v in step.state.items()},
-        "action": step.action,
+        "action_index": step.action_index,
         "policy": step.policy.tolist(),
         "legal_actions": step.legal_actions,
     }

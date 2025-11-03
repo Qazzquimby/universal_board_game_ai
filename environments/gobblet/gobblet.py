@@ -5,6 +5,7 @@ pieces already on the board, with bigger pieces covering smaller pieces.
 Two colors, black and white.
 Each has a *reserve* of 3 piles of 4 pieces with sizes 1-4, stacked.
 Pieces always stack with larger on top of smaller. They don't need to be consecutive in size.
+Pieces cannot stack on top of a piece the same size, so the maximum stack height is equal to the number of sizes.
 Only the top piece of a stack can ever be moved, whether on the board or reserve. Lower pieces stay where they were.
 
 A player can either
@@ -168,14 +169,19 @@ class Gobblet(BaseEnvironment):
                     continue
 
                 for (delta_row, delta_col) in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
-                    to_row, to_col = from_row + dr, from_col + delta_col
+                    to_row, to_col = from_row + delta_row, from_col + delta_col
                     if not (0 <= to_row < self.height and 0 <= to_col < self.width):
                         continue
 
                     top_dest_piece = self._get_top_piece_at(to_row, to_col)
                     if top_dest_piece is None or top_dest_piece["size"] < piece["size"]:
                         legal_actions.append(
-                            MoveFromBoard(from_row, from_col, to_row, to_col)
+                            MoveFromBoard(
+                                from_row=from_row,
+                                from_col=from_col,
+                                to_row=to_row,
+                                to_col=to_col,
+                            )
                         )
         return legal_actions
 
@@ -226,7 +232,7 @@ class Gobblet(BaseEnvironment):
             # Remove from old position on board
             pieces_df = self.state["pieces"]
             new_pieces_data = []
-            for row in pieces_df._data:
+            for row in pieces_df._data:  # todo concerning time complexity
                 row_dict = {
                     column: value for column, value in zip(pieces_df.columns, row)
                 }
@@ -346,6 +352,9 @@ class Gobblet(BaseEnvironment):
         self.state = {k: v.clone() for k, v in state.items()}
         self._dirty = True
 
+    # If we do symmetry, it needs to preserve policy outputs trivially and robustly.
+    # Would need to regenerate list of legal moves?
+    # Would need to store all action data and augment the actions?
     # def augment_experiences(self, experiences: List[Any]) -> List[Any]:
     #     augmented_experiences = []
     #     for exp in experiences:
@@ -477,7 +486,10 @@ class Gobblet(BaseEnvironment):
                 stack = self._get_stack_at(row, col)
                 if stack:
                     stack_string = ">".join(
-                        [f"{p['player_id']},{p['size']}" for p in reversed(stack)]
+                        [
+                            f"{p['player_id']},{p['stack_level']}"
+                            for p in reversed(stack)
+                        ]
                     )
                 else:
                     stack_string = "."
@@ -502,7 +514,9 @@ class Gobblet(BaseEnvironment):
             for pile_index in range(self.num_reserve_piles):
                 top_piece = self._get_top_reserve_piece(p_id, pile_index)
                 if top_piece:
-                    p_reserves.append(f"Pile {pile_index}: size {top_piece['size']}")
+                    p_reserves.append(
+                        f"Pile {pile_index}: size {top_piece['stack_level']}"
+                    )
                 else:
                     p_reserves.append(f"Pile {pile_index}: empty")
             print(f"Player {p_id}: " + ", ".join(p_reserves))
@@ -520,12 +534,8 @@ class Gobblet(BaseEnvironment):
                 },
             },
             "tables": {
-                "pieces": {
-                    "columns": ["row", "col", "player_id", "size", "stack_level"]
-                },
-                "reserves": {
-                    "columns": ["player_id", "pile_index", "size", "stack_level"]
-                },
+                "pieces": {"columns": ["row", "col", "player_id", "stack_level"]},
+                "reserves": {"columns": ["player_id", "pile_index", "stack_level"]},
                 "game": {"columns": ["current_player", "done", "winner"]},
             },
             "cardinalities": {

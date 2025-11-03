@@ -585,7 +585,9 @@ class MuZeroAgent(BaseLearningAgent):
                 if is_last_step:
                     action_for_step = None
                 else:
-                    action_for_step = game_step.action
+                    action_for_step = game_step.action_index
+                # todo check if theres a problem with using action index
+                assert False
 
                 steps.append(
                     MuZeroTrainingStep(
@@ -648,7 +650,7 @@ class MuZeroAgent(BaseLearningAgent):
                     ]
                 game_history_step = GameHistoryStep(
                     state=state,
-                    action=action,
+                    action_index=action,
                     policy=policy_target,
                     legal_actions=legal_actions,
                 )
