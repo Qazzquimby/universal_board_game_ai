@@ -14,7 +14,7 @@ INFERENCE_DEVICE = "cpu"
 # --- Environment Configuration ---
 @dataclass
 class EnvConfig:
-    name: str = "connect4"  # Default environment
+    name: str = "gobblet"  # "connect4"  # Default environment
     width: int = 7
     height: int = 6
     num_players: int = 2

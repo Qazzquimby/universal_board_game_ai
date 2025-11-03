@@ -115,7 +115,8 @@ MAX_FILES = 100
 
 
 def load_and_process_data(tiny_run=False):
-    print("Loading and processing data from game logs...")
+    # This is specifically for a connect4 experiment
+    print("(Connect4) Loading and processing data from game logs...")
     log_dir = DATA_PATH / "connect4" / "game_logs"
     assert log_dir.exists()
 

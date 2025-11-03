@@ -13,6 +13,7 @@ from core.config import (
 from environments.base import BaseEnvironment
 from environments.connect4.connect4 import Connect4
 from agents.mcts_agent import make_pure_mcts
+from environments.gobblet.gobblet import Gobblet
 
 
 def get_environment(env_config: EnvConfig) -> BaseEnvironment:
@@ -20,6 +21,8 @@ def get_environment(env_config: EnvConfig) -> BaseEnvironment:
     if env_config.name.lower() == "connect4":
         # Use connect4 specific dimensions from config
         return Connect4()
+    elif env_config.name.lower() == "gobblet":
+        return Gobblet()
     else:
         raise ValueError(f"Unknown environment name: {env_config.name}")
 
