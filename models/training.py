@@ -228,13 +228,18 @@ def _process_and_save_game_results(
     iteration: int,
     config: AppConfig,
     model_name: str,
+    env: BaseEnvironment,
 ) -> int:
     """Processes a single game's results and saves them."""
     episode_result = learning_agent.process_finished_episode(
         game_history, final_outcome
     )
 
-    learning_agent.add_experiences_to_buffer(episode_result.buffer_experiences)
+    buffer_experiences = episode_result.buffer_experiences
+    if hasattr(env, "augment_experiences"):
+        buffer_experiences = env.augment_experiences(buffer_experiences)
+
+    learning_agent.add_experiences_to_buffer(buffer_experiences)
 
     save_game_log(
         logged_history=episode_result.logged_history,
@@ -243,7 +248,7 @@ def _process_and_save_game_results(
         env_name=config.env.name,
         model_name=model_name,
     )
-    return len(episode_result.buffer_experiences)
+    return len(buffer_experiences)
 
 
 def run_remote_self_play(
@@ -287,6 +292,7 @@ def run_remote_self_play(
                 iteration=iteration,
                 config=config,
                 model_name=self_play_agent.model_name,
+                env=env,
             )
             total_experiences_added += experiences_added
             total_games_processed += 1
@@ -332,6 +338,7 @@ def run_self_play(
             iteration=iteration,
             config=config,
             model_name=self_play_agent.model_name,
+            env=env,
         )
         total_experiences_added += experiences_added
         total_games_processed += 1
@@ -363,6 +370,7 @@ def check_if_agent_outperforms_mcts(
         agent=current_agent,
         config=config,
         model_name=current_agent.model_name,
+        env=env,
     )
     return eval_results
 
@@ -373,6 +381,7 @@ def add_results_to_buffer(
     agent: BaseLearningAgent,
     config: AppConfig,
     model_name: str,
+    env: BaseEnvironment,
 ):
     total_experiences_added = 0
     total_games_processed = 0
@@ -388,8 +397,12 @@ def add_results_to_buffer(
 
         episode_result = agent.process_finished_episode(raw_history, final_outcome)
 
-        agent.add_experiences_to_buffer(episode_result.buffer_experiences)
-        total_experiences_added += len(episode_result.buffer_experiences)
+        buffer_experiences = episode_result.buffer_experiences
+        if hasattr(env, "augment_experiences"):
+            buffer_experiences = env.augment_experiences(buffer_experiences)
+
+        agent.add_experiences_to_buffer(buffer_experiences)
+        total_experiences_added += len(buffer_experiences)
 
         current_game_log_index = game_log_index_offset + total_games_processed + 1
         save_game_log(
