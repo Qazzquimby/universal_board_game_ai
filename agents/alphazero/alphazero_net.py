@@ -81,8 +81,14 @@ class AlphaZeroNet(BaseTokenizingNet):
             scores = self.policy_head(policy_input).squeeze(-1)
             policy_probs = F.softmax(scores, dim=0)
 
+            # policy_dict = {
+            #     action: prob.item() for action, prob in zip(legal_actions, policy_probs)
+            # }
+            # I'm changing this to an enumeration to handle dynamic action spaces
+            # todo this will break anything that expects the key to be the actual action in connect4
             policy_dict = {
-                action: prob.item() for action, prob in zip(legal_actions, policy_probs)
+                action_index: prob.item()
+                for action_index, prob in enumerate(policy_probs)
             }
 
             return policy_dict, value
@@ -134,9 +140,7 @@ class AlphaZeroNet(BaseTokenizingNet):
         action_lengths = torch.bincount(action_batch_indices, minlength=batch_size)
         max_actions = action_lengths.max().item()
 
-        policy_logits = torch.full(
-            (batch_size, max_actions), -torch.inf, device=device
-        )
+        policy_logits = torch.full((batch_size, max_actions), -torch.inf, device=device)
 
         # Create a mask for scattering the scores into the padded tensor
         action_indices = torch.cat(

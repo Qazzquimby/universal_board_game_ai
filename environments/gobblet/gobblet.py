@@ -65,12 +65,12 @@ class Gobblet(BaseEnvironment):
     def _reset(self) -> StateWithKey:
         reserves_data = []
         for player_id in range(self.num_players):
-            for pile_idx in range(self.num_reserve_piles):
+            for pile_index in range(self.num_reserve_piles):
                 for i, size in enumerate(range(1, 5)):  # sizes 1-4
                     reserves_data.append(
                         {
                             "player_id": player_id,
-                            "pile_idx": pile_idx,
+                            "pile_index": pile_index,
                             "size": size,
                             "stack_level": i,
                         }
@@ -82,7 +82,7 @@ class Gobblet(BaseEnvironment):
             ),
             "reserves": DataFrame(
                 data=reserves_data,
-                columns=["player_id", "pile_idx", "size", "stack_level"],
+                columns=["player_id", "pile_index", "size", "stack_level"],
             ),
             "game": DataFrame(
                 data=[[0, False, None]],
@@ -95,11 +95,11 @@ class Gobblet(BaseEnvironment):
         pieces_at_loc = self.state["pieces"].filter(("row", row)).filter(("col", col))
         return self.__get_top_piece_of_stack(pieces_at_loc)
 
-    def _get_top_reserve_piece(self, player_id: int, pile_idx: int) -> Optional[dict]:
+    def _get_top_reserve_piece(self, player_id: int, pile_index: int) -> Optional[dict]:
         reserve_pile = (
             self.state["reserves"]
             .filter(("player_id", player_id))
-            .filter(("pile_idx", pile_idx))
+            .filter(("pile_index", pile_index))
         )
         return self.__get_top_piece_of_stack(reserve_pile)
 
@@ -194,7 +194,7 @@ class Gobblet(BaseEnvironment):
                 }
                 if not (
                     row_dict["player_id"] == player
-                    and row_dict["pile_idx"] == action.pile_index
+                    and row_dict["pile_index"] == action.pile_index
                     and row_dict["size"] == top_reserve_piece["size"]
                 ):
                     new_reserves_data.append(row)
@@ -362,7 +362,7 @@ class Gobblet(BaseEnvironment):
     #         def h_flip_action(action: GobbletActionType) -> GobbletActionType:
     #             if isinstance(action, MoveFromReserve):
     #                 return MoveFromReserve(
-    #                     action.pile_idx, action.row, self.width - 1 - action.col
+    #                     action.pile_index, action.row, self.width - 1 - action.col
     #                 )
     #             elif isinstance(action, MoveFromBoard):
     #                 return MoveFromBoard(
@@ -377,9 +377,9 @@ class Gobblet(BaseEnvironment):
     #         sym_state = sym_exp.state
     #         pieces_df = sym_state["pieces"]
     #         if not pieces_df.is_empty():
-    #             col_idx = pieces_df._col_to_idx["col"]
+    #             col_index = pieces_df._col_to_index["col"]
     #             for row_data in pieces_df._data:
-    #                 row_data[col_idx] = self.width - 1 - row_data[col_idx]
+    #                 row_data[col_index] = self.width - 1 - row_data[col_index]
     #
     #         if (
     #             "legal_actions" in sym_state
@@ -394,23 +394,23 @@ class Gobblet(BaseEnvironment):
     #             mfb_type = action_type_map["MoveFromBoard"]
     #
     #             # Assuming these columns exist based on network spec
-    #             action_type_idx = la_df._col_to_idx["action_type"]
-    #             col_idx = la_df._col_to_idx.get("col")
-    #             from_col_idx = la_df._col_to_idx.get("from_col")
-    #             to_col_idx = la_df._col_to_idx.get("to_col")
+    #             action_type_index = la_df._col_to_index["action_type"]
+    #             col_index = la_df._col_to_index.get("col")
+    #             from_col_index = la_df._col_to_index.get("from_col")
+    #             to_col_index = la_df._col_to_index.get("to_col")
     #
     #             for row_data in la_df._data:
-    #                 action_type = row_data[action_type_idx]
+    #                 action_type = row_data[action_type_index]
     #                 if action_type == mfr_type:
-    #                     if col_idx is not None:
-    #                         row_data[col_idx] = self.width - 1 - row_data[col_idx]
+    #                     if col_index is not None:
+    #                         row_data[col_index] = self.width - 1 - row_data[col_index]
     #                 elif action_type == mfb_type:
-    #                     if from_col_idx is not None:
-    #                         row_data[from_col_idx] = (
-    #                             self.width - 1 - row_data[from_col_idx]
+    #                     if from_col_index is not None:
+    #                         row_data[from_col_index] = (
+    #                             self.width - 1 - row_data[from_col_index]
     #                         )
-    #                     if to_col_idx is not None:
-    #                         row_data[to_col_idx] = self.width - 1 - row_data[to_col_idx]
+    #                     if to_col_index is not None:
+    #                         row_data[to_col_index] = self.width - 1 - row_data[to_col_index]
     #
     #         # 2. Augment policy target and legal actions on experience
     #         action_prob_map = {
@@ -419,7 +419,7 @@ class Gobblet(BaseEnvironment):
     #
     #         def get_action_sort_key(action: GobbletActionType):
     #             if isinstance(action, MoveFromReserve):
-    #                 return (0, action.pile_idx, action.row, action.col)
+    #                 return (0, action.pile_index, action.row, action.col)
     #             if isinstance(action, MoveFromBoard):
     #                 return (
     #                     1,
@@ -499,12 +499,12 @@ class Gobblet(BaseEnvironment):
         print("\nReserves:")
         for p_id in range(self.num_players):
             p_reserves = []
-            for pile_idx in range(self.num_reserve_piles):
-                top_piece = self._get_top_reserve_piece(p_id, pile_idx)
+            for pile_index in range(self.num_reserve_piles):
+                top_piece = self._get_top_reserve_piece(p_id, pile_index)
                 if top_piece:
-                    p_reserves.append(f"Pile {pile_idx}: size {top_piece['size']}")
+                    p_reserves.append(f"Pile {pile_index}: size {top_piece['size']}")
                 else:
-                    p_reserves.append(f"Pile {pile_idx}: empty")
+                    p_reserves.append(f"Pile {pile_index}: empty")
             print(f"Player {p_id}: " + ", ".join(p_reserves))
         print()
 
@@ -515,7 +515,7 @@ class Gobblet(BaseEnvironment):
             + self.width * self.height * 4,
             "action_space": {
                 "types": {
-                    "MoveFromReserve": ["pile_idx", "row", "col"],
+                    "MoveFromReserve": ["pile_index", "row", "col"],
                     "MoveFromBoard": ["from_row", "from_col", "to_row", "to_col"],
                 },
             },
@@ -524,7 +524,7 @@ class Gobblet(BaseEnvironment):
                     "columns": ["row", "col", "player_id", "size", "stack_level"]
                 },
                 "reserves": {
-                    "columns": ["player_id", "pile_idx", "size", "stack_level"]
+                    "columns": ["player_id", "pile_index", "size", "stack_level"]
                 },
                 "game": {"columns": ["current_player", "done", "winner"]},
             },
@@ -534,7 +534,7 @@ class Gobblet(BaseEnvironment):
                 "player_id": self.num_players,
                 "size": 5,  # Sizes 1-4
                 "stack_level": 24,  # Max possible stack
-                "pile_idx": self.num_reserve_piles,
+                "pile_index": self.num_reserve_piles,
                 "current_player": self.num_players,
                 "done": 2,
                 "winner": self.num_players + 1,  # including None

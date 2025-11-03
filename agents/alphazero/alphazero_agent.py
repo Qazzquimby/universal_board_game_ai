@@ -58,9 +58,10 @@ class AlphaZeroExpansion(ExpansionStrategy):
 
         policy_dict, _ = get_policy_value(network=self.network, node=node, env=env)
 
-        for action, prior in policy_dict.items():
-            action_key = tuple(action) if isinstance(action, list) else action
-            node.edges[action_key] = Edge(prior=prior)
+        for action_index, prior in policy_dict.items():
+            # todo action index, was action. Check all uses of node.edges
+            # action_key = tuple(action_index) if isinstance(action_index, list) else action_index
+            node.edges[action_index] = Edge(prior=prior)
         node.is_expanded = True
 
 

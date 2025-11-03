@@ -271,8 +271,9 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
 
         assert self.root.edges
 
-        action_visits: Dict[ActionType, int] = {
-            action: edge.num_visits for action, edge in self.root.edges.items()
+        action_visits: Dict[int, int] = {
+            action_index: edge.num_visits
+            for action_index, edge in self.root.edges.items()
         }
         total_visits = sum(action_visits.values())
 
@@ -281,10 +282,9 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
 
         # Create the policy target vector, ensuring the order matches legal_actions.
         policy_target = np.zeros(len(legal_actions), dtype=np.float32)
-        for i, action in enumerate(legal_actions):
-            action_key = tuple(action) if isinstance(action, list) else action
-            visit_count = action_visits.get(action_key, 0)
-            policy_target[i] = visit_count / total_visits
+        for action_index, action in enumerate(legal_actions):
+            visit_count = action_visits.get(action_index, 0)
+            policy_target[action_index] = visit_count / total_visits
 
         # Normalize again to be safe, although it should sum to 1.
         if np.sum(policy_target) > 0:
