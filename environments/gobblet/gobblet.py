@@ -331,104 +331,104 @@ class Gobblet(BaseEnvironment):
         self.state = {k: v.clone() for k, v in state.items()}
         self._dirty = True
 
-    def augment_experiences(self, experiences: List[Any]) -> List[Any]:
-        augmented_experiences = []
-        for exp in experiences:
-            # Original experience
-            augmented_experiences.append(exp)
-
-            # TODO look for far more scalable solution.
-            # Rotations, flips, reserve orders.
-            # Rather than saving every augmentation, randomly mutate when loading?
-
-            # --- Horizontal flip augmentation ---
-            sym_exp = deepcopy(exp)
-
-            def h_flip_action(action: GobbletActionType) -> GobbletActionType:
-                if isinstance(action, MoveFromReserve):
-                    return MoveFromReserve(
-                        action.pile_idx, action.row, self.width - 1 - action.col
-                    )
-                elif isinstance(action, MoveFromBoard):
-                    return MoveFromBoard(
-                        action.from_row,
-                        self.width - 1 - action.from_col,
-                        action.to_row,
-                        self.width - 1 - action.to_col,
-                    )
-                raise TypeError(f"Unknown action type: {type(action)}")
-
-            # 1. Augment state
-            sym_state = sym_exp.state
-            pieces_df = sym_state["pieces"]
-            if not pieces_df.is_empty():
-                col_idx = pieces_df._col_to_idx["col"]
-                for row_data in pieces_df._data:
-                    row_data[col_idx] = self.width - 1 - row_data[col_idx]
-
-            if (
-                "legal_actions" in sym_state
-                and not sym_state["legal_actions"].is_empty()
-            ):
-                la_df = sym_state["legal_actions"]
-
-                action_type_map = self.get_network_spec()["action_space"][
-                    "action_type_map"
-                ]
-                mfr_type = action_type_map["MoveFromReserve"]
-                mfb_type = action_type_map["MoveFromBoard"]
-
-                # Assuming these columns exist based on network spec
-                action_type_idx = la_df._col_to_idx["action_type"]
-                col_idx = la_df._col_to_idx.get("col")
-                from_col_idx = la_df._col_to_idx.get("from_col")
-                to_col_idx = la_df._col_to_idx.get("to_col")
-
-                for row_data in la_df._data:
-                    action_type = row_data[action_type_idx]
-                    if action_type == mfr_type:
-                        if col_idx is not None:
-                            row_data[col_idx] = self.width - 1 - row_data[col_idx]
-                    elif action_type == mfb_type:
-                        if from_col_idx is not None:
-                            row_data[from_col_idx] = (
-                                self.width - 1 - row_data[from_col_idx]
-                            )
-                        if to_col_idx is not None:
-                            row_data[to_col_idx] = self.width - 1 - row_data[to_col_idx]
-
-            # 2. Augment policy target and legal actions on experience
-            action_prob_map = {
-                a: p for a, p in zip(exp.legal_actions, exp.policy_target)
-            }
-
-            def get_action_sort_key(action: GobbletActionType):
-                if isinstance(action, MoveFromReserve):
-                    return (0, action.pile_idx, action.row, action.col)
-                if isinstance(action, MoveFromBoard):
-                    return (
-                        1,
-                        action.from_row,
-                        action.from_col,
-                        action.to_row,
-                        action.to_col,
-                    )
-                raise TypeError(f"Unknown action type: {type(action)}")
-
-            new_legal_actions = [h_flip_action(a) for a in exp.legal_actions]
-            new_legal_actions.sort(key=get_action_sort_key)
-
-            # h_flip_action is its own inverse
-            new_policy_target = np.array(
-                [action_prob_map[h_flip_action(a)] for a in new_legal_actions]
-            )
-
-            sym_exp.legal_actions = new_legal_actions
-            sym_exp.policy_target = new_policy_target
-
-            augmented_experiences.append(sym_exp)
-
-        return augmented_experiences
+    # def augment_experiences(self, experiences: List[Any]) -> List[Any]:
+    #     augmented_experiences = []
+    #     for exp in experiences:
+    #         # Original experience
+    #         augmented_experiences.append(exp)
+    #
+    #         # TODO look for far more scalable solution.
+    #         # Rotations, flips, reserve orders.
+    #         # Rather than saving every augmentation, randomly mutate when loading?
+    #
+    #         # --- Horizontal flip augmentation ---
+    #         sym_exp = deepcopy(exp)
+    #
+    #         def h_flip_action(action: GobbletActionType) -> GobbletActionType:
+    #             if isinstance(action, MoveFromReserve):
+    #                 return MoveFromReserve(
+    #                     action.pile_idx, action.row, self.width - 1 - action.col
+    #                 )
+    #             elif isinstance(action, MoveFromBoard):
+    #                 return MoveFromBoard(
+    #                     action.from_row,
+    #                     self.width - 1 - action.from_col,
+    #                     action.to_row,
+    #                     self.width - 1 - action.to_col,
+    #                 )
+    #             raise TypeError(f"Unknown action type: {type(action)}")
+    #
+    #         # 1. Augment state
+    #         sym_state = sym_exp.state
+    #         pieces_df = sym_state["pieces"]
+    #         if not pieces_df.is_empty():
+    #             col_idx = pieces_df._col_to_idx["col"]
+    #             for row_data in pieces_df._data:
+    #                 row_data[col_idx] = self.width - 1 - row_data[col_idx]
+    #
+    #         if (
+    #             "legal_actions" in sym_state
+    #             and not sym_state["legal_actions"].is_empty()
+    #         ):
+    #             la_df = sym_state["legal_actions"]
+    #
+    #             action_type_map = self.get_network_spec()["action_space"][
+    #                 "action_type_map"
+    #             ]
+    #             mfr_type = action_type_map["MoveFromReserve"]
+    #             mfb_type = action_type_map["MoveFromBoard"]
+    #
+    #             # Assuming these columns exist based on network spec
+    #             action_type_idx = la_df._col_to_idx["action_type"]
+    #             col_idx = la_df._col_to_idx.get("col")
+    #             from_col_idx = la_df._col_to_idx.get("from_col")
+    #             to_col_idx = la_df._col_to_idx.get("to_col")
+    #
+    #             for row_data in la_df._data:
+    #                 action_type = row_data[action_type_idx]
+    #                 if action_type == mfr_type:
+    #                     if col_idx is not None:
+    #                         row_data[col_idx] = self.width - 1 - row_data[col_idx]
+    #                 elif action_type == mfb_type:
+    #                     if from_col_idx is not None:
+    #                         row_data[from_col_idx] = (
+    #                             self.width - 1 - row_data[from_col_idx]
+    #                         )
+    #                     if to_col_idx is not None:
+    #                         row_data[to_col_idx] = self.width - 1 - row_data[to_col_idx]
+    #
+    #         # 2. Augment policy target and legal actions on experience
+    #         action_prob_map = {
+    #             a: p for a, p in zip(exp.legal_actions, exp.policy_target)
+    #         }
+    #
+    #         def get_action_sort_key(action: GobbletActionType):
+    #             if isinstance(action, MoveFromReserve):
+    #                 return (0, action.pile_idx, action.row, action.col)
+    #             if isinstance(action, MoveFromBoard):
+    #                 return (
+    #                     1,
+    #                     action.from_row,
+    #                     action.from_col,
+    #                     action.to_row,
+    #                     action.to_col,
+    #                 )
+    #             raise TypeError(f"Unknown action type: {type(action)}")
+    #
+    #         new_legal_actions = [h_flip_action(a) for a in exp.legal_actions]
+    #         new_legal_actions.sort(key=get_action_sort_key)
+    #
+    #         # h_flip_action is its own inverse
+    #         new_policy_target = np.array(
+    #             [action_prob_map[h_flip_action(a)] for a in new_legal_actions]
+    #         )
+    #
+    #         sym_exp.legal_actions = new_legal_actions
+    #         sym_exp.policy_target = new_policy_target
+    #
+    #         augmented_experiences.append(sym_exp)
+    #
+    #     return augmented_experiences
 
     def _get_stack_at(self, row, col) -> List[dict]:
         pieces_at_loc = self.state["pieces"].filter(("row", row)).filter(("col", col))
