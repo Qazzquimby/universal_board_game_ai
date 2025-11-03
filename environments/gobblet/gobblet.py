@@ -3,7 +3,7 @@ Resembles 4x4 tic tac toe with different piece sizes and the ability to move
 pieces already on the board, with bigger pieces covering smaller pieces.
 
 Two colors, black and white.
-Each has a *reserve* of 3 piles of 4 pieces with sizes 1-4, stacked.
+Each has a *reserve* of 3 piles of 4 pieces with sizes 0-3, stacked.
 Pieces always stack with larger on top of smaller. They don't need to be consecutive in size.
 Pieces cannot stack on top of a piece the same size, so the maximum stack height is equal to the number of sizes.
 Only the top piece of a stack can ever be moved, whether on the board or reserve. Lower pieces stay where they were.
@@ -67,23 +67,20 @@ class Gobblet(BaseEnvironment):
         reserves_data = []
         for player_id in range(self.num_players):
             for pile_index in range(self.num_reserve_piles):
-                for i, size in enumerate(range(1, 5)):  # sizes 1-4
+                for size in range(4):  # sizes 0-3
                     reserves_data.append(
                         {
                             "player_id": player_id,
                             "pile_index": pile_index,
                             "size": size,
-                            "stack_level": i,
                         }
                     )
 
         self.state = {
-            "pieces": DataFrame(
-                columns=["row", "col", "player_id", "size", "stack_level"]
-            ),
+            "pieces": DataFrame(columns=["row", "col", "player_id", "size"]),
             "reserves": DataFrame(
                 data=reserves_data,
-                columns=["player_id", "pile_index", "size", "stack_level"],
+                columns=["player_id", "pile_index", "size"],
             ),
             "game": DataFrame(
                 data=[[0, False, None]],
@@ -108,12 +105,12 @@ class Gobblet(BaseEnvironment):
         if pieces_at_loc.is_empty():
             return None
 
-        max_level = -1
+        max_size = -1
         top_piece_row = None
         for r_tuple in pieces_at_loc.rows():
             piece_dict = {c: v for c, v in zip(pieces_at_loc.columns, r_tuple)}
-            if piece_dict["stack_level"] > max_level:
-                max_level = piece_dict["stack_level"]
+            if piece_dict["size"] > max_size:
+                max_size = piece_dict["size"]
                 top_piece_row = piece_dict
         return top_piece_row
 
@@ -157,7 +154,7 @@ class Gobblet(BaseEnvironment):
                 pos = (piece_dict["row"], piece_dict["col"])
                 if (
                     pos not in top_pieces
-                    or top_pieces[pos]["stack_level"] < piece_dict["stack_level"]
+                    or top_pieces[pos]["size"] < piece_dict["size"]
                 ):
                     top_pieces[pos] = piece_dict
 
@@ -209,16 +206,12 @@ class Gobblet(BaseEnvironment):
             )
 
             # Add to board
-            dest_top_piece = self._get_top_piece_at(action.row, action.col)
-            new_stack_level = dest_top_piece["stack_level"] + 1 if dest_top_piece else 0
-
             new_piece_data = [
                 {
                     "row": action.row,
                     "col": action.col,
                     "player_id": player,
                     "size": top_reserve_piece["size"],
-                    "stack_level": new_stack_level,
                 }
             ]
             new_piece_df = DataFrame(
@@ -241,7 +234,6 @@ class Gobblet(BaseEnvironment):
                     and row_dict["col"] == action.from_col
                     and row_dict["player_id"] == moving_piece["player_id"]
                     and row_dict["size"] == moving_piece["size"]
-                    and row_dict["stack_level"] == moving_piece["stack_level"]
                 ):
                     new_pieces_data.append(row)
             self.state["pieces"] = DataFrame(
@@ -249,16 +241,12 @@ class Gobblet(BaseEnvironment):
             )
 
             # Add to new position
-            dest_top_piece = self._get_top_piece_at(action.to_row, action.to_col)
-            new_stack_level = dest_top_piece["stack_level"] + 1 if dest_top_piece else 0
-
             new_piece_data = [
                 {
                     "row": action.to_row,
                     "col": action.to_col,
                     "player_id": player,
                     "size": moving_piece["size"],
-                    "stack_level": new_stack_level,
                 }
             ]
             new_piece_df = DataFrame(
@@ -466,7 +454,7 @@ class Gobblet(BaseEnvironment):
             }
             stack_pieces.append(piece_dict)
 
-        return sorted(stack_pieces, key=lambda p: p["stack_level"])
+        return sorted(stack_pieces, key=lambda p: p["size"])
 
     def render(self, mode: str = "human") -> None:
         if mode != "human":
@@ -486,10 +474,7 @@ class Gobblet(BaseEnvironment):
                 stack = self._get_stack_at(row, col)
                 if stack:
                     stack_string = ">".join(
-                        [
-                            f"{p['player_id']},{p['stack_level']}"
-                            for p in reversed(stack)
-                        ]
+                        [f"{p['player_id']},{p['size']}" for p in reversed(stack)]
                     )
                 else:
                     stack_string = "."
@@ -514,9 +499,7 @@ class Gobblet(BaseEnvironment):
             for pile_index in range(self.num_reserve_piles):
                 top_piece = self._get_top_reserve_piece(p_id, pile_index)
                 if top_piece:
-                    p_reserves.append(
-                        f"Pile {pile_index}: size {top_piece['stack_level']}"
-                    )
+                    p_reserves.append(f"Pile {pile_index}: size {top_piece['size']}")
                 else:
                     p_reserves.append(f"Pile {pile_index}: empty")
             print(f"Player {p_id}: " + ", ".join(p_reserves))
@@ -534,16 +517,15 @@ class Gobblet(BaseEnvironment):
                 },
             },
             "tables": {
-                "pieces": {"columns": ["row", "col", "player_id", "stack_level"]},
-                "reserves": {"columns": ["player_id", "pile_index", "stack_level"]},
+                "pieces": {"columns": ["row", "col", "player_id", "size"]},
+                "reserves": {"columns": ["player_id", "pile_index", "size"]},
                 "game": {"columns": ["current_player", "done", "winner"]},
             },
             "cardinalities": {
                 "row": self.height,
                 "col": self.width,
                 "player_id": self.num_players,
-                "size": 5,  # Sizes 1-4
-                "stack_level": 24,  # Max possible stack
+                "size": 4,  # Sizes 0-3
                 "pile_index": self.num_reserve_piles,
                 "current_player": self.num_players,
                 "done": 2,
