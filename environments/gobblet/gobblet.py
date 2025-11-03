@@ -32,7 +32,7 @@ from environments.base import (
 
 
 class MoveFromReserve(BaseModel):
-    pile_idx: int
+    pile_index: int
     row: int
     col: int
 
@@ -124,21 +124,25 @@ class Gobblet(BaseEnvironment):
         player = self.get_current_player()
 
         # Moves from reserve
-        for pile_idx in range(self.num_reserve_piles):
-            top_reserve_piece = self._get_top_reserve_piece(player, pile_idx)
+        for pile_index in range(self.num_reserve_piles):
+            top_reserve_piece = self._get_top_reserve_piece(player, pile_index)
             if not top_reserve_piece:
                 continue
 
-            for r in range(self.height):
-                for c in range(self.width):
-                    top_board_piece = self._get_top_piece_at(r, c)
+            for row in range(self.height):
+                for col in range(self.width):
+                    top_board_piece = self._get_top_piece_at(row, col)
                     if top_board_piece is None:
-                        legal_actions.append(MoveFromReserve(pile_idx, r, c))
+                        legal_actions.append(
+                            MoveFromReserve(pile_index=pile_index, row=row, col=col)
+                        )
                     elif (
                         top_board_piece["player_id"] == player
                         and top_board_piece["size"] < top_reserve_piece["size"]
                     ):
-                        legal_actions.append(MoveFromReserve(pile_idx, r, c))
+                        legal_actions.append(
+                            MoveFromReserve(pile_index=pile_index, row=row, col=col)
+                        )
 
         # Moves from board
         player_pieces_on_board = self.state["pieces"].filter(("player_id", player))
@@ -146,7 +150,8 @@ class Gobblet(BaseEnvironment):
             top_pieces = {}  # (r,c) -> piece
             for r_tuple in player_pieces_on_board.rows():
                 piece_dict = {
-                    c: v for c, v in zip(player_pieces_on_board.columns, r_tuple)
+                    column: value
+                    for column, value in zip(player_pieces_on_board.columns, r_tuple)
                 }
                 pos = (piece_dict["row"], piece_dict["col"])
                 if (
@@ -155,38 +160,44 @@ class Gobblet(BaseEnvironment):
                 ):
                     top_pieces[pos] = piece_dict
 
-            for (from_r, from_c), piece in top_pieces.items():
-                is_top_piece_overall = piece == self._get_top_piece_at(from_r, from_c)
+            for (from_row, from_col), piece in top_pieces.items():
+                is_top_piece_overall = piece == self._get_top_piece_at(
+                    from_row, from_col
+                )
                 if not is_top_piece_overall:
                     continue
 
-                for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
-                    to_r, to_c = from_r + dr, from_c + dc
-                    if not (0 <= to_r < self.height and 0 <= to_c < self.width):
+                for (delta_row, delta_col) in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                    to_row, to_col = from_row + dr, from_col + delta_col
+                    if not (0 <= to_row < self.height and 0 <= to_col < self.width):
                         continue
 
-                    top_dest_piece = self._get_top_piece_at(to_r, to_c)
+                    top_dest_piece = self._get_top_piece_at(to_row, to_col)
                     if top_dest_piece is None or top_dest_piece["size"] < piece["size"]:
-                        legal_actions.append(MoveFromBoard(from_r, from_c, to_r, to_c))
+                        legal_actions.append(
+                            MoveFromBoard(from_row, from_col, to_row, to_col)
+                        )
         return legal_actions
 
     def _step(self, action: GobbletActionType) -> ActionResult:
         player = self.get_current_player()
 
         if isinstance(action, MoveFromReserve):
-            top_reserve_piece = self._get_top_reserve_piece(player, action.pile_idx)
+            top_reserve_piece = self._get_top_reserve_piece(player, action.pile_index)
 
             # Remove from reserve
             reserves_df = self.state["reserves"]
             new_reserves_data = []
-            for r in reserves_df._data:
-                rd = {c: v for c, v in zip(reserves_df.columns, r)}
+            for row in reserves_df._data:
+                row_dict = {
+                    column: value for column, value in zip(reserves_df.columns, row)
+                }
                 if not (
-                    rd["player_id"] == player
-                    and rd["pile_idx"] == action.pile_idx
-                    and rd["size"] == top_reserve_piece["size"]
+                    row_dict["player_id"] == player
+                    and row_dict["pile_idx"] == action.pile_index
+                    and row_dict["size"] == top_reserve_piece["size"]
                 ):
-                    new_reserves_data.append(r)
+                    new_reserves_data.append(row)
             self.state["reserves"] = DataFrame(
                 data=new_reserves_data, columns=reserves_df.columns
             )
@@ -215,16 +226,18 @@ class Gobblet(BaseEnvironment):
             # Remove from old position on board
             pieces_df = self.state["pieces"]
             new_pieces_data = []
-            for r in pieces_df._data:
-                rd = {c: v for c, v in zip(pieces_df.columns, r)}
+            for row in pieces_df._data:
+                row_dict = {
+                    column: value for column, value in zip(pieces_df.columns, row)
+                }
                 if not (
-                    rd["row"] == action.from_row
-                    and rd["col"] == action.from_col
-                    and rd["player_id"] == moving_piece["player_id"]
-                    and rd["size"] == moving_piece["size"]
-                    and rd["stack_level"] == moving_piece["stack_level"]
+                    row_dict["row"] == action.from_row
+                    and row_dict["col"] == action.from_col
+                    and row_dict["player_id"] == moving_piece["player_id"]
+                    and row_dict["size"] == moving_piece["size"]
+                    and row_dict["stack_level"] == moving_piece["stack_level"]
                 ):
-                    new_pieces_data.append(r)
+                    new_pieces_data.append(row)
             self.state["pieces"] = DataFrame(
                 data=new_pieces_data, columns=pieces_df.columns
             )
@@ -284,17 +297,17 @@ class Gobblet(BaseEnvironment):
 
         def check(player):
             # Check rows
-            for r_idx in range(self.height):
+            for row_index in range(self.height):
                 if all(
-                    board_top_pieces[r_idx][c_idx] == player
-                    for c_idx in range(self.width)
+                    board_top_pieces[row_index][col_index] == player
+                    for col_index in range(self.width)
                 ):
                     return True
             # Check columns
-            for c_idx in range(self.width):
+            for col_index in range(self.width):
                 if all(
-                    board_top_pieces[r_idx][c_idx] == player
-                    for r_idx in range(self.height)
+                    board_top_pieces[row_index][col_index] == player
+                    for row_index in range(self.height)
                 ):
                     return True
             # Check diagonals
@@ -439,7 +452,9 @@ class Gobblet(BaseEnvironment):
 
         stack_pieces = []
         for r_tuple in pieces_at_loc.rows():
-            piece_dict = {c: v for c, v in zip(pieces_at_loc.columns, r_tuple)}
+            piece_dict = {
+                column: value for column, value in zip(pieces_at_loc.columns, r_tuple)
+            }
             stack_pieces.append(piece_dict)
 
         return sorted(stack_pieces, key=lambda p: p["stack_level"])
@@ -457,27 +472,27 @@ class Gobblet(BaseEnvironment):
         # Get all stacks and prepare cell strings
         cell_strings = [["" for _ in range(self.width)] for _ in range(self.height)]
         max_len = 0
-        for r in range(self.height):
-            for c in range(self.width):
-                stack = self._get_stack_at(r, c)
+        for row in range(self.height):
+            for col in range(self.width):
+                stack = self._get_stack_at(row, col)
                 if stack:
-                    s = ">".join(
+                    stack_string = ">".join(
                         [f"{p['player_id']},{p['size']}" for p in reversed(stack)]
                     )
                 else:
-                    s = "."
-                cell_strings[r][c] = s
-                if len(s) > max_len:
-                    max_len = len(s)
+                    stack_string = "."
+                cell_strings[row][col] = stack_string
+                if len(stack_string) > max_len:
+                    max_len = len(stack_string)
 
         # Print board with padding
-        for r in range(self.height):
+        for row in range(self.height):
             row_list = []
-            for c in range(self.width):
-                row_list.append(cell_strings[r][c].center(max_len))
+            for col in range(self.width):
+                row_list.append(cell_strings[row][col].center(max_len))
             row_str = " | ".join(row_list)
             print(row_str)
-            if r < self.height - 1:
+            if row < self.height - 1:
                 print("-" * len(row_str))
 
         # Render reserves
