@@ -364,14 +364,6 @@ def check_if_agent_outperforms_mcts(
         env=env,
     )
     config.evaluation.periodic_eval_num_games = original_num_games
-    add_results_to_buffer(
-        iteration=iteration,
-        all_experiences_iteration=tournament_experiences,
-        agent=current_agent,
-        config=config,
-        model_name=current_agent.model_name,
-        env=env,
-    )
     return eval_results
 
 
