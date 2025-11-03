@@ -192,22 +192,12 @@ class BaseTokenizingNet(nn.Module):
         action_embeddings = torch.zeros(
             batch_size, self.embedding_dim, device=device
         )
-        action_types_spec = action_spec["action_types"]
-        action_type_map = action_spec["action_type_map"]
+        action_types_spec = action_spec["types"]
 
         for i, action in enumerate(actions):
             action_type_name = type(action).__name__
             components = action_types_spec[action_type_name]
-            action_dict = action._asdict()
-
-            # Add action type embedding
-            action_type_idx = action_type_map[action_type_name]
-            action_type_tensor = torch.tensor(
-                action_type_idx + 1, dtype=torch.long, device=device
-            )
-            action_embeddings[i] += self.embedding_layers["action_type"](
-                action_type_tensor
-            )
+            action_dict = action.dict()
 
             # Add component embeddings
             for comp_name in components:

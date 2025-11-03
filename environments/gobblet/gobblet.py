@@ -16,7 +16,9 @@ Its possible for both players to have a 4-in-a-row simultaneously if a piece mov
 in which case the currently acting player still wins.
 """
 from copy import deepcopy
-from typing import Any, List, NamedTuple, Optional, Union
+from typing import Any, List, Optional, Union
+
+from pydantic import BaseModel
 
 import numpy as np
 
@@ -29,13 +31,13 @@ from environments.base import (
 )
 
 
-class MoveFromReserve(NamedTuple):
+class MoveFromReserve(BaseModel):
     pile_idx: int
     row: int
     col: int
 
 
-class MoveFromBoard(NamedTuple):
+class MoveFromBoard(BaseModel):
     from_row: int
     from_col: int
     to_row: int
@@ -497,8 +499,7 @@ class Gobblet(BaseEnvironment):
             "action_space_size": self.num_reserve_piles * self.width * self.height
             + self.width * self.height * 4,
             "action_space": {
-                "action_type_map": {"MoveFromReserve": 0, "MoveFromBoard": 1},
-                "action_types": {
+                "types": {
                     "MoveFromReserve": ["pile_idx", "row", "col"],
                     "MoveFromBoard": ["from_row", "from_col", "to_row", "to_col"],
                 },
@@ -523,7 +524,6 @@ class Gobblet(BaseEnvironment):
                 "done": 2,
                 "winner": self.num_players + 1,  # including None
                 # For actions
-                "action_type": 2,
                 "from_row": self.height,
                 "from_col": self.width,
                 "to_row": self.height,
