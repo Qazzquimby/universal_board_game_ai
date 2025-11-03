@@ -322,64 +322,6 @@ class Gobblet(BaseEnvironment):
         winner = self.state["game"]["winner"][0]
         return winner if winner is not None else None
 
-    def map_action_to_policy_index(self, action: GobbletActionType) -> int:
-        """Maps a Gobblet action to a unique integer index."""
-        if isinstance(action, MoveFromReserve):
-            # 3 piles, 16 squares -> 48 actions
-            return (
-                action.pile_idx * self.width * self.height
-                + action.row * self.width
-                + action.col
-            )
-        elif isinstance(action, MoveFromBoard):
-            # 16 squares, 4 directions -> 64 actions
-            dr = action.to_row - action.from_row
-            dc = action.to_col - action.from_col
-            if (dr, dc) == (-1, 0):  # up
-                direction = 0
-            elif (dr, dc) == (0, 1):  # right
-                direction = 1
-            elif (dr, dc) == (1, 0):  # down
-                direction = 2
-            elif (dr, dc) == (0, -1):  # left
-                direction = 3
-            else:
-                raise ValueError(f"Invalid move from board action: {action}")
-
-            offset = self.num_reserve_piles * self.width * self.height
-            from_square_idx = action.from_row * self.width + action.from_col
-            return offset + from_square_idx * 4 + direction
-        else:
-            raise TypeError(f"Unknown action type: {type(action)}")
-
-    def map_policy_index_to_action(self, index: int) -> GobbletActionType:
-        """Maps a policy index back to a Gobblet action."""
-        reserve_moves_count = self.num_reserve_piles * self.width * self.height
-        if index < reserve_moves_count:
-            # MoveFromReserve
-            col = index % self.width
-            row = (index // self.width) % self.height
-            pile_idx = index // (self.width * self.height)
-            return MoveFromReserve(pile_idx, row, col)
-        else:
-            # MoveFromBoard
-            index -= reserve_moves_count
-            direction = index % 4
-            from_col = (index // 4) % self.width
-            from_row = index // (4 * self.width)
-
-            if direction == 0:  # up
-                dr, dc = -1, 0
-            elif direction == 1:  # right
-                dr, dc = 0, 1
-            elif direction == 2:  # down
-                dr, dc = 1, 0
-            else:  # direction == 3, left
-                dr, dc = 0, -1
-
-            to_row, to_col = from_row + dr, from_col + dc
-            return MoveFromBoard(from_row, from_col, to_row, to_col)
-
     def copy(self) -> "Gobblet":
         new_env = Gobblet()
         new_env.set_state(self.state)
@@ -420,7 +362,10 @@ class Gobblet(BaseEnvironment):
                 for row_data in pieces_df._data:
                     row_data[col_idx] = self.width - 1 - row_data[col_idx]
 
-            if "legal_actions" in sym_state and not sym_state["legal_actions"].is_empty():
+            if (
+                "legal_actions" in sym_state
+                and not sym_state["legal_actions"].is_empty()
+            ):
                 la_df = sym_state["legal_actions"]
                 action_id_idx = la_df._col_to_idx["action_id"]
                 for row_data in la_df._data:
@@ -517,6 +462,13 @@ class Gobblet(BaseEnvironment):
         return {
             "action_space_size": self.num_reserve_piles * self.width * self.height
             + self.width * self.height * 4,
+            "action_space": {
+                "action_type_map": {"MoveFromReserve": 0, "MoveFromBoard": 1},
+                "action_types": {
+                    "MoveFromReserve": ["pile_idx", "row", "col"],
+                    "MoveFromBoard": ["from_row", "from_col", "to_row", "to_col"],
+                },
+            },
             "tables": {
                 "pieces": {
                     "columns": ["row", "col", "player_id", "size", "stack_level"]
@@ -536,6 +488,12 @@ class Gobblet(BaseEnvironment):
                 "current_player": self.num_players,
                 "done": 2,
                 "winner": self.num_players + 1,  # including None
+                # For actions
+                "action_type": 2,
+                "from_row": self.height,
+                "from_col": self.width,
+                "to_row": self.height,
+                "to_col": self.width,
             },
             "transforms": {
                 "player_id": lambda val, state: (

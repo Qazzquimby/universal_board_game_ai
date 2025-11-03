@@ -169,29 +169,51 @@ class BaseTokenizingNet(nn.Module):
         if not actions:
             return torch.empty(0, self.embedding_dim, device=device)
 
-        action_spec = self.network_spec["action_space"]
-        action_components = action_spec["components"]
         batch_size = len(actions)
+        action_spec = self.network_spec["action_space"]
 
-        # Convert list of actions to a tensor.
-        # This handles both flat lists of ints and lists of lists/tuples.
-        actions_tensor = torch.tensor(actions, dtype=torch.long, device=device)
+        # Backwards compatibility for simple action spaces (e.g. Connect4)
+        if "components" in action_spec and isinstance(action_spec["components"], list):
+            action_components = action_spec["components"]
+            actions_tensor = torch.tensor(actions, dtype=torch.long, device=device)
+            if actions_tensor.dim() == 1:
+                actions_tensor = actions_tensor.unsqueeze(1)
+            actions_tensor += 1  # For padding_idx
 
-        # If actions were a flat list, actions_tensor will be 1D. Reshape to 2D.
-        if actions_tensor.dim() == 1:
-            actions_tensor = actions_tensor.unsqueeze(1)
+            action_embeddings = torch.zeros(
+                batch_size, self.embedding_dim, device=device
+            )
+            for i, comp_name in enumerate(action_components):
+                component_values = actions_tensor[:, i]
+                action_embeddings += self.embedding_layers[comp_name](component_values)
+            return action_embeddings
 
-        # Add 1 to shift values for padding_idx=0
-        actions_tensor += 1
-
-        # Sum embeddings for each component
+        # Handle complex, multi-type actions (e.g. Gobblet)
         action_embeddings = torch.zeros(
             batch_size, self.embedding_dim, device=device
         )
-        for i, comp_name in enumerate(action_components):
-            # Get the i-th component for all actions in the batch
-            component_values = actions_tensor[:, i]
-            action_embeddings += self.embedding_layers[comp_name](component_values)
+        action_types_spec = action_spec["action_types"]
+        action_type_map = action_spec["action_type_map"]
+
+        for i, action in enumerate(actions):
+            action_type_name = type(action).__name__
+            components = action_types_spec[action_type_name]
+            action_dict = action._asdict()
+
+            # Add action type embedding
+            action_type_idx = action_type_map[action_type_name]
+            action_type_tensor = torch.tensor(
+                action_type_idx + 1, dtype=torch.long, device=device
+            )
+            action_embeddings[i] += self.embedding_layers["action_type"](
+                action_type_tensor
+            )
+
+            # Add component embeddings
+            for comp_name in components:
+                val = action_dict[comp_name]
+                val_tensor = torch.tensor(val + 1, dtype=torch.long, device=device)
+                action_embeddings[i] += self.embedding_layers[comp_name](val_tensor)
 
         return action_embeddings
 
