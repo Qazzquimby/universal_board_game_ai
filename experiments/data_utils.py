@@ -111,41 +111,6 @@ def _augment_and_append(
     value_labels.append(swapped_value)
 
 
-def _load_and_process_data_old(tiny_run=False):
-    print("Loading and processing data from old db...")
-    with open(DATA_PATH, "r") as f:
-        raw_data = json.load(f)
-
-    if tiny_run:
-        raw_data = raw_data[:100]
-
-    inputs = []
-    policy_labels = []
-    value_labels = []
-
-    env = Connect4()
-
-    for item in tqdm(raw_data, desc="Processing old data"):
-        processed_item = _process_raw_item(item, env)
-        if processed_item:
-            input_tensor, policy_label, value = processed_item
-            _augment_and_append(
-                input_tensor,
-                policy_label,
-                value,
-                inputs,
-                policy_labels,
-                value_labels,
-            )
-
-    print(f"Data augmentation complete. Total samples: {len(inputs)}")
-    return (
-        np.array(inputs),
-        np.array(policy_labels),
-        np.array(value_labels, dtype=np.float32),
-    )
-
-
 MAX_FILES = 100
 
 
