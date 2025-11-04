@@ -77,10 +77,14 @@ class Gobblet(BaseEnvironment):
                     )
 
         self.state = {
-            "pieces": DataFrame(columns=["row", "col", "player_id", "size"]),
+            "pieces": DataFrame(
+                columns=["row", "col", "player_id", "size"],
+                indexed_columns=["row", "col", "player_id"],
+            ),
             "reserves": DataFrame(
                 data=reserves_data,
                 columns=["player_id", "pile_index", "size"],
+                indexed_columns=["player_id", "pile_index"],
             ),
             "game": DataFrame(
                 data=[[0, False, None]],
@@ -98,27 +102,20 @@ class Gobblet(BaseEnvironment):
             {"player_id": player_id, "pile_index": pile_index},
         )
 
-    # batch filtering may be worth building into DataFrame since repeated filters are very expensive.
     def _get_top_piece(self, df: DataFrame, filters: dict) -> Optional[dict]:
-        if df.is_empty():
-            return None
+        filtered_df = df.filter(filters)
 
-        filter_indices = {col: df._col_to_idx[col] for col in filters}
-        size_idx = df._col_to_idx["size"]
+        if filtered_df.is_empty():
+            return None
 
         top_piece_row_data = None
         max_size = -1
+        size_idx = filtered_df._col_to_idx["size"]
 
-        for row_data in df._data:
-            match = True
-            for col, val in filters.items():
-                if row_data[filter_indices[col]] != val:
-                    match = False
-                    break
-            if match:
-                if row_data[size_idx] > max_size:
-                    max_size = row_data[size_idx]
-                    top_piece_row_data = row_data
+        for row_data in filtered_df._data:
+            if row_data[size_idx] > max_size:
+                max_size = row_data[size_idx]
+                top_piece_row_data = row_data
 
         if top_piece_row_data is None:
             return None
@@ -213,7 +210,9 @@ class Gobblet(BaseEnvironment):
                 ):
                     new_reserves_data.append(row)
             self.state["reserves"] = DataFrame(
-                data=new_reserves_data, columns=reserves_df.columns
+                data=new_reserves_data,
+                columns=reserves_df.columns,
+                indexed_columns=reserves_df._indexed_columns,
             )
 
             # Add to board
@@ -248,7 +247,9 @@ class Gobblet(BaseEnvironment):
                 ):
                     new_pieces_data.append(row)
             self.state["pieces"] = DataFrame(
-                data=new_pieces_data, columns=pieces_df.columns
+                data=new_pieces_data,
+                columns=pieces_df.columns,
+                indexed_columns=pieces_df._indexed_columns,
             )
 
             # Add to new position
@@ -455,7 +456,7 @@ class Gobblet(BaseEnvironment):
     #     return augmented_experiences
 
     def _get_stack_at(self, row, col) -> List[dict]:
-        pieces_at_loc = self.state["pieces"].filter(("row", row)).filter(("col", col))
+        pieces_at_loc = self.state["pieces"].filter({"row": row, "col": col})
         if pieces_at_loc.is_empty():
             return []
 

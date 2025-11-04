@@ -1,13 +1,13 @@
 import abc
 import pickle
 from dataclasses import dataclass
-from typing import Dict, List, Optional, TypeVar
+from typing import Dict, List, Optional, TypeVar, Union, Tuple, Any
 
 ActionType = TypeVar("ActionType")
 
 
 class DataFrame:
-    def __init__(self, data=None, columns=None, schema=None):
+    def __init__(self, data=None, columns=None, schema=None, indexed_columns=None):
         if columns is not None:
             self.columns = columns
         elif schema is not None:
@@ -17,6 +17,8 @@ class DataFrame:
 
         self._col_to_idx = {name: i for i, name in enumerate(self.columns)}
         self._data = []
+        self._indexed_columns = indexed_columns or []
+        self._indices = {}
 
         if data:
             if isinstance(data, list):
@@ -33,6 +35,23 @@ class DataFrame:
                 elif isinstance(data[0], (list, tuple)):
                     self._data = [list(row) for row in data]
 
+        self._build_indices()
+
+    def _build_indices(self):
+        for col_name in self._indexed_columns:
+            if col_name in self.columns:
+                self._build_index(col_name)
+
+    def _build_index(self, col_name):
+        index = {}
+        col_idx = self._col_to_idx[col_name]
+        for i, row in enumerate(self._data):
+            val = row[col_idx]
+            if val not in index:
+                index[val] = []
+            index[val].append(i)
+        self._indices[col_name] = index
+
     @property
     def height(self):
         return len(self._data)
@@ -43,16 +62,67 @@ class DataFrame:
     def hash(self):
         return sum(hash(tuple(row)) for row in self._data)
 
-    def filter(self, condition):
-        col_name, value = condition
-        col_idx = self._col_to_idx[col_name]
-        new_data = [row for row in self._data if row[col_idx] == value]
-        return DataFrame(data=new_data, columns=self.columns)
+    def filter(self, conditions: Union[Tuple[str, Any], Dict[str, Any]]):
+        if isinstance(conditions, tuple):
+            conditions = {conditions[0]: conditions[1]}
+
+        # Split conditions into indexed and non-indexed
+        indexed_conds = {}
+        non_indexed_conds = {}
+        for c, v in conditions.items():
+            if c in self._indices:
+                indexed_conds[c] = v
+            else:
+                non_indexed_conds[c] = v
+
+        # Determine which rows to check. Use index if possible.
+        if indexed_conds:
+            # Get intersection of row indices from all indexed conditions
+            row_indices: Optional[set[int]] = None
+            for col_name, value in indexed_conds.items():
+                indices = set(self._indices[col_name].get(value, []))
+                if row_indices is None:
+                    row_indices = indices
+                else:
+                    row_indices.intersection_update(indices)
+                # Early exit if intersection is empty
+                if not row_indices:
+                    break
+
+            if not row_indices:
+                candidate_rows = []
+            else:  # skip sorting here?
+                candidate_rows = [self._data[i] for i in sorted(list(row_indices))]
+        else:
+            # No indexed conditions, check all rows.
+            candidate_rows = self._data
+
+        # Perform non-indexed filtering on candidate rows.
+        if not non_indexed_conds or not candidate_rows:
+            new_data = candidate_rows
+        else:
+            new_data = []
+            col_indices = {col: self._col_to_idx[col] for col in non_indexed_conds}
+            for row in candidate_rows:
+                if all(
+                    row[col_indices[col]] == val
+                    for col, val in non_indexed_conds.items()
+                ):
+                    new_data.append(row)
+
+        return DataFrame(
+            data=new_data,
+            columns=self.columns,
+            indexed_columns=self._indexed_columns,
+        )
 
     def select(self, columns):
         indices = [self._col_to_idx[col] for col in columns]
         new_data = [[row[i] for i in indices] for row in self._data]
-        return DataFrame(data=new_data, columns=columns)
+        new_indexed_columns = [c for c in self._indexed_columns if c in columns]
+        return DataFrame(
+            data=new_data, columns=columns, indexed_columns=new_indexed_columns
+        )
 
     def rows(self):
         return [tuple(row) for row in self._data]
@@ -61,7 +131,14 @@ class DataFrame:
         if self.columns != other_df.columns:
             raise ValueError("DataFrames have different columns")
         new_data = self._data + other_df._data
-        return DataFrame(data=new_data, columns=self.columns)
+        new_indexed_columns = list(
+            set(self._indexed_columns) | set(other_df._indexed_columns)
+        )
+        return DataFrame(
+            data=new_data,
+            columns=self.columns,
+            indexed_columns=new_indexed_columns,
+        )
 
     def with_columns(self, updates_dict):
         for col_name in updates_dict:
@@ -72,7 +149,11 @@ class DataFrame:
             new_row_dict = {c: None for c in self.columns}
             new_row_dict.update(updates_dict)
             new_row = [new_row_dict[c] for c in self.columns]
-            return DataFrame(data=[new_row], columns=self.columns)
+            return DataFrame(
+                data=[new_row],
+                columns=self.columns,
+                indexed_columns=self._indexed_columns,
+            )
 
         new_data = [list(row) for row in self._data]
         for col_name, value in updates_dict.items():
@@ -82,7 +163,11 @@ class DataFrame:
             for row, value_for_row in zip(new_data, value, strict=True):
                 row[col_idx] = value_for_row
 
-        return DataFrame(data=new_data, columns=self.columns)
+        return DataFrame(
+            data=new_data,
+            columns=self.columns,
+            indexed_columns=self._indexed_columns,
+        )
 
     def __getitem__(self, key):
         if isinstance(key, str):
@@ -92,7 +177,11 @@ class DataFrame:
 
     def clone(self):
         new_data = [list(row) for row in self._data]
-        return DataFrame(data=new_data, columns=list(self.columns))
+        return DataFrame(
+            data=new_data,
+            columns=list(self.columns),
+            indexed_columns=self._indexed_columns,
+        )
 
 
 StateType = Dict[str, DataFrame]
