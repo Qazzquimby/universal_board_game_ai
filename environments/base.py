@@ -147,6 +147,7 @@ class BaseEnvironment(abc.ABC):
         self._dirty = True
         self._state_with_key: Optional[StateWithKey] = None
         self.state: Optional[StateType] = None
+        self._legal_actions: Optional[List[ActionType]] = None
 
     def reset(self) -> StateWithKey:
         """
@@ -156,6 +157,7 @@ class BaseEnvironment(abc.ABC):
             The initial state observation.
         """
         self._dirty = True
+        self._legal_actions = None
         state_with_key = self._reset()
         self.state = state_with_key.state
         return state_with_key
@@ -176,14 +178,26 @@ class BaseEnvironment(abc.ABC):
             action: The action taken by the current player.
         """
         self._dirty = True
+        self._legal_actions = None
         return self._step(action)
 
     @abc.abstractmethod
     def _step(self, action: ActionType) -> ActionResult:
         pass
 
-    @abc.abstractmethod
     def get_legal_actions(self) -> List[ActionType]:
+        """
+        Get a list of legal actions available in the current state.
+
+        Returns:
+            A list of valid actions.
+        """
+        if self._legal_actions is None:
+            self._legal_actions = self._get_legal_actions()
+        return self._legal_actions
+
+    @abc.abstractmethod
+    def _get_legal_actions(self) -> List[ActionType]:
         """
         Get a list of legal actions available in the current state.
 

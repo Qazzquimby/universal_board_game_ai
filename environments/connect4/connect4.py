@@ -219,8 +219,7 @@ class Connect4(BaseEnvironment):
             print(" +" + "--" * self.width + "+")
             print()
 
-    # todo cache if possible
-    def get_legal_actions(self) -> List[ColumnActionType]:
+    def _get_legal_actions(self) -> List[ColumnActionType]:
         if self.is_done:
             return []
 
@@ -273,51 +272,6 @@ class Connect4(BaseEnvironment):
     def set_state(self, state: StateType) -> None:
         self.state = {k: v.clone() for k, v in state.items()}
         self._dirty = True
-
-    # todo too complicated, need to rework
-    # def augment_experiences(self, experiences: List[Any]) -> List[Any]:
-    #     augmented_experiences = []
-    #     for exp in experiences:
-    #         # Original experience
-    #         augmented_experiences.append(exp)
-    #
-    #         # Create symmetrical experience
-    #         sym_exp = deepcopy(exp)
-    #
-    #         # 1. Augment state
-    #         sym_state = sym_exp.state
-    #         pieces_df = sym_state["pieces"]
-    #         if not pieces_df.is_empty():
-    #             col_idx = pieces_df._col_to_idx["col"]
-    #             for row_data in pieces_df._data:
-    #                 row_data[col_idx] = self.width - 1 - row_data[col_idx]
-    #
-    #         if (
-    #             "legal_actions" in sym_state
-    #             and not sym_state["legal_actions"].is_empty()
-    #         ):
-    #             la_df = sym_state["legal_actions"]
-    #             action_idx = la_df._col_to_idx["action_id"]
-    #             for row_data in la_df._data:
-    #                 row_data[action_idx] = self.width - 1 - row_data[action_idx]
-    #
-    #         # 2. Augment policy target and legal actions
-    #         action_prob_map = {
-    #             action: prob
-    #             for action, prob in zip(exp.legal_actions, exp.policy_target)
-    #         }
-    #
-    #         new_legal_actions = sorted([self.width - 1 - a for a in exp.legal_actions])
-    #         new_policy_target = np.array(
-    #             [action_prob_map[self.width - 1 - a] for a in new_legal_actions]
-    #         )
-    #
-    #         sym_exp.legal_actions = new_legal_actions
-    #         sym_exp.policy_target = new_policy_target
-    #
-    #         augmented_experiences.append(sym_exp)
-    #
-    #     return augmented_experiences
 
     def get_sanity_check_states(self) -> List[SanityCheckState]:
         import sanity

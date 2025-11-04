@@ -413,7 +413,7 @@ class UniformExpansion(ExpansionStrategy):
 class RandomRolloutEvaluation(EvaluationStrategy):
     """Evaluates a node by performing a random rollout simulation."""
 
-    def __init__(self, max_rollout_depth: int = 100, discount_factor: float = 1.0):
+    def __init__(self, max_rollout_depth: int = 50, discount_factor: float = 1.0):
         self.max_rollout_depth = max_rollout_depth
         self.discount_factor = discount_factor  # Usually 1.0 for MCTS terminal rewards
 

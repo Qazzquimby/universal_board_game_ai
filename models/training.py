@@ -313,9 +313,6 @@ def run_self_play(
     config: AppConfig,
     iteration: int,
 ):
-    _run_one_self_play_game(env, self_play_agent)
-    return
-
     logger.info("Running self play")
     if hasattr(self_play_agent, "network") and self_play_agent.network:
         self_play_agent.network.eval()

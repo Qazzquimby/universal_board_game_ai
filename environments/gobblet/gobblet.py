@@ -98,7 +98,7 @@ class Gobblet(BaseEnvironment):
             {"player_id": player_id, "pile_index": pile_index},
         )
 
-    # this may be worth building into DataFrame since repeated filters are very expensive.
+    # batch filtering may be worth building into DataFrame since repeated filters are very expensive.
     def _get_top_piece(self, df: DataFrame, filters: dict) -> Optional[dict]:
         if df.is_empty():
             return None
@@ -125,7 +125,7 @@ class Gobblet(BaseEnvironment):
 
         return {c: v for c, v in zip(df.columns, top_piece_row_data)}
 
-    def get_legal_actions(self) -> List[GobbletActionType]:
+    def _get_legal_actions(self) -> List[GobbletActionType]:
         if self.is_done:
             return []
 
@@ -350,6 +350,7 @@ class Gobblet(BaseEnvironment):
     def set_state(self, state: StateType) -> None:
         self.state = {k: v.clone() for k, v in state.items()}
         self._dirty = True
+        self._legal_actions = None
 
     # If we do symmetry, it needs to preserve policy outputs trivially and robustly.
     # Would need to regenerate list of legal moves?
