@@ -90,29 +90,40 @@ class Gobblet(BaseEnvironment):
         return self.get_state_with_key()
 
     def _get_top_piece_at(self, row, col) -> Optional[dict]:
-        pieces_at_loc = self.state["pieces"].filter(("row", row)).filter(("col", col))
-        return self.__get_top_piece_of_stack(pieces_at_loc)
+        return self._get_top_piece(self.state["pieces"], {"row": row, "col": col})
 
     def _get_top_reserve_piece(self, player_id: int, pile_index: int) -> Optional[dict]:
-        reserve_pile = (
-            self.state["reserves"]
-            .filter(("player_id", player_id))
-            .filter(("pile_index", pile_index))
+        return self._get_top_piece(
+            self.state["reserves"],
+            {"player_id": player_id, "pile_index": pile_index},
         )
-        return self.__get_top_piece_of_stack(reserve_pile)
 
-    def __get_top_piece_of_stack(self, pieces_at_loc: DataFrame):
-        if pieces_at_loc.is_empty():
+    # this may be worth building into DataFrame since repeated filters are very expensive.
+    def _get_top_piece(self, df: DataFrame, filters: dict) -> Optional[dict]:
+        if df.is_empty():
             return None
 
+        filter_indices = {col: df._col_to_idx[col] for col in filters}
+        size_idx = df._col_to_idx["size"]
+
+        top_piece_row_data = None
         max_size = -1
-        top_piece_row = None
-        for r_tuple in pieces_at_loc.rows():
-            piece_dict = {c: v for c, v in zip(pieces_at_loc.columns, r_tuple)}
-            if piece_dict["size"] > max_size:
-                max_size = piece_dict["size"]
-                top_piece_row = piece_dict
-        return top_piece_row
+
+        for row_data in df._data:
+            match = True
+            for col, val in filters.items():
+                if row_data[filter_indices[col]] != val:
+                    match = False
+                    break
+            if match:
+                if row_data[size_idx] > max_size:
+                    max_size = row_data[size_idx]
+                    top_piece_row_data = row_data
+
+        if top_piece_row_data is None:
+            return None
+
+        return {c: v for c, v in zip(df.columns, top_piece_row_data)}
 
     def get_legal_actions(self) -> List[GobbletActionType]:
         if self.is_done:
