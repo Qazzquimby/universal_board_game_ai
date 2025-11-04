@@ -18,7 +18,7 @@ from factories import get_environment, create_learning_agent
 from remote_play.client import RemotePlayClient
 from utils.training_reporter import TrainingReporter, BenchmarkResults
 
-SELF_PLAY_ON_FIRST_ITER = False
+SELF_PLAY_ON_FIRST_ITER = True
 
 
 def run_training_loop(
@@ -187,8 +187,7 @@ def _run_one_self_play_game(
                     act: visits / total_visits for act, visits in action_visits.items()
                 }
                 for i, act in enumerate(legal_actions):
-                    act_key = tuple(act) if isinstance(act, list) else act
-                    policy_target[i] = visit_probs.get(act_key, 0.0)
+                    policy_target[i] = visit_probs.get(i, 0.0)
         else:
             raise TypeError(
                 f"Unsupported agent type for self-play: {type(self_play_agent)}"
@@ -314,6 +313,9 @@ def run_self_play(
     config: AppConfig,
     iteration: int,
 ):
+    _run_one_self_play_game(env, self_play_agent)
+    return
+
     logger.info("Running self play")
     if hasattr(self_play_agent, "network") and self_play_agent.network:
         self_play_agent.network.eval()

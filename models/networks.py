@@ -195,9 +195,28 @@ class BaseTokenizingNet(nn.Module):
         action_types_spec = action_spec["types"]
 
         for i, action in enumerate(actions):
-            action_type_name = type(action).__name__
+            action_type_name: str
+            action_dict: dict
+
+            if not isinstance(action, dict):
+                action_type_name = type(action).__name__
+                action_dict = action.dict()
+            else:
+                action_dict = action
+                # Infer action type from keys
+                action_keys = set(action_dict.keys())
+                found_type = False
+                for type_name, comp_names in action_types_spec.items():
+                    if set(comp_names) == action_keys:
+                        action_type_name = type_name
+                        found_type = True
+                        break
+                if not found_type:
+                    raise ValueError(
+                        f"Could not determine action type for dict: {action_dict}"
+                    )
+
             components = action_types_spec[action_type_name]
-            action_dict = action.dict()
 
             # Add component embeddings
             for comp_name in components:
