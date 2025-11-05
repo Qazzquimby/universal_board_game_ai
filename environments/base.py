@@ -63,7 +63,7 @@ class DataFrame:
 
     def hash(self):
         if self._hash is None:
-            self._hash = sum(hash(tuple(row)) for row in self._data)
+            self._hash = hash(tuple(sorted(map(tuple, self._data))))
         return self._hash
 
     def filter(self, conditions: Union[Tuple[str, Any], Dict[str, Any]]):
