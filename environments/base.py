@@ -281,6 +281,9 @@ class BaseEnvironment(abc.ABC):
         Returns:
             A list of valid actions.
         """
+        # temp
+        self._legal_actions = None
+
         if self._legal_actions is None:
             self._legal_actions = self._get_legal_actions()
         return self._legal_actions
