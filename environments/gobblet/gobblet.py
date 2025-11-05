@@ -79,12 +79,12 @@ class Gobblet(BaseEnvironment):
         self.state = {
             "pieces": DataFrame(
                 columns=["row", "col", "player_id", "size"],
-                indexed_columns=["row", "col", "player_id"],
+                # indexed_columns=["row", "col", "player_id"],
             ),
             "reserves": DataFrame(
                 data=reserves_data,
                 columns=["player_id", "pile_index", "size"],
-                indexed_columns=["player_id", "pile_index"],
+                # indexed_columns=["player_id", "pile_index"],
             ),
             "game": DataFrame(
                 data=[[0, False, None]],
@@ -108,19 +108,12 @@ class Gobblet(BaseEnvironment):
         if filtered_df.is_empty():
             return None
 
-        top_piece_row_data = None
-        max_size = -1
-        size_idx = filtered_df._col_to_idx["size"]
+        sizes = filtered_df["size"]
+        top_piece_idx = np.argmax(sizes).item()
+        top_piece_row_df = filtered_df[top_piece_idx]
 
-        for row_data in filtered_df._data:
-            if row_data[size_idx] > max_size:
-                max_size = row_data[size_idx]
-                top_piece_row_data = row_data
-
-        if top_piece_row_data is None:
-            return None
-
-        return {c: v for c, v in zip(df.columns, top_piece_row_data)}
+        # todo make this a Dataframe builtin
+        return {c: v.item() for c, v in top_piece_row_df._data.items()}
 
     def _get_legal_actions(self) -> List[GobbletActionType]:
         if self.is_done:
@@ -198,22 +191,20 @@ class Gobblet(BaseEnvironment):
 
             # Remove from reserve
             reserves_df = self.state["reserves"]
-            new_reserves_data = []
-            for row in reserves_df._data:
-                row_dict = {
-                    column: value for column, value in zip(reserves_df.columns, row)
-                }
-                if not (
-                    row_dict["player_id"] == player
-                    and row_dict["pile_index"] == action.pile_index
-                    and row_dict["size"] == top_reserve_piece["size"]
-                ):
-                    new_reserves_data.append(row)
-            self.state["reserves"] = DataFrame(
-                data=new_reserves_data,
-                columns=reserves_df.columns,
-                indexed_columns=reserves_df._indexed_columns,
+            mask = (
+                (reserves_df["player_id"] == player)
+                & (reserves_df["pile_index"] == action.pile_index)
+                & (reserves_df["size"] == top_reserve_piece["size"])
             )
+            indices_to_remove = np.where(mask)[0]
+            if len(indices_to_remove) == 0:
+                raise ValueError(
+                    "Trying to move a piece from reserve that does not exist."
+                )
+
+            keep_mask = np.ones(reserves_df.height, dtype=bool)
+            keep_mask[indices_to_remove[0]] = False  # remove first
+            self.state["reserves"] = reserves_df[keep_mask]
 
             # Add to board
             new_piece_data = [
@@ -234,23 +225,13 @@ class Gobblet(BaseEnvironment):
 
             # Remove from old position on board
             pieces_df = self.state["pieces"]
-            new_pieces_data = []
-            for row in pieces_df._data:  # todo concerning time complexity
-                row_dict = {
-                    column: value for column, value in zip(pieces_df.columns, row)
-                }
-                if not (
-                    row_dict["row"] == action.from_row
-                    and row_dict["col"] == action.from_col
-                    and row_dict["player_id"] == moving_piece["player_id"]
-                    and row_dict["size"] == moving_piece["size"]
-                ):
-                    new_pieces_data.append(row)
-            self.state["pieces"] = DataFrame(
-                data=new_pieces_data,
-                columns=pieces_df.columns,
-                indexed_columns=pieces_df._indexed_columns,
+            mask = (
+                (pieces_df["row"] == action.from_row)
+                & (pieces_df["col"] == action.from_col)
+                & (pieces_df["player_id"] == moving_piece["player_id"])
+                & (pieces_df["size"] == moving_piece["size"])
             )
+            self.state["pieces"] = pieces_df[~mask]
 
             # Add to new position
             new_piece_data = [

@@ -248,15 +248,22 @@ def profile_mcts_evaluation(df_type: str, scenarios: dict):
 
 
 if __name__ == "__main__":
-    scenarios_list = {
-        "Initial Board": setup_initial_board,
-        "Mid-Game Board": setup_mid_game_board_list,
-        "Complex Board": setup_complex_board_list,
-    }
+    # scenarios = {
+    #     "Initial Board": setup_initial_board,
+    #     "Mid-Game Board": setup_mid_game_board_list,
+    #     "Complex Board": setup_complex_board_list,
+    # }
     # profile_scenarios("list-based", scenarios_list)
 
+    # numpy
+    scenarios = {
+        "Initial Board": setup_initial_board,
+        "Mid-Game Board": setup_mid_game_board_numpy,
+        "Complex Board": setup_complex_board_numpy,
+    }
+
     print("\n" + "-" * 20 + "\n")
-    profile_mcts_evaluation("list-based", scenarios_list)
+    profile_mcts_evaluation("list-based", scenarios)
 
     print("\n" + "=" * 20 + "\n")
 

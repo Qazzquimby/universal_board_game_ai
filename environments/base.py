@@ -2,12 +2,13 @@ import abc
 import pickle
 from dataclasses import dataclass
 from typing import Dict, List, Optional, TypeVar, Union, Tuple, Any
+import numpy as np
 
 ActionType = TypeVar("ActionType")
 
 
 class DataFrame:
-    def __init__(self, data=None, columns=None, schema=None, indexed_columns=None):
+    def __init__(self, data=None, columns=None, schema=None):
         if columns is not None:
             self.columns = columns
         elif schema is not None:
@@ -16,172 +17,124 @@ class DataFrame:
             self.columns = []
 
         self._col_to_idx = {name: i for i, name in enumerate(self.columns)}
-        self._data = []
-        self._indexed_columns = indexed_columns or []
-        self._indices = {}
+        self._data: Dict[str, np.ndarray] = {c: np.array([]) for c in self.columns}
 
         if data:
-            if isinstance(data, list):
-                if not data:  # empty list
+            if isinstance(data, dict):  # Already column-oriented
+                self._data = {c: np.array(v) for c, v in data.items()}
+                if not self.columns:
+                    self.columns = list(data.keys())
+            elif isinstance(data, list):
+                if not data:
                     pass
                 elif isinstance(data[0], dict):
-                    if not self.columns:  # infer columns from first dict
+                    if not self.columns:
                         self.columns = list(data[0].keys())
-                        self._col_to_idx = {
-                            name: i for i, name in enumerate(self.columns)
-                        }
-                    for row_dict in data:
-                        self._data.append([row_dict.get(c) for c in self.columns])
+                    data_by_col = {c: [d.get(c) for d in data] for c in self.columns}
+                    self._data = {c: np.array(v) for c, v in data_by_col.items()}
                 elif isinstance(data[0], (list, tuple)):
-                    self._data = [list(row) for row in data]
+                    if not self.columns:
+                        raise ValueError("Columns must be provided for row data")
+                    if data and len(data[0]) != len(self.columns):
+                        raise ValueError("Row length must match number of columns")
+                    data_T = list(zip(*data)) if data else [[] for _ in self.columns]
+                    self._data = {
+                        c: np.array(data_T[i]) for i, c in enumerate(self.columns)
+                    }
 
-        self._build_indices()
-
-    def _build_indices(self):
-        for col_name in self._indexed_columns:
-            if col_name in self.columns:
-                self._build_index(col_name)
-
-    def _build_index(self, col_name):
-        index = {}
-        col_idx = self._col_to_idx[col_name]
-        for i, row in enumerate(self._data):
-            val = row[col_idx]
-            if val not in index:
-                index[val] = []
-            index[val].append(i)
-        self._indices[col_name] = index
+        if not self.columns and self._data:
+            self.columns = list(self._data.keys())
+            self._col_to_idx = {name: i for i, name in enumerate(self.columns)}
 
     @property
     def height(self):
-        return len(self._data)
+        if not self.columns:
+            return 0
+        return len(self._data[self.columns[0]])
 
     def is_empty(self):
         return self.height == 0
 
     def hash(self):
-        return sum(hash(tuple(row)) for row in self._data)
+        return sum(hash(row) for row in self.rows())
 
     def filter(self, conditions: Union[Tuple[str, Any], Dict[str, Any]]):
         if isinstance(conditions, tuple):
             conditions = {conditions[0]: conditions[1]}
 
-        # Split conditions into indexed and non-indexed
-        indexed_conds = {}
-        non_indexed_conds = {}
-        for c, v in conditions.items():
-            if c in self._indices:
-                indexed_conds[c] = v
-            else:
-                non_indexed_conds[c] = v
+        if self.is_empty():
+            return DataFrame(columns=self.columns)
 
-        # Determine which rows to check. Use index if possible.
-        if indexed_conds:
-            # Get intersection of row indices from all indexed conditions
-            row_indices: Optional[set[int]] = None
-            for col_name, value in indexed_conds.items():
-                indices = set(self._indices[col_name].get(value, []))
-                if row_indices is None:
-                    row_indices = indices
-                else:
-                    row_indices.intersection_update(indices)
-                # Early exit if intersection is empty
-                if not row_indices:
-                    break
+        mask = np.ones(self.height, dtype=bool)
+        for col, val in conditions.items():
+            mask &= self._data[col] == val
 
-            if not row_indices:
-                candidate_rows = []
-            else:  # skip sorting here?
-                candidate_rows = [self._data[i] for i in sorted(list(row_indices))]
-        else:
-            # No indexed conditions, check all rows.
-            candidate_rows = self._data
-
-        # Perform non-indexed filtering on candidate rows.
-        if not non_indexed_conds or not candidate_rows:
-            new_data = candidate_rows
-        else:
-            new_data = []
-            col_indices = {col: self._col_to_idx[col] for col in non_indexed_conds}
-            for row in candidate_rows:
-                if all(
-                    row[col_indices[col]] == val
-                    for col, val in non_indexed_conds.items()
-                ):
-                    new_data.append(row)
-
-        return DataFrame(
-            data=new_data,
-            columns=self.columns,
-            indexed_columns=self._indexed_columns,
-        )
+        new_data = {col: arr[mask] for col, arr in self._data.items()}
+        return DataFrame(data=new_data, columns=self.columns)
 
     def select(self, columns):
-        indices = [self._col_to_idx[col] for col in columns]
-        new_data = [[row[i] for i in indices] for row in self._data]
-        new_indexed_columns = [c for c in self._indexed_columns if c in columns]
-        return DataFrame(
-            data=new_data, columns=columns, indexed_columns=new_indexed_columns
-        )
+        new_data = {col: self._data[col] for col in columns}
+        return DataFrame(data=new_data, columns=columns)
 
     def rows(self):
-        return [tuple(row) for row in self._data]
+        if self.is_empty():
+            return []
+        column_data = [self._data[c] for c in self.columns]
+        return [tuple(row) for row in np.array(column_data, dtype=object).T]
 
     def concat(self, other_df):
         if self.columns != other_df.columns:
             raise ValueError("DataFrames have different columns")
-        new_data = self._data + other_df._data
-        new_indexed_columns = list(
-            set(self._indexed_columns) | set(other_df._indexed_columns)
-        )
-        return DataFrame(
-            data=new_data,
-            columns=self.columns,
-            indexed_columns=new_indexed_columns,
-        )
+
+        if other_df.is_empty():
+            return self.clone()
+        if self.is_empty():
+            return other_df.clone()
+
+        new_data = {
+            col: np.concatenate([self._data[col], other_df._data[col]])
+            for col in self.columns
+        }
+        return DataFrame(data=new_data, columns=self.columns)
 
     def with_columns(self, updates_dict):
         for col_name in updates_dict:
-            if col_name not in self._col_to_idx:
+            if col_name not in self.columns:
                 raise ValueError(f"Column {col_name} not in DataFrame")
 
+        new_data = self._data.copy()
+
         if self.is_empty():
-            new_row_dict = {c: None for c in self.columns}
-            new_row_dict.update(updates_dict)
-            new_row = [new_row_dict[c] for c in self.columns]
-            return DataFrame(
-                data=[new_row],
-                columns=self.columns,
-                indexed_columns=self._indexed_columns,
-            )
+            new_row_dict = {c: [None] for c in self.columns}
+            for col_name, value in updates_dict.items():
+                new_row_dict[col_name] = (
+                    [value] if not isinstance(value, list) else value
+                )
+            return DataFrame(data=new_row_dict, columns=self.columns)
 
-        new_data = [list(row) for row in self._data]
         for col_name, value in updates_dict.items():
-            col_idx = self._col_to_idx[col_name]
-            if not isinstance(value, list):
-                value = [value]
-            for row, value_for_row in zip(new_data, value, strict=True):
-                row[col_idx] = value_for_row
+            if not isinstance(value, (list, np.ndarray)):
+                value = np.full(self.height, value)
+            else:
+                value = np.array(value)
 
-        return DataFrame(
-            data=new_data,
-            columns=self.columns,
-            indexed_columns=self._indexed_columns,
-        )
+            if len(value) != self.height:
+                raise ValueError("Length of update values must match DataFrame height")
+            new_data[col_name] = value
+
+        return DataFrame(data=new_data, columns=self.columns)
 
     def __getitem__(self, key):
         if isinstance(key, str):
-            col_idx = self._col_to_idx[key]
-            return [row[col_idx] for row in self._data]
+            return self._data[key]
+        if isinstance(key, (int, slice, np.ndarray)):  # Allow row indexing/slicing
+            new_data = {col: arr[key] for col, arr in self._data.items()}
+            return DataFrame(data=new_data, columns=self.columns)
         raise TypeError(f"Unsupported key type for DataFrame getitem: {type(key)}")
 
     def clone(self):
-        new_data = [list(row) for row in self._data]
-        return DataFrame(
-            data=new_data,
-            columns=list(self.columns),
-            indexed_columns=self._indexed_columns,
-        )
+        new_data = {col: arr.copy() for col, arr in self._data.items()}
+        return DataFrame(data=new_data, columns=list(self.columns))
 
 
 StateType = Dict[str, DataFrame]
