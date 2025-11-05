@@ -1,7 +1,9 @@
+import random
 import timeit
 import numpy as np
 from environments.gobblet.gobblet import Gobblet
 from environments.base import DataFrame
+from algorithms.mcts import MCTSNode, RandomRolloutEvaluation
 
 
 def setup_initial_board():
@@ -220,21 +222,49 @@ def profile_scenarios(df_type: str, scenarios: dict):
         )
 
 
+def profile_mcts_evaluation(df_type: str, scenarios: dict):
+    """Run profiling for MCTS evaluation on a given set of scenarios."""
+    random.seed(1)
+
+    iterations = 100
+    print(f"--- Profiling MCTS Evaluation with {df_type} DataFrame ---")
+
+    evaluator = RandomRolloutEvaluation()
+
+    for name, setup_func in scenarios.items():
+        env = setup_func()
+        node = MCTSNode(env.get_state_with_key())
+        print(f"\nScenario: {name}")
+
+        # Time it
+        time_taken = timeit.timeit(
+            lambda: evaluator.evaluate(node, env), number=iterations
+        )
+
+        print(f"Time for {iterations} calls to MCTS evaluate: {time_taken:.4f} seconds")
+        print(
+            f"Average time per call: {time_taken / iterations * 1e6:.2f} microseconds"
+        )
+
+
 if __name__ == "__main__":
     scenarios_list = {
         "Initial Board": setup_initial_board,
         "Mid-Game Board": setup_mid_game_board_list,
         "Complex Board": setup_complex_board_list,
     }
-    profile_scenarios("list-based", scenarios_list)
+    # profile_scenarios("list-based", scenarios_list)
+
+    print("\n" + "-" * 20 + "\n")
+    profile_mcts_evaluation("list-based", scenarios_list)
 
     print("\n" + "=" * 20 + "\n")
 
     # To run numpy-based comparison, you need to have the numpy version of DataFrame
     # in environments/base.py. The current setup functions will likely fail otherwise.
-    scenarios_numpy = {
-        "Initial Board": setup_initial_board,
-        "Mid-Game Board": setup_mid_game_board_numpy,
-        "Complex Board": setup_complex_board_numpy,
-    }
+    # scenarios_numpy = {
+    #     "Initial Board": setup_initial_board,
+    #     "Mid-Game Board": setup_mid_game_board_numpy,
+    #     "Complex Board": setup_complex_board_numpy,
+    # }
     # profile_scenarios("numpy-based", scenarios_numpy)

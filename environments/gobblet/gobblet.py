@@ -79,12 +79,12 @@ class Gobblet(BaseEnvironment):
         self.state = {
             "pieces": DataFrame(
                 columns=["row", "col", "player_id", "size"],
-                # indexed_columns=["row", "col", "player_id"],
+                indexed_columns=["row", "col", "player_id"],
             ),
             "reserves": DataFrame(
                 data=reserves_data,
                 columns=["player_id", "pile_index", "size"],
-                # indexed_columns=["player_id", "pile_index"],
+                indexed_columns=["player_id", "pile_index"],
             ),
             "game": DataFrame(
                 data=[[0, False, None]],
