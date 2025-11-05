@@ -112,8 +112,12 @@ class Gobblet(BaseEnvironment):
         top_piece_idx = np.argmax(sizes).item()
         top_piece_row_df = filtered_df[top_piece_idx]
 
+        if top_piece_row_df.is_empty():
+            return None
+
         # todo make this a Dataframe builtin
-        return {c: v.item() for c, v in top_piece_row_df._data.items()}
+        row_tuple = top_piece_row_df.rows()[0]
+        return {c: v for c, v in zip(top_piece_row_df.columns, row_tuple)}
 
     def _get_legal_actions(self) -> List[GobbletActionType]:
         if self.is_done:

@@ -9,6 +9,19 @@ ActionType = TypeVar("ActionType")
 
 class DataFrame:
     def __init__(self, data=None, columns=None, schema=None):
+        # Internal properties:
+        # self._data: Dict[str, np.ndarray] holding the raw, unmasked data columns.
+        # self._mask: Optional[np.ndarray] of booleans, indicating which rows are visible.
+        # self.columns: List[str] of visible column names.
+        # self._col_to_idx: Dict mapping column name to index.
+        #
+        # A DataFrame can be a "view" on another DataFrame's data.
+        # In such cases, _data is shared, and _mask determines the visible subset of rows.
+        # Operations like filter() or slicing create views.
+        # Operations like concat() or with_columns() materialize the view into a new DataFrame.
+
+        self._mask = None  # No mask by default, all data is visible.
+
         if columns is not None:
             self.columns = columns
         elif schema is not None:
@@ -48,8 +61,11 @@ class DataFrame:
 
     @property
     def height(self):
-        if not self.columns:
+        if self._mask is not None:
+            return np.sum(self._mask)
+        if not self.columns or not self._data:
             return 0
+        # This assumes all columns have the same length, which is enforced by constructor
         return len(self._data[self.columns[0]])
 
     def is_empty(self):
@@ -65,21 +81,35 @@ class DataFrame:
         if self.is_empty():
             return DataFrame(columns=self.columns)
 
-        mask = np.ones(self.height, dtype=bool)
-        for col, val in conditions.items():
-            mask &= self._data[col] == val
+        # Create a new mask by applying conditions on top of the existing mask.
+        if self._mask is not None:
+            new_mask = self._mask.copy()
+        else:
+            base_height = (
+                len(self._data[self.columns[0]]) if self.columns and self._data else 0
+            )
+            new_mask = np.ones(base_height, dtype=bool)
 
-        new_data = {col: arr[mask] for col, arr in self._data.items()}
-        return DataFrame(data=new_data, columns=self.columns)
+        for col, val in conditions.items():
+            # Apply filter to the underlying data
+            new_mask &= self._data[col] == val
+
+        # Return a new DataFrame as a view
+        new_df = DataFrame(columns=self.columns)
+        new_df._data = self._data
+        new_df._mask = new_mask
+        return new_df
 
     def select(self, columns):
-        new_data = {col: self._data[col] for col in columns}
+        # Materializes the selected columns of the current view into a new DataFrame.
+        new_data = {col: self[col] for col in columns}
         return DataFrame(data=new_data, columns=columns)
 
     def rows(self):
         if self.is_empty():
             return []
-        column_data = [self._data[c] for c in self.columns]
+        # Use __getitem__ to get masked column data
+        column_data = [self[c] for c in self.columns]
         return [tuple(row) for row in np.array(column_data, dtype=object).T]
 
     def concat(self, other_df):
@@ -91,8 +121,12 @@ class DataFrame:
         if self.is_empty():
             return other_df.clone()
 
+        # Materialize both dataframes' visible rows and concatenate them.
+        self_data = {c: self[c] for c in self.columns}
+        other_data = {c: other_df[c] for c in other_df.columns}
+
         new_data = {
-            col: np.concatenate([self._data[col], other_df._data[col]])
+            col: np.concatenate([self_data[col], other_data[col]])
             for col in self.columns
         }
         return DataFrame(data=new_data, columns=self.columns)
@@ -102,8 +136,6 @@ class DataFrame:
             if col_name not in self.columns:
                 raise ValueError(f"Column {col_name} not in DataFrame")
 
-        new_data = self._data.copy()
-
         if self.is_empty():
             new_row_dict = {c: [None] for c in self.columns}
             for col_name, value in updates_dict.items():
@@ -112,28 +144,61 @@ class DataFrame:
                 )
             return DataFrame(data=new_row_dict, columns=self.columns)
 
+        # This operation materializes the DataFrame view.
+        df_to_update = self.clone()
+
         for col_name, value in updates_dict.items():
             if not isinstance(value, (list, np.ndarray)):
-                value = np.full(self.height, value)
+                value = np.full(df_to_update.height, value)
             else:
                 value = np.array(value)
 
-            if len(value) != self.height:
+            if len(value) != df_to_update.height:
                 raise ValueError("Length of update values must match DataFrame height")
-            new_data[col_name] = value
+            df_to_update._data[col_name] = value
 
-        return DataFrame(data=new_data, columns=self.columns)
+        return df_to_update
 
     def __getitem__(self, key):
         if isinstance(key, str):
+            if self._mask is not None:
+                return self._data[key][self._mask]
             return self._data[key]
+
         if isinstance(key, (int, slice, np.ndarray)):  # Allow row indexing/slicing
-            new_data = {col: arr[key] for col, arr in self._data.items()}
-            return DataFrame(data=new_data, columns=self.columns)
+            # This returns a new DataFrame as a view.
+            new_df = DataFrame(columns=self.columns)
+            new_df._data = self._data
+
+            full_height = (
+                len(self._data[self.columns[0]]) if self.columns and self._data else 0
+            )
+            if self._mask is not None:
+                visible_indices = np.where(self._mask)[0]
+                try:
+                    sliced_indices = visible_indices[key]
+                except IndexError:
+                    # Slicing an empty view, result is empty.
+                    sliced_indices = np.array([], dtype=int)
+            else:
+                # Slicing the full dataframe
+                sliced_indices = np.arange(full_height)[key]
+
+            new_mask = np.zeros(full_height, dtype=bool)
+            # handle scalar index vs array of indices
+            if np.isscalar(sliced_indices):
+                if 0 <= sliced_indices < full_height:
+                    new_mask[sliced_indices] = True
+            else:
+                new_mask[sliced_indices] = True
+            new_df._mask = new_mask
+            return new_df
+
         raise TypeError(f"Unsupported key type for DataFrame getitem: {type(key)}")
 
     def clone(self):
-        new_data = {col: arr.copy() for col, arr in self._data.items()}
+        # Materializes the current view into a new, independent DataFrame.
+        new_data = {col: self[col].copy() for col in self.columns}
         return DataFrame(data=new_data, columns=list(self.columns))
 
 
