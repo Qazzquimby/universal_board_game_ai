@@ -1,9 +1,10 @@
 import abc
-import pickle
 from dataclasses import dataclass
 from typing import Dict, List, Optional, TypeVar, Union, Tuple, Any
 
 ActionType = TypeVar("ActionType")
+
+cache_statistics = {"hits": 0, "misses": 0}
 
 
 class DataFrame:
@@ -19,6 +20,7 @@ class DataFrame:
         self._data = []
         self._indexed_columns = indexed_columns or []
         self._indices = {}
+        self._hash: Optional[int] = None
 
         if data:
             if isinstance(data, list):
@@ -60,7 +62,9 @@ class DataFrame:
         return self.height == 0
 
     def hash(self):
-        return sum(hash(tuple(row)) for row in self._data)
+        if self._hash is None:
+            self._hash = sum(hash(tuple(row)) for row in self._data)
+        return self._hash
 
     def filter(self, conditions: Union[Tuple[str, Any], Dict[str, Any]]):
         if isinstance(conditions, tuple):
@@ -208,8 +212,9 @@ class StateWithKey:
 
     @staticmethod
     def _get_key_for_state(state: StateType) -> int:
-        hashed = hash(pickle.dumps(state))
-        return hashed
+        # frozenset of items to be order-independent and hashable.
+        table_hashes = frozenset((name, df.hash()) for name, df in state.items())
+        return hash(table_hashes)
 
 
 @dataclass
@@ -231,6 +236,8 @@ class ActionResult:
 
 class BaseEnvironment(abc.ABC):
     """Abstract base class for game environments."""
+
+    _cache = {}
 
     def __init__(self):
         self._dirty = True
@@ -281,11 +288,21 @@ class BaseEnvironment(abc.ABC):
         Returns:
             A list of valid actions.
         """
-        # temp
-        self._legal_actions = None
+        global cache_statistics
+        if self._legal_actions is not None:
+            return self._legal_actions
 
-        if self._legal_actions is None:
-            self._legal_actions = self._get_legal_actions()
+        state_key = self.get_state_with_key().key
+        if state_key in self._cache and "legal_actions" in self._cache[state_key]:
+            cache_statistics["hits"] += 1
+            self._legal_actions = self._cache[state_key]["legal_actions"]
+            return self._legal_actions
+        cache_statistics["misses"] += 1
+
+        self._legal_actions = self._get_legal_actions()
+        if state_key not in self._cache:
+            self._cache[state_key] = {}
+        self._cache[state_key]["legal_actions"] = self._legal_actions
         return self._legal_actions
 
     @abc.abstractmethod
