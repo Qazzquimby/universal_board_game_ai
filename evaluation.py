@@ -39,6 +39,7 @@ def _play_one_game(
         if hasattr(agent, "network") and agent.network:
             agent.network.eval()
 
+    turn = 0
     while not done:
         current_player_idx = env.get_current_player()
 
@@ -59,6 +60,11 @@ def _play_one_game(
 
         result = env.step(action)
         done = result.done
+
+        turn += 1
+        if turn >= 1000:
+            print("WARN: Game timed out, too many turns without a winner")
+            done = True
 
         if done:
             break
