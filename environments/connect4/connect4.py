@@ -33,7 +33,7 @@ class Connect4(BaseEnvironment):
         }
         return self.get_state_with_key()
 
-    def _step(self, action: ColumnActionType) -> ActionResult:
+    def _step(self, action: ColumnActionType):
         if self.is_done:
             winner = self.get_winning_player()
             current_player = self.get_current_player()
@@ -45,11 +45,7 @@ class Connect4(BaseEnvironment):
             else:
                 reward = -1.0
 
-            return ActionResult(
-                next_state_with_key=self.get_state_with_key(),
-                reward=reward,
-                done=True,
-            )
+            return reward, True
 
         col = action
 
@@ -94,9 +90,7 @@ class Connect4(BaseEnvironment):
 
         self.state["game"] = self.state["game"].with_columns(game_updates)
 
-        return ActionResult(
-            next_state_with_key=self.get_state_with_key(), reward=reward, done=done
-        )
+        return reward, done
 
     def _is_valid_action(self, col: ColumnActionType) -> bool:
         """Check if dropping a piece in the column is valid."""
@@ -268,10 +262,6 @@ class Connect4(BaseEnvironment):
         new_env = Connect4()
         new_env.set_state(self.state)
         return new_env
-
-    def set_state(self, state: StateType) -> None:
-        self.state = {k: v.clone() for k, v in state.items()}
-        self._dirty = True
 
     def get_sanity_check_states(self) -> List[SanityCheckState]:
         from environments.connect4.sanity import get_connect4_sanity_states

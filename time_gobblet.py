@@ -2,7 +2,7 @@ import random
 import timeit
 import numpy as np
 from environments.gobblet.gobblet import Gobblet
-from environments.base import DataFrame, cache_statistics
+from environments.base import DataFrame
 from algorithms.mcts import MCTSNode, RandomRolloutEvaluation
 
 
@@ -259,8 +259,6 @@ if __name__ == "__main__":
     profile_mcts_evaluation("list-based", scenarios_list)
 
     print("\n" + "=" * 20 + "\n")
-
-    print(cache_statistics)
 
     # To run numpy-based comparison, you need to have the numpy version of DataFrame
     # in environments/base.py. The current setup functions will likely fail otherwise.

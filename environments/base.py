@@ -1,10 +1,9 @@
 import abc
 from dataclasses import dataclass
+from functools import wraps
 from typing import Dict, List, Optional, TypeVar, Union, Tuple, Any
 
 ActionType = TypeVar("ActionType")
-
-cache_statistics = {"hits": 0, "misses": 0}
 
 
 class DataFrame:
@@ -220,6 +219,52 @@ class DataFrame:
 StateType = Dict[str, DataFrame]
 
 
+def _make_hashable_key(args, kwargs):
+    key = []
+    for arg in args:
+        if isinstance(arg, DataFrame):
+            key.append(arg.hash())
+        elif isinstance(arg, dict):
+            key.append(frozenset(arg.items()))
+        else:
+            key.append(arg)
+    if kwargs:
+        key.append(frozenset(kwargs.items()))
+    return tuple(key)
+
+
+def cached_method(func):
+    func_name = func.__name__
+
+    @wraps(func)
+    def wrapper(self, *args, **kwargs):
+        cache_key = (func_name,) + _make_hashable_key(args, kwargs)
+
+        # Check instance cache
+        if cache_key in self._instance_cache:
+            return self._instance_cache[cache_key]
+
+        # Check global cache
+        state_key = self.get_state_with_key().key
+        if state_key in self._cache and cache_key in self._cache[state_key]:
+            result = self._cache[state_key][cache_key]
+            self._instance_cache[cache_key] = result
+            return result
+
+        # Compute result
+        result = func(self, *args, **kwargs)
+
+        # Store in caches
+        self._instance_cache[cache_key] = result
+        if state_key not in self._cache:
+            self._cache[state_key] = {}
+        self._cache[state_key][cache_key] = result
+
+        return result
+
+    return wrapper
+
+
 @dataclass
 class StateWithKey:
     state: StateType
@@ -272,7 +317,7 @@ class BaseEnvironment(abc.ABC):
         self._dirty = True
         self._state_with_key: Optional[StateWithKey] = None
         self.state: Optional[StateType] = None
-        self._legal_actions: Optional[List[ActionType]] = None
+        self._instance_cache: dict = {}
 
     def reset(self) -> StateWithKey:
         """
@@ -282,7 +327,7 @@ class BaseEnvironment(abc.ABC):
             The initial state observation.
         """
         self._dirty = True
-        self._legal_actions = None
+        self._instance_cache = {}
         state_with_key = self._reset()
         self.state = state_with_key.state
         return state_with_key
@@ -302,12 +347,20 @@ class BaseEnvironment(abc.ABC):
         Args:
             action: The action taken by the current player.
         """
+        reward, done = self._step(action)
         self._dirty = True
-        self._legal_actions = None
-        return self._step(action)
+        self._instance_cache = {}
+
+        result = ActionResult(
+            next_state_with_key=self.get_state_with_key(), reward=reward, done=done
+        )
+
+        assert result.next_state_with_key.key == self.get_state_with_key().key
+        return result
 
     @abc.abstractmethod
-    def _step(self, action: ActionType) -> ActionResult:
+    def _step(self, action: ActionType):
+        # -> reward, done
         pass
 
     def get_legal_actions(self) -> List[ActionType]:
@@ -317,22 +370,7 @@ class BaseEnvironment(abc.ABC):
         Returns:
             A list of valid actions.
         """
-        global cache_statistics
-        if self._legal_actions is not None:
-            return self._legal_actions
-
-        state_key = self.get_state_with_key().key
-        if state_key in self._cache and "legal_actions" in self._cache[state_key]:
-            cache_statistics["hits"] += 1
-            self._legal_actions = self._cache[state_key]["legal_actions"]
-            return self._legal_actions
-        cache_statistics["misses"] += 1
-
-        self._legal_actions = self._get_legal_actions()
-        if state_key not in self._cache:
-            self._cache[state_key] = {}
-        self._cache[state_key]["legal_actions"] = self._legal_actions
-        return self._legal_actions
+        return self._get_legal_actions()
 
     @abc.abstractmethod
     def _get_legal_actions(self) -> List[ActionType]:
@@ -403,15 +441,10 @@ class BaseEnvironment(abc.ABC):
         """
         pass
 
-    @abc.abstractmethod
     def set_state(self, state: StateType) -> None:
-        """
-        Set the environment to a specific state.
-
-        Args:
-            state: The state dictionary to load.
-        """
-        raise NotImplementedError
+        self.state = {k: v.clone() for k, v in state.items()}
+        self._dirty = True
+        self._instance_cache = {}
 
     def render(self, mode: str = "human") -> None:
         """

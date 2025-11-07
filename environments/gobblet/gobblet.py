@@ -27,6 +27,7 @@ from environments.base import (
     SanityCheckState,
     StateType,
     StateWithKey,
+    cached_method,
 )
 
 
@@ -100,6 +101,7 @@ class Gobblet(BaseEnvironment):
             {"player_id": player_id, "pile_index": pile_index},
         )
 
+    @cached_method
     def _get_top_piece(self, df: DataFrame, filters: dict) -> Optional[dict]:
         filtered_df = df.filter(filters)
 
@@ -120,6 +122,7 @@ class Gobblet(BaseEnvironment):
 
         return {c: v for c, v in zip(df.columns, top_piece_row_data)}
 
+    @cached_method
     def _get_legal_actions(self) -> List[GobbletActionType]:
         if self.is_done:
             return []
@@ -188,7 +191,7 @@ class Gobblet(BaseEnvironment):
                         )
         return legal_actions
 
-    def _step(self, action: GobbletActionType) -> ActionResult:
+    def _step(self, action: GobbletActionType):
         player = self.get_current_player()
 
         if isinstance(action, MoveFromReserve):
@@ -263,10 +266,7 @@ class Gobblet(BaseEnvironment):
             game_updates["current_player"] = next_player
 
         self.state["game"] = self.state["game"].with_columns(game_updates)
-
-        return ActionResult(
-            next_state_with_key=self.get_state_with_key(), reward=reward, done=done
-        )
+        return reward, done
 
     def _check_for_winner(self) -> Optional[int]:
         board_top_pieces = [
@@ -327,11 +327,6 @@ class Gobblet(BaseEnvironment):
         new_env = Gobblet()
         new_env.set_state(self.state)
         return new_env
-
-    def set_state(self, state: StateType) -> None:
-        self.state = {k: v.clone() for k, v in state.items()}
-        self._dirty = True
-        self._legal_actions = None
 
     def get_sanity_check_states(self) -> List[SanityCheckState]:
         from environments.gobblet.sanity import get_gobblet_sanity_states
