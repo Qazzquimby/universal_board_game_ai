@@ -8,7 +8,7 @@ def get_gobblet_sanity_states():
 
     # --- State 1: Player 0 can win horizontally ---
     env1 = Gobblet()
-    env1.state["reserves"] = env1.state["reserves"].filter(("pile_index", 0))
+    env1.state["reserves"] = env1.state["reserves"]
     env1.state["pieces"] = DataFrame(
         [
             (0, 0, 0, 0),
@@ -31,7 +31,7 @@ def get_gobblet_sanity_states():
 
     # --- State 2: Player 1 can win horizontally ---
     env2 = Gobblet()
-    env2.state["reserves"] = env2.state["reserves"].filter(("pile_index", 0))
+    env2.state["reserves"] = env2.state["reserves"]
     env2.state["game"] = env2.state["game"].with_columns({"current_player": 1})
     env2.state["pieces"] = DataFrame(
         [
@@ -55,7 +55,7 @@ def get_gobblet_sanity_states():
 
     # --- State 3: Player 0 must block Player 1's win ---
     env3 = Gobblet()
-    env3.state["reserves"] = env3.state["reserves"].filter(("pile_index", 0))
+    env3.state["reserves"] = env3.state["reserves"]
     env3.state["pieces"] = DataFrame(
         [
             (0, 0, 0, 0),
@@ -76,7 +76,7 @@ def get_gobblet_sanity_states():
 
     # --- State 4: Player 1 must block Player 0's win ---
     env4 = Gobblet()
-    env4.state["reserves"] = env4.state["reserves"].filter(("pile_index", 0))
+    env4.state["reserves"] = env4.state["reserves"]
     env4.state["game"] = env4.state["game"].with_columns({"current_player": 1})
     env4.state["pieces"] = DataFrame(
         [

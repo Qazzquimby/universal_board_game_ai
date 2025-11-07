@@ -131,10 +131,15 @@ class Gobblet(BaseEnvironment):
         player = self.get_current_player()
 
         # Moves from reserve
+        seen_sizes = set()
         for pile_index in range(self.num_reserve_piles):
             top_reserve_piece = self._get_top_reserve_piece(player, pile_index)
             if not top_reserve_piece:
                 continue
+
+            if top_reserve_piece["size"] in seen_sizes:
+                continue
+            seen_sizes.add(top_reserve_piece["size"])
 
             for row in range(self.height):
                 for col in range(self.width):
