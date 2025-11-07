@@ -104,7 +104,7 @@ def get_gobblet_sanity_states():
             (0, 0, 0, 0),
             (0, 1, 0, 0),
             (0, 2, 0, 0),  # P0 line
-            (2, 3, 0, 1),  # P0 piece to move for win
+            (1, 3, 0, 1),  # P0 piece to move for win
             (1, 0, 1, 0),
             (1, 1, 1, 0),
             (1, 2, 1, 0),
@@ -116,7 +116,7 @@ def get_gobblet_sanity_states():
             description="Player 0 can win with on-board move to (0,3)",
             state_with_key=env5.get_state_with_key(),
             expected_value=1.0,
-            expected_action=MoveFromBoard(from_row=2, from_col=3, to_row=0, to_col=3),
+            expected_action=MoveFromBoard(from_row=1, from_col=3, to_row=0, to_col=3),
         )
     )
 
