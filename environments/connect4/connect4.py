@@ -274,6 +274,6 @@ class Connect4(BaseEnvironment):
         self._dirty = True
 
     def get_sanity_check_states(self) -> List[SanityCheckState]:
-        import sanity
+        from environments.connect4.sanity import get_connect4_sanity_states
 
-        return sanity.get_connect4_sanity_states()
+        return get_connect4_sanity_states()

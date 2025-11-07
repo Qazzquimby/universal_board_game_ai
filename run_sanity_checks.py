@@ -70,6 +70,7 @@ def run_sanity_checks_for_agent(
         temp_env = env.copy()
         temp_env.set_state(check_case.state_with_key.state)
         temp_env.render()
+        legal_actions = temp_env.get_legal_actions()
 
         policy_dict, value = predict(agent, temp_env, network_only=network_only)
 
@@ -93,27 +94,26 @@ def run_sanity_checks_for_agent(
         if not sorted_probs:
             logger.info("    - (No legal actions)")
         else:
-            for action, prob in sorted_probs:
+            for action_index, prob in sorted_probs:
+                action = legal_actions[action_index]
                 highlight = ""
-                if action == check_case.expected_action:
+                if (
+                    check_case.expected_action is not None
+                    and action == check_case.expected_action
+                ):
                     highlight += " <<< EXPECTED"
-                if sorted_probs and action == sorted_probs[0][0]:
+                if sorted_probs and action_index == sorted_probs[0][0]:
                     highlight += " (BEST)"
                 logger.info(f"    - {action}: {prob:.4f}{highlight}")
         print("")
 
 
 def main():
-    """
-    Runs Connect4 sanity checks on all configured agents.
-    """
     config = AppConfig()
-    config.env.name = "Connect4"
+    config.env.name = "Gobblet"  # "Connect4"
 
     logger.remove()
     logger.add(sys.stderr, level="INFO")
-
-    logger.info("--- Running Sanity Checks for Connect4 ---")
 
     env = get_environment(config.env)
     agents = get_agents(env, config)
