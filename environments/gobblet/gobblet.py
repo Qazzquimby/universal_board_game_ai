@@ -16,12 +16,9 @@ If a player ever has a 4-in-a-row at the end of their turn, they win.
 Its possible for both players to have a 4-in-a-row simultaneously if a piece moves off another pieces,
 in which case the currently acting player still wins.
 """
-from copy import deepcopy
-from typing import Any, List, Optional, Union
+from typing import List, Optional, Union
 
 from pydantic import BaseModel
-
-import numpy as np
 
 from environments.base import (
     ActionResult,
@@ -198,22 +195,13 @@ class Gobblet(BaseEnvironment):
             top_reserve_piece = self._get_top_reserve_piece(player, action.pile_index)
 
             # Remove from reserve
-            reserves_df = self.state["reserves"]
-            new_reserves_data = []
-            for row in reserves_df._data:
-                row_dict = {
-                    column: value for column, value in zip(reserves_df.columns, row)
-                }
-                if not (
-                    row_dict["player_id"] == player
-                    and row_dict["pile_index"] == action.pile_index
-                    and row_dict["size"] == top_reserve_piece["size"]
-                ):
-                    new_reserves_data.append(row)
-            self.state["reserves"] = DataFrame(
-                data=new_reserves_data,
-                columns=reserves_df.columns,
-                indexed_columns=reserves_df._indexed_columns,
+            self.state["reserves"] = self.state["reserves"].filter_out(
+                {
+                    "player_id": player,
+                    "pile_index": action.pile_index,
+                    "size": top_reserve_piece["size"],
+                },
+                expected_found=1,
             )
 
             # Add to board
@@ -234,27 +222,14 @@ class Gobblet(BaseEnvironment):
             moving_piece = self._get_top_piece_at(action.from_row, action.from_col)
 
             # Remove from old position on board
-            pieces_df = self.state["pieces"]
-            new_pieces_data = []
-            for (
-                row
-            ) in (
-                pieces_df._data
-            ):  # todo concerning time complexity. Use existing filter method. Assert false if no piece found
-                row_dict = {
-                    column: value for column, value in zip(pieces_df.columns, row)
-                }
-                if not (
-                    row_dict["row"] == action.from_row
-                    and row_dict["col"] == action.from_col
-                    and row_dict["player_id"] == moving_piece["player_id"]
-                    and row_dict["size"] == moving_piece["size"]
-                ):
-                    new_pieces_data.append(row)
-            self.state["pieces"] = DataFrame(
-                data=new_pieces_data,
-                columns=pieces_df.columns,
-                indexed_columns=pieces_df._indexed_columns,
+            self.state["pieces"] = self.state["pieces"].filter_out(
+                {
+                    "row": action.from_row,
+                    "col": action.from_col,
+                    "player_id": moving_piece["player_id"],
+                    "size": moving_piece["size"],
+                },
+                expected_found=1,
             )
 
             # Add to new position
@@ -359,9 +334,9 @@ class Gobblet(BaseEnvironment):
         self._legal_actions = None
 
     def get_sanity_check_states(self) -> List[SanityCheckState]:
-        import sanity
+        from environments.gobblet.sanity import get_gobblet_sanity_states
 
-        return sanity.get_gobblet_sanity_states()
+        return get_gobblet_sanity_states()
 
     # If we do symmetry, it needs to preserve policy outputs trivially and robustly.
     # Would need to regenerate list of legal moves?

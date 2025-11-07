@@ -120,6 +120,35 @@ class DataFrame:
             indexed_columns=self._indexed_columns,
         )
 
+    def filter_out(
+        self,
+        conditions: Union[Tuple[str, Any], Dict[str, Any]],
+        expected_found: int = None,
+    ):
+        if isinstance(conditions, tuple):
+            conditions = {conditions[0]: conditions[1]}
+
+        col_indices = {col: self._col_to_idx[col] for col in conditions}
+
+        new_data = []
+        for row in self._data:
+            match = all(row[col_indices[col]] == val for col, val in conditions.items())
+            if not match:
+                new_data.append(row)
+
+        if expected_found is not None:
+            num_found = self.height - len(new_data)
+            if num_found != expected_found:
+                raise ValueError(
+                    f"Expected {expected_found} matching row. Got {num_found}"
+                )
+
+        return DataFrame(
+            data=new_data,
+            columns=self.columns,
+            indexed_columns=self._indexed_columns,
+        )
+
     def select(self, columns):
         indices = [self._col_to_idx[col] for col in columns]
         new_data = [[row[i] for i in indices] for row in self._data]
