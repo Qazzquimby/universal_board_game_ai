@@ -27,6 +27,7 @@ from environments.base import (
     ActionResult,
     BaseEnvironment,
     DataFrame,
+    SanityCheckState,
     StateType,
     StateWithKey,
 )
@@ -235,7 +236,11 @@ class Gobblet(BaseEnvironment):
             # Remove from old position on board
             pieces_df = self.state["pieces"]
             new_pieces_data = []
-            for row in pieces_df._data:  # todo concerning time complexity
+            for (
+                row
+            ) in (
+                pieces_df._data
+            ):  # todo concerning time complexity. Use existing filter method. Assert false if no piece found
                 row_dict = {
                     column: value for column, value in zip(pieces_df.columns, row)
                 }
@@ -352,6 +357,11 @@ class Gobblet(BaseEnvironment):
         self.state = {k: v.clone() for k, v in state.items()}
         self._dirty = True
         self._legal_actions = None
+
+    def get_sanity_check_states(self) -> List[SanityCheckState]:
+        import sanity
+
+        return sanity.get_gobblet_sanity_states()
 
     # If we do symmetry, it needs to preserve policy outputs trivially and robustly.
     # Would need to regenerate list of legal moves?

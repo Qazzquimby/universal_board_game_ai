@@ -164,6 +164,7 @@ def _run_one_self_play_game(
     game_history = []
     self_play_agent.reset_game()
 
+    turn = 0
     while not state_with_key.done:
         state = state_with_key.state
         legal_actions = game_env.get_legal_actions()
@@ -203,6 +204,11 @@ def _run_one_self_play_game(
             state_with_actions["legal_actions"] = DataFrame(
                 data=[], columns=["action_id"]
             )
+
+        turn += 1
+        if turn >= 100:
+            print("WARN: game timed out, setting draw")
+            state_with_key.state["game"]["done"][0] = True
 
         game_history.append(
             GameHistoryStep(
