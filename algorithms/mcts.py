@@ -56,10 +56,15 @@ class SearchPath:
 
     def __init__(self, initial_node: "MCTSNode"):
         self._steps: List[PathStep] = []
+        self._visited_keys: set[int] = set()
         self.add(node=initial_node, action_leading_to_node=None)
 
     def add(self, node: "MCTSNode", action_leading_to_node: Optional[ActionType]):
+        self._visited_keys.add(node.state_with_key.key)
         self._steps.append(PathStep(node, action_leading_to_node))
+
+    def has_visited_key(self, key: int) -> bool:
+        return key in self._visited_keys
 
     def __iter__(self) -> Iterator[PathStep]:
         return reversed(self._steps)
@@ -380,6 +385,10 @@ class UCB1Selection(SelectionStrategy):
 
             best_action = legal_actions[best_action_index]
             step_result = sim_env.step(best_action)
+
+            if path.has_visited_key(step_result.next_state_with_key.key):
+                # Cycle detected, terminate search path here.
+                return SelectionResult(path=path, leaf_env=sim_env)
 
             next_node = cache.get_matching_node(key=step_result.next_state_with_key.key)
             if not next_node:
