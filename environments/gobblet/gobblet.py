@@ -21,7 +21,6 @@ from typing import List, Optional, Union
 from pydantic import BaseModel
 
 from environments.base import (
-    ActionResult,
     BaseEnvironment,
     DataFrame,
     SanityCheckState,

@@ -1,9 +1,30 @@
 import abc
+from collections import OrderedDict
 from dataclasses import dataclass
 from functools import wraps
 from typing import Dict, List, Optional, TypeVar, Union, Tuple, Any
 
 ActionType = TypeVar("ActionType")
+
+
+class LRUCache(OrderedDict):
+    """A simple LRU cache."""
+
+    def __init__(self, max_size: int = 100000, *args, **kwargs):
+        self.max_size = max_size
+        super().__init__(*args, **kwargs)
+
+    def __getitem__(self, key):
+        value = super().__getitem__(key)
+        self.move_to_end(key)
+        return value
+
+    def __setitem__(self, key, value):
+        if key in self:
+            self.move_to_end(key)
+        super().__setitem__(key, value)
+        if len(self) > self.max_size:
+            self.popitem(last=False)
 
 
 class DataFrame:
@@ -311,7 +332,7 @@ class ActionResult:
 class BaseEnvironment(abc.ABC):
     """Abstract base class for game environments."""
 
-    _cache = {}
+    _cache = LRUCache(max_size=100000)
 
     def __init__(self):
         self._dirty = True
