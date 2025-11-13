@@ -10,10 +10,9 @@ from hcloud.images import Image
 from hcloud.server_types import ServerType
 from pathlib import Path
 
-assert "HCLOUD_TOKEN" in environ, "Please set HCLOUD_TOKEN"
-token = environ["HCLOUD_TOKEN"]
+from remote_play.hetzner import HETZNER_KEY
 
-client = Client(token=token)
+client = Client(token=HETZNER_KEY)
 
 N_SERVERS = 1
 APP_FILES = [
@@ -23,7 +22,7 @@ APP_FILES = [
     "config.yaml",
 ]
 APP_DIRS = ["agents", "algorithms", "core", "environments", "models", "utils"]
-SERVER_TYPE = "cx22"
+SERVER_TYPE = "cx23"
 IMAGE = "ubuntu-24.04"
 
 

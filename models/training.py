@@ -20,6 +20,8 @@ from utils.training_reporter import TrainingReporter, BenchmarkResults
 
 SELF_PLAY_ON_FIRST_ITER = True
 
+USE_REMOTE_SELF_PLAY = False
+
 
 def run_training_loop(
     config: AppConfig, model_type: str, env_name_override: str = None
@@ -65,7 +67,9 @@ def run_training_loop(
 
         if iteration > start_iteration or SELF_PLAY_ON_FIRST_ITER:
             logger.info(f"Running self-play with '{self_play_agent.name}'...")
-            if os.path.exists("servers.json"):
+            if USE_REMOTE_SELF_PLAY:
+                if not os.path.exists("servers.json"):
+                    raise ValueError("Run start.py first to start the remote server")
                 run_remote_self_play(
                     learning_agent=current_agent,
                     self_play_agent=self_play_agent,
@@ -268,9 +272,6 @@ def run_remote_self_play(
     logger.info("Running remote self play")
     client = RemotePlayClient()
     if not client.ips:
-        logger.warning(
-            "No remote servers found in servers.json, falling back to local self-play."
-        )
         run_self_play(learning_agent, self_play_agent, env, config, iteration)
         return
 
@@ -427,7 +428,7 @@ def run_eval_against_benchmark(
     reporter: TrainingReporter = None,
 ) -> Tuple[BenchmarkResults, List[Tuple[List[GameHistoryStep], float]]]:
     logger.info(
-        f"\n--- Running Evaluation vs '{benchmark_agent_name}' (Iteration {iteration + 1}) ---"
+        f"\n--- Running Evaluation vs '{benchmark_agent_name}' (Iteration {iteration}) ---"
     )
     benchmark_agent.name = benchmark_agent_name
     agent_in_training.network.eval()
