@@ -72,21 +72,21 @@ async def send_requests(ips):
 
 async def main():
     print("Creating servers...")
-    servers = []
+    create_responses = []
     for i in range(N_SERVERS):
-        resp = client.servers.create(
+        create_response = client.servers.create(
             name=f"fastapi-node-{i}",
             server_type=ServerType(name=SERVER_TYPE),
             image=Image(name=IMAGE),
         )
-        servers.append(resp.server)
-    print("Waiting for servers...")
-    client.servers.wait_for_actions([resp.action_index for resp in servers])
+        create_responses.append(create_response)
 
+    print("Waiting for servers...")
     servers_data = []
-    for s in servers:
-        ip = await setup_server(s)
-        servers_data.append({"id": s.id, "ip": ip})
+    for create_response in create_responses:
+        create_response.action.wait_until_finished()
+        ip = await setup_server(create_response.server)
+        servers_data.append({"id": create_response.server.id, "ip": ip})
 
     ips = [s["ip"] for s in servers_data]
     print("Servers ready:", ips)
