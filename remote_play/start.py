@@ -4,7 +4,6 @@ import aiohttp
 import asyncssh
 import time
 import json
-from os import environ
 from hcloud import Client
 from hcloud.images import Image
 from hcloud.server_types import ServerType
@@ -21,16 +20,27 @@ APP_FILES = [
     "remote_play/server_app.py",
     "config.yaml",
 ]
-APP_DIRS = ["agents", "algorithms", "core", "environments", "models", "utils"]
+APP_DIRS = [
+    "agents",
+    "algorithms",
+    "core",
+    "environments",
+    "models",
+    "utils",
+]
 SERVER_TYPE = "cx23"
 IMAGE = "ubuntu-24.04"
 
+SSH_KEYS = [str(Path.home() / ".ssh" / "hetzner")]
 
-async def wait_for_ssh(ip: str, port: int = 22, timeout=180):
+
+async def wait_for_ssh(ip: str, port: int = 22, timeout=60):
     start = time.time()
     while time.time() - start < timeout:
         try:
-            async with asyncssh.connect(ip, username="root", known_hosts=None):
+            async with asyncssh.connect(
+                ip, username="root", known_hosts=None, client_keys=SSH_KEYS
+            ):
                 return True
         except Exception:
             await asyncio.sleep(5)
@@ -40,7 +50,9 @@ async def wait_for_ssh(ip: str, port: int = 22, timeout=180):
 async def setup_server(server):
     ip = server.public_net.ipv4.ip
     await wait_for_ssh(ip)
-    async with asyncssh.connect(ip, username="root", known_hosts=None) as conn:
+    async with asyncssh.connect(
+        ip, username="root", known_hosts=None, client_keys=SSH_KEYS
+    ) as conn:
         await conn.run("apt update -y && apt install -y python3 python3-pip")
 
         for d in APP_DIRS:
@@ -67,7 +79,7 @@ async def send_requests(ips):
                         print(f"[{ip}] {resp.status}: {text[:60]}")
                 except Exception as e:
                     print(f"[{ip}] Error: {e}")
-                await asyncio.sleep(1)
+                await asyncio.sleep(10)
 
 
 async def main():
@@ -78,8 +90,10 @@ async def main():
             name=f"fastapi-node-{i}",
             server_type=ServerType(name=SERVER_TYPE),
             image=Image(name=IMAGE),
+            ssh_keys=[client.ssh_keys.get_by_name("hetzner")],
         )
         create_responses.append(create_response)
+        print(f"Server password: {create_response.root_password}")
 
     print("Waiting for servers...")
     servers_data = []
@@ -95,7 +109,3 @@ async def main():
         json.dump(servers_data, f)
 
     await send_requests(ips)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
