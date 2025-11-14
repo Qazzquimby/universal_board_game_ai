@@ -17,6 +17,7 @@ N_SERVERS = 1
 APP_FILES = [
     "requirements.txt",
     "factories.py",
+    "remote_play/server_app.py",
 ]
 APP_DIRS = [
     "agents",

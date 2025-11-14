@@ -35,6 +35,11 @@ def serialize_game_step(step: GameHistoryStep) -> Dict[str, Any]:
     }
 
 
+@app.get("/")
+async def health():
+    return "OK"
+
+
 @app.post("/upload-model/")
 async def upload_model(file: UploadFile = File(...)):
     filename = f"{uuid.uuid4()}_{file.filename}"
