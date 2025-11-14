@@ -21,6 +21,10 @@ class SelfPlayRequest(BaseModel):
     type: str
 
 
+class RunGameRequest(BaseModel):
+    agent_id: str
+
+
 class RemotePlayClient:
     def __init__(self):
         self.servers = []
@@ -39,7 +43,7 @@ class RemotePlayClient:
         url = f"http://{ip}:8000/upload-model/"
         data = aiohttp.FormData()
         data.add_field("file", open(model_path, "rb"), filename=Path(model_path).name)
-        async with session.post(url, data=data) as response:
+        async with session.post(url, data=data, timeout=360) as response:
             response.raise_for_status()
             return (await response.json())["filename"]
 
@@ -64,21 +68,37 @@ class RemotePlayClient:
             history.append(step)
         return history, final_outcome
 
-    async def _run_game_on_server(
+    async def _setup_agent_on_server(
         self,
         session: aiohttp.ClientSession,
         ip: str,
         model_filename: str,
         config: AppConfig,
         model_type: str,
-    ) -> Tuple[List[GameHistoryStep], float]:
-        url = f"http://{ip}:8000/run-self-play/"
+    ) -> str:
+        url = f"http://{ip}:8000/setup-agent/"
         config_json = config.model_dump_json()
         payload = SelfPlayRequest(
             filename=model_filename,
             config_json=config_json,
             type=model_type,
         ).model_dump()
+        try:
+            async with session.post(url, json=payload, timeout=3600) as response:
+                response.raise_for_status()
+                return (await response.json())["agent_id"]
+        except aiohttp.ClientError as e:
+            logger.error(f"Error setting up agent on server {ip}: {e}")
+            raise
+
+    async def _run_game_on_server(
+        self,
+        session: aiohttp.ClientSession,
+        ip: str,
+        agent_id: str,
+    ) -> Tuple[List[GameHistoryStep], float]:
+        url = f"http://{ip}:8000/run-self-play/"
+        payload = RunGameRequest(agent_id=agent_id).model_dump()
         try:
             async with session.post(url, json=payload, timeout=3600) as response:
                 response.raise_for_status()
@@ -103,6 +123,15 @@ class RemotePlayClient:
                 ip: filename for ip, filename in zip(self.ips, model_filenames)
             }
 
+            setup_tasks = [
+                self._setup_agent_on_server(
+                    session, ip, model_filenames_map[ip], config, model_type
+                )
+                for ip in self.ips
+            ]
+            agent_ids = await asyncio.gather(*setup_tasks)
+            agent_ids_map = {ip: agent_id for ip, agent_id in zip(self.ips, agent_ids)}
+
             game_queue = list(range(num_games))
 
             # Start initial tasks (one per server)
@@ -111,9 +140,7 @@ class RemotePlayClient:
                 if game_queue:
                     game_queue.pop(0)
                     task = asyncio.create_task(
-                        self._run_game_on_server(
-                            session, ip, model_filenames_map[ip], config, model_type
-                        )
+                        self._run_game_on_server(session, ip, agent_ids_map[ip])
                     )
                     active_tasks[task] = ip
 
@@ -135,8 +162,6 @@ class RemotePlayClient:
                     if game_queue:
                         game_queue.pop(0)
                         new_task = asyncio.create_task(
-                            self._run_game_on_server(
-                                session, ip, model_filenames_map[ip], config, model_type
-                            )
+                            self._run_game_on_server(session, ip, agent_ids_map[ip])
                         )
                         active_tasks[new_task] = ip

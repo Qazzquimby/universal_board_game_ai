@@ -14,12 +14,14 @@ from agents.base_learning_agent import GameHistoryStep
 from core.config import AppConfig
 from factories import get_environment, create_learning_agent
 from models.training import _run_one_self_play_game
-from remote_play.client import SelfPlayRequest
+from remote_play.client import SelfPlayRequest, RunGameRequest
 
 app = FastAPI()
 
 MODEL_DIR = Path("uploaded_models")
 MODEL_DIR.mkdir(exist_ok=True)
+
+CACHED_AGENTS: Dict[str, Tuple[Any, Any]] = {}
 
 
 def serialize_game_step(step: GameHistoryStep) -> Dict[str, Any]:
@@ -61,10 +63,8 @@ async def upload_model(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail="File upload failed")
 
 
-@app.post("/run-self-play/")
-async def run_self_play_endpoint(
-    request: SelfPlayRequest,
-) -> Tuple[List[Dict[str, Any]], float]:
+@app.post("/setup-agent/")
+async def setup_agent(request: SelfPlayRequest):
     config = AppConfig.model_validate(json.loads(request.config_json))
     env = get_environment(config.env)
 
@@ -78,6 +78,20 @@ async def run_self_play_endpoint(
     if agent.network:
         agent.network.eval()
 
+    agent_id = str(uuid.uuid4())
+    CACHED_AGENTS[agent_id] = (agent, env)
+
+    return {"agent_id": agent_id}
+
+
+@app.post("/run-self-play/")
+async def run_self_play_endpoint(
+    request: RunGameRequest,
+) -> Tuple[List[Dict[str, Any]], float]:
+    if request.agent_id not in CACHED_AGENTS:
+        raise HTTPException(status_code=404, detail="Agent not found. Please set it up first.")
+
+    agent, env = CACHED_AGENTS[request.agent_id]
     game_history, final_outcome = _run_one_self_play_game(env, agent)
     serializable_history = [serialize_game_step(step) for step in game_history]
     return serializable_history, final_outcome
