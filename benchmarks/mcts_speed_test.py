@@ -4,7 +4,6 @@ from typing import Dict
 from agents.mcts_agent import BaseMCTSAgent
 from environments.base import BaseEnvironment, ActionType
 from environments.connect4.connect4 import Connect4 as OldConnect4
-from environments_new.connect4 import Connect4 as NewConnect4
 
 
 class GenericBaseMCTSAgent(BaseMCTSAgent):
@@ -111,12 +110,4 @@ if __name__ == "__main__":
         env_class=OldConnect4,
         num_simulations=sim_count,
         test_name="Old Connect4 (Pydantic State)",
-    )
-
-    # Benchmark the new environment
-    run_benchmark(
-        agent_class=GenericBaseMCTSAgent,
-        env_class=NewConnect4,
-        num_simulations=sim_count,
-        test_name="New Connect4 (Polars DataFrame State)",
     )

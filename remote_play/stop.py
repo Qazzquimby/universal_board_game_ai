@@ -6,12 +6,14 @@ from remote_play.hetzner import HETZNER_KEY
 
 client = Client(token=HETZNER_KEY)
 
-with open("servers.json") as f:
-    ids = json.load(f)
 
-for sid in ids:
-    server = client.servers.get_by_id(sid)
-    print(f"Deleting server {server.name} ({sid})")
-    server.delete()
+def main():
+    with open("servers.json") as f:
+        server_details = json.load(f)
 
-print("All servers deleted.")
+    for server_detail in server_details:
+        server = client.servers.get_by_id(server_detail["id"])
+        print(f"Deleting server {server.name} ({server_detail})")
+        server.delete()
+
+    print("All servers deleted.")

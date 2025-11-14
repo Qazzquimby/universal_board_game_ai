@@ -11,16 +11,17 @@ import abc
 from dataclasses import dataclass, field
 
 import torch
-
-import torch
-import polars as pl
 from cachetools import LRUCache
-from loguru import logger
 import torch.nn as nn
 import numpy as np
 
-from environments.base import ActionType, BaseEnvironment, StateWithKey, StateType
-from environments.base import DataFrame
+from environments.base import (
+    ActionType,
+    BaseEnvironment,
+    StateWithKey,
+    StateType,
+    DataFrame,
+)
 
 DEBUG = True
 
@@ -32,9 +33,6 @@ def _get_current_player_from_state(state: StateType) -> int:
     # Old Pydantic-based state
     if "players" in state and isinstance(state.get("players"), dict):
         return state["players"]["current_index"]
-    # New Polars-based state
-    if "game" in state and isinstance(state.get("game"), pl.DataFrame):
-        return state["game"]["current_player"][0]
     if "game" in state and isinstance(state.get("game"), DataFrame):
         return state["game"]["current_player"][0]
     raise ValueError(

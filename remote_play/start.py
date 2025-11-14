@@ -18,7 +18,6 @@ APP_FILES = [
     "requirements.txt",
     "factories.py",
     "remote_play/server_app.py",
-    "config.yaml",
 ]
 APP_DIRS = [
     "agents",
@@ -53,19 +52,37 @@ async def setup_server(server):
     async with asyncssh.connect(
         ip, username="root", known_hosts=None, client_keys=SSH_KEYS
     ) as conn:
-        await conn.run("apt update -y && apt install -y python3 python3-pip")
+        update_result = await conn.run(
+            "apt update -y && apt install -y python3 python3-venv python3-pip"
+        )
+        print("update")  # , update_result.stdout, update_result.stderr)
 
+        print("copying files")
         for d in APP_DIRS:
             await asyncssh.scp(d, (conn, d), recurse=True)
         for f in APP_FILES:
             target_name = "main.py" if "server_app.py" in f else Path(f).name
             await asyncssh.scp(f, (conn, target_name))
 
-        await conn.run("pip install -r requirements.txt")
-        # Ensure uvicorn, fastapi, etc. are in requirements.txt
-        conn.create_process(
-            "nohup python3 -m uvicorn main:app --host 0.0.0.0 --port 8000 > app.log 2>&1 &"
+        app_env_result = await conn.run("python3 -m venv /opt/appenv")
+        install_result = await conn.run(
+            "/opt/appenv/bin/pip install -r requirements.txt"
         )
+        run_result = await conn.run(
+            "nohup /opt/appenv/bin/python -m uvicorn main:app --host 0.0.0.0 --port 8000 > app.log 2>&1 &",
+            check=False,
+        )
+
+        # install_result = await conn.run(
+        #     "pip install --break-system-packages -r requirements.txt"
+        # )
+        # print("install", install_result.stdout, install_result.stderr)
+        #
+        # run_result = await conn.run(
+        #     "nohup python3 -m uvicorn main:app --host 0.0.0.0 --port 8000 > app.log 2>&1 &",
+        #     check=False,
+        # )
+        # print("run", run_result.stdout, run_result.stderr)
     return ip
 
 
@@ -79,7 +96,7 @@ async def send_requests(ips):
                         print(f"[{ip}] {resp.status}: {text[:60]}")
                 except Exception as e:
                     print(f"[{ip}] Error: {e}")
-                await asyncio.sleep(10)
+            await asyncio.sleep(10)
 
 
 async def main():
