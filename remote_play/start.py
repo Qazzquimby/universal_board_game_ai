@@ -17,7 +17,6 @@ N_SERVERS = 1
 APP_FILES = [
     "requirements.txt",
     "factories.py",
-    "remote_play/server_app.py",
 ]
 APP_DIRS = [
     "agents",
@@ -26,6 +25,7 @@ APP_DIRS = [
     "environments",
     "models",
     "utils",
+    "remote_play",
 ]
 SERVER_TYPE = "cx23"
 IMAGE = "ubuntu-24.04"
@@ -63,6 +63,7 @@ async def setup_server(server):
         for f in APP_FILES:
             target_name = "main.py" if "server_app.py" in f else Path(f).name
             await asyncssh.scp(f, (conn, target_name))
+        await conn.run("touch .git")
 
         app_env_result = await conn.run("python3 -m venv /opt/appenv")
         install_result = await conn.run(

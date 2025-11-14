@@ -150,7 +150,7 @@ class AppConfig:
         return asdict(self)
 
     def init_wandb(self):
-        if not self.wandb.enabled:
+        if not self.wandb.enabled or not WANDB_KEY:
             return
 
         wandb.login(key=WANDB_KEY)
@@ -162,15 +162,20 @@ class AppConfig:
         )
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents
-for parent in PROJECT_ROOT:
+parents = Path(__file__).resolve().parents
+PROJECT_ROOT = None
+for parent in parents:
     if (parent / ".git").exists():
         PROJECT_ROOT = parent
         break
 
+
 DATA_DIR = PROJECT_ROOT / "data"
 
-WANDB_KEY = (PROJECT_ROOT / "wandb_key").read_text()
+try:
+    WANDB_KEY = (PROJECT_ROOT / "wandb_key").read_text()
+except FileNotFoundError:
+    WANDB_KEY = None
 
 # Example usage:
 # config = AppConfig()
