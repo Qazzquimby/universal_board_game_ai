@@ -4,6 +4,7 @@ from typing import List, Dict, Any
 
 import torch
 import wandb
+from pydantic import BaseModel
 
 GAMES_PER_TRAINING_LOOP = 500
 MCTS_SIMULATIONS = 400
@@ -133,8 +134,7 @@ class EvaluationConfig:
 
 
 # --- Main Application Configuration ---
-@dataclass
-class AppConfig:
+class AppConfig(BaseModel):
     env: EnvConfig = field(default_factory=EnvConfig)
     mcts: MCTSConfig = field(default_factory=MCTSConfig)
     alphazero: AlphaZeroConfig = field(default_factory=AlphaZeroConfig)

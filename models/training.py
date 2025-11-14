@@ -20,7 +20,7 @@ from utils.training_reporter import TrainingReporter, BenchmarkResults
 
 SELF_PLAY_ON_FIRST_ITER = True
 
-USE_REMOTE_SELF_PLAY = False
+USE_REMOTE_SELF_PLAY = True
 
 
 def run_training_loop(
@@ -275,7 +275,7 @@ def run_remote_self_play(
         run_self_play(learning_agent, self_play_agent, env, config, iteration)
         return
 
-    model_path = learning_agent.get_model_iter_path(iteration)
+    model_path = learning_agent.get_model_iter_path(iteration - 1)
     num_games = config.training.num_games_per_iteration
 
     async def _run_remote_and_process():

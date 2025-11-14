@@ -57,7 +57,8 @@ async def upload_model(file: UploadFile = File(...)):
 async def run_self_play_endpoint(
     request: SelfPlayRequest,
 ) -> Tuple[List[Dict[str, Any]], float]:
-    config = AppConfig.parse_obj(yaml.safe_load(request.config_yaml))
+    config_dict = yaml.safe_load(request.config_yaml)
+    config = AppConfig.model_validate(config_dict)
     env = get_environment(config.env)
 
     # Note: MCTSAgent is not a learning agent and is handled differently

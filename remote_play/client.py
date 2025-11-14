@@ -69,7 +69,7 @@ class RemotePlayClient:
         url = f"http://{ip}:8000/run-self-play/"
         payload = {
             "model_filename": model_filename,
-            "config_yaml": yaml.dump(config.dict()),
+            "config_yaml": yaml.dump(config.to_dict()),
             "model_type": model_type,
         }
         try:
