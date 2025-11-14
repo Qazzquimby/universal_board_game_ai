@@ -1,28 +1,20 @@
-import os
 import uuid
-import yaml
 from pathlib import Path
 from typing import List, Tuple, Dict, Any
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
-from pydantic import BaseModel
 from loguru import logger
 
 from agents.base_learning_agent import GameHistoryStep
 from core.config import AppConfig
 from factories import get_environment, create_learning_agent
 from models.training import _run_one_self_play_game
+from remote_play.client import SelfPlayRequest
 
 app = FastAPI()
 
 MODEL_DIR = Path("uploaded_models")
 MODEL_DIR.mkdir(exist_ok=True)
-
-
-class SelfPlayRequest(BaseModel):
-    model_filename: str
-    config_yaml: str
-    model_type: str
 
 
 def serialize_game_step(step: GameHistoryStep) -> Dict[str, Any]:
@@ -57,13 +49,12 @@ async def upload_model(file: UploadFile = File(...)):
 async def run_self_play_endpoint(
     request: SelfPlayRequest,
 ) -> Tuple[List[Dict[str, Any]], float]:
-    config_dict = yaml.safe_load(request.config_yaml)
-    config = AppConfig.model_validate(config_dict)
+    config = AppConfig.model_validate(request.config_json)
     env = get_environment(config.env)
 
     # Note: MCTSAgent is not a learning agent and is handled differently
-    agent = create_learning_agent(request.model_type, env, config)
-    model_path = MODEL_DIR / request.model_filename
+    agent = create_learning_agent(request.type, env, config)
+    model_path = MODEL_DIR / request.filename
     if not model_path.exists():
         raise HTTPException(status_code=404, detail="Model not found")
 

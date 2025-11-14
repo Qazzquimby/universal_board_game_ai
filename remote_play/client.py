@@ -6,13 +6,19 @@ from typing import List, Tuple
 from pathlib import Path
 
 import aiohttp
-import yaml
 import numpy as np
 from loguru import logger
+from pydantic import BaseModel
 
 from agents.base_learning_agent import GameHistoryStep
 from core.config import AppConfig
 from environments.base import DataFrame
+
+
+class SelfPlayRequest(BaseModel):
+    filename: str
+    config_json: str
+    type: str
 
 
 class RemotePlayClient:
@@ -67,13 +73,18 @@ class RemotePlayClient:
         model_type: str,
     ) -> Tuple[List[GameHistoryStep], float]:
         url = f"http://{ip}:8000/run-self-play/"
-        payload = {
-            "model_filename": model_filename,
-            "config_yaml": yaml.dump(config.to_dict()),
-            "model_type": model_type,
-        }
+        config_json = config.model_dump_json()
+        # somehow this is bad payload.
+        # todo set up local server version
+        payload = SelfPlayRequest(
+            filename=model_filename,
+            config_json=config_json,
+            type=model_type,
+        )
         try:
-            async with session.post(url, json=payload, timeout=3600) as response:
+            async with session.post(
+                url, json=payload.model_dump_json(), timeout=3600
+            ) as response:
                 response.raise_for_status()
                 raw_result = await response.json()
                 return self._deserialize_game_result(raw_result)

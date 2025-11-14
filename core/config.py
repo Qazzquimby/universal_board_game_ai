@@ -1,10 +1,9 @@
-from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import Dict, Any
 
 import torch
 import wandb
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 GAMES_PER_TRAINING_LOOP = 500
 MCTS_SIMULATIONS = 400
@@ -13,22 +12,11 @@ TRAINING_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 INFERENCE_DEVICE = "cpu"
 
 # --- Environment Configuration ---
-@dataclass
-class EnvConfig:
+class EnvConfig(BaseModel):
     name: str = "gobblet"  # "connect4"  # Default environment
-    width: int = 7
-    height: int = 6
-    num_players: int = 2
-    max_steps: int = field(init=False)  # Calculated post-init
-    nim_piles: List[int] = field(default_factory=lambda: [3, 5, 7])  # Specific to Nim
-
-    def __post_init__(self):
-        # Calculate max_steps based on board_size if applicable
-        self.max_steps = self.width * self.height + 1
 
 
-@dataclass
-class MCTSConfig:
+class MCTSConfig(BaseModel):
     exploration_constant: float = 1.41
     discount_factor: float = 1.0  # Discount within the search tree
     num_simulations: int = MCTS_SIMULATIONS
@@ -39,8 +27,7 @@ TRAINING_BATCH_SIZE = 256
 REPLAY_BUFFER_SIZE = 1_000_000
 
 
-@dataclass
-class SomethingZeroConfig:
+class SomethingZeroConfig(BaseModel):
     num_simulations: int = MCTS_SIMULATIONS  # MCTS simulations per move
     cpuct: float = 1.0  # Exploration constant in PUCT formula
     learning_rate: float = 0.001
@@ -56,7 +43,6 @@ class SomethingZeroConfig:
     debug_mode: bool = False
 
 
-@dataclass
 class AlphaZeroConfig(SomethingZeroConfig):
     # Parallel Self-Play & Batching
     num_self_play_workers: int = 2
@@ -65,7 +51,7 @@ class AlphaZeroConfig(SomethingZeroConfig):
     dirichlet_alpha: float = 0.3  # Shape parameter for noise (typical value 0.3)
     dirichlet_epsilon: float = 0.25  # Weight of noise vs. priors (typical value 0.25)
 
-    state_model_params: Dict[str, Any] = field(
+    state_model_params: Dict[str, Any] = Field(
         default_factory=lambda: {
             "embedding_dim": 64,
             "num_heads": 4,
@@ -73,20 +59,19 @@ class AlphaZeroConfig(SomethingZeroConfig):
             "dropout": 0.1,
         }
     )
-    policy_model_params: Dict[str, Any] = field(
+    policy_model_params: Dict[str, Any] = Field(
         default_factory=lambda: {"embedding_dim": 64}
     )
 
     should_use_network: bool = True
 
 
-@dataclass
 class MuZeroConfig(SomethingZeroConfig):
     num_unroll_steps: int = 5  # 1  # Number of game steps to simulate in dynamics (k)
     td_steps: int = 10  # Number of steps for n-step return calculation
     policy_loss_weight: float = 1.0  # Weight for policy loss component (often 1.0)
     discount_factor: float = 0.99
-    state_model_params: Dict[str, Any] = field(
+    state_model_params: Dict[str, Any] = Field(
         default_factory=lambda: {
             "embedding_dim": 64,
             "num_heads": 4,
@@ -97,8 +82,7 @@ class MuZeroConfig(SomethingZeroConfig):
 
 
 # --- Training Configuration ---
-@dataclass
-class TrainingConfig:
+class TrainingConfig(BaseModel):
     # Specific to AlphaZero/MuZero training loops
     num_iterations: int = 1000  # Total training iterations
     num_games_per_iteration: int = GAMES_PER_TRAINING_LOOP  # 128 * 2
@@ -114,8 +98,7 @@ class TrainingConfig:
 
 
 # --- WandB Configuration ---
-@dataclass
-class WandBConfig:
+class WandBConfig(BaseModel):
     enabled: bool = True
     project_name: str = "board_game_ai"
     entity: str = ""  # Your WandB username or team name (optional)
@@ -125,8 +108,7 @@ class WandBConfig:
 
 
 # --- Evaluation Configuration ---
-@dataclass
-class EvaluationConfig:
+class EvaluationConfig(BaseModel):
     full_eval_num_games: int = 40
     run_periodic_evaluation: bool = True
     periodic_eval_frequency: int = 10
@@ -135,19 +117,15 @@ class EvaluationConfig:
 
 # --- Main Application Configuration ---
 class AppConfig(BaseModel):
-    env: EnvConfig = field(default_factory=EnvConfig)
-    mcts: MCTSConfig = field(default_factory=MCTSConfig)
-    alphazero: AlphaZeroConfig = field(default_factory=AlphaZeroConfig)
-    muzero: MuZeroConfig = field(default_factory=MuZeroConfig)  # Add MuZero config
-    training: TrainingConfig = field(default_factory=TrainingConfig)
-    evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
-    wandb: WandBConfig = field(default_factory=WandBConfig)
+    env: EnvConfig = Field(default_factory=EnvConfig)
+    mcts: MCTSConfig = Field(default_factory=MCTSConfig)
+    alphazero: AlphaZeroConfig = Field(default_factory=AlphaZeroConfig)
+    muzero: MuZeroConfig = Field(default_factory=MuZeroConfig)  # Add MuZero config
+    training: TrainingConfig = Field(default_factory=TrainingConfig)
+    evaluation: EvaluationConfig = Field(default_factory=EvaluationConfig)
+    wandb: WandBConfig = Field(default_factory=WandBConfig)
     # Flag to indicate if running in smoke test mode (can be set by test runner)
     smoke_test: bool = False
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Converts the dataclass instance to a dictionary, handling nested dataclasses."""
-        return asdict(self)
 
     def init_wandb(self):
         if not self.wandb.enabled or not WANDB_KEY:
@@ -158,7 +136,7 @@ class AppConfig(BaseModel):
             project=self.wandb.project_name,
             entity=self.wandb.entity or None,
             name=self.wandb.run_name or None,
-            config=self.to_dict(),
+            config=dict(self),
         )
 
 
