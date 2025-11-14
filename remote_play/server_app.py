@@ -1,9 +1,14 @@
+import json
 import uuid
 from pathlib import Path
 from typing import List, Tuple, Dict, Any
+from urllib.request import Request
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.exceptions import RequestValidationError
 from loguru import logger
+from starlette import status
+from starlette.responses import JSONResponse
 
 from agents.base_learning_agent import GameHistoryStep
 from core.config import AppConfig
@@ -25,6 +30,17 @@ def serialize_game_step(step: GameHistoryStep) -> Dict[str, Any]:
         "policy": step.policy.tolist(),
         "legal_actions": step.legal_actions,
     }
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    # todo, this actually catches all exceptions, not just 422
+    exc_str = f"{exc}".replace("\n", " ").replace("   ", " ")
+    print(f"ERROR: {request}: {exc_str}")
+    content = {"status_code": 10422, "message": exc_str, "data": None}
+    return JSONResponse(
+        content=content, status_code=status.HTTP_422_UNPROCESSABLE_ENTITY
+    )
 
 
 @app.get("/")
@@ -49,7 +65,7 @@ async def upload_model(file: UploadFile = File(...)):
 async def run_self_play_endpoint(
     request: SelfPlayRequest,
 ) -> Tuple[List[Dict[str, Any]], float]:
-    config = AppConfig.model_validate(request.config_json)
+    config = AppConfig.model_validate(json.loads(request.config_json))
     env = get_environment(config.env)
 
     # Note: MCTSAgent is not a learning agent and is handled differently
