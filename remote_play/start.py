@@ -101,7 +101,14 @@ async def send_requests(ips):
                     print(f"[{ip}] Error: {e}")
 
 
-async def main():
+async def main(local: bool = False):
+    if local:
+        servers_data = [{"id": "local-0", "ip": "127.0.0.1"}]
+        with open("servers.json", "w") as f:
+            json.dump(servers_data, f)
+        print("Created servers.json for local server at http://127.0.0.1:8000")
+        return
+
     print("Creating servers...")
     create_responses = []
     for i in range(N_SERVERS):
