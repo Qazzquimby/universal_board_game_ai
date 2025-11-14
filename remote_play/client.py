@@ -74,17 +74,13 @@ class RemotePlayClient:
     ) -> Tuple[List[GameHistoryStep], float]:
         url = f"http://{ip}:8000/run-self-play/"
         config_json = config.model_dump_json()
-        # somehow this is bad payload.
-        # todo set up local server version
         payload = SelfPlayRequest(
             filename=model_filename,
             config_json=config_json,
             type=model_type,
-        )
+        ).model_dump()
         try:
-            async with session.post(
-                url, json=payload.model_dump_json(), timeout=3600
-            ) as response:
+            async with session.post(url, json=payload, timeout=3600) as response:
                 response.raise_for_status()
                 raw_result = await response.json()
                 return self._deserialize_game_result(raw_result)
