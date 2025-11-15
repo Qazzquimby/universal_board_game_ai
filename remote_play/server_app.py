@@ -49,36 +49,18 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 async def health():
     return "OK"
 
-    # @app.post("/upload-model/")
-    # def upload_model(file: UploadFile = File(...)):
-    #     filename = f"{uuid.uuid4()}_{file.filename}"
-    #     path = MODEL_DIR / filename
-    #     try:
-    #         with open(path, "wb") as buffer:
-    #             shutil.copyfileobj(file.file, buffer)
-    #         return {"filename": filename}
-    #     except Exception as e:
-    #         logger.error(f"Error uploading file: {e}")
-    #         raise HTTPException(status_code=500, detail="File upload failed")
-
-
-import anyio
-
 
 @app.post("/upload-model/")
-async def upload_model(file: UploadFile = File(...)):
+def upload_model(file: UploadFile = File(...)):
     filename = f"{uuid.uuid4()}_{file.filename}"
     path = MODEL_DIR / filename
-
-    contents = await file.read()
-
-    def write_file():
+    try:
         with open(path, "wb") as buffer:
-            buffer.write(contents)
-
-    await anyio.to_thread.run_sync(write_file)
-
-    return {"filename": filename}
+            shutil.copyfileobj(file.file, buffer)
+        return {"filename": filename}
+    except Exception as e:
+        print(f"Error uploading file: {e}")
+        raise HTTPException(status_code=500, detail="File upload failed")
 
 
 @app.post("/setup-agent/")

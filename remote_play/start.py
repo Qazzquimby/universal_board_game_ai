@@ -13,7 +13,7 @@ from remote_play.hetzner import HETZNER_KEY
 
 client = Client(token=HETZNER_KEY)
 
-N_SERVERS = 2
+N_SERVERS = 1
 
 APP_FILES = [
     "requirements.txt",

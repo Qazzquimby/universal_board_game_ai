@@ -5,8 +5,9 @@ import json
 from typing import List, Tuple
 from pathlib import Path
 
-import aiohttp
+import httpx
 import numpy as np
+from httpx import Timeout
 from loguru import logger
 from pydantic import BaseModel
 
@@ -25,9 +26,6 @@ class RunGameRequest(BaseModel):
     agent_id: str
 
 
-timeout = aiohttp.ClientTimeout(total=300, sock_read=300, sock_connect=60)
-
-
 class RemotePlayClient:
     def __init__(self):
         self.servers = []
@@ -41,22 +39,21 @@ class RemotePlayClient:
         self.ips = [s["ip"] for s in self.servers]
 
     async def _upload_model_to_server(
-        self, session: aiohttp.ClientSession, ip: str, model_path: str
+        self, session: httpx.AsyncClient, ip: str, model_path: str
     ) -> str:
         url = f"http://{ip}:8000/upload-model/"
+        response = await session.get(f"http://{ip}:8000")
+        response.raise_for_status()
+        print("Health okay")
+
         with open(model_path, "rb") as f:
-            async with session.get(f"http://{ip}:8000") as response:
-                response.raise_for_status()
-                print("Health okay")
-
-            data = aiohttp.FormData()
-            with open(model_path, "rb") as f:
-                payload = f.read()
-            data.add_field("file", payload, filename=Path(model_path).name)
-
-            async with session.post(url, data=data, timeout=timeout) as response:
-                response.raise_for_status()
-                return (await response.json())["filename"]
+            payload = f.read()
+        files = {"file": (Path(model_path).name, payload)}
+        response = await session.post(
+            url, files=files, timeout=Timeout(60 * 2, write=60 * 5)
+        )
+        response.raise_for_status()
+        return response.json()["filename"]
 
     def _deserialize_game_result(
         self, raw_result: Tuple[list, float]
@@ -81,7 +78,7 @@ class RemotePlayClient:
 
     async def _setup_agent_on_server(
         self,
-        session: aiohttp.ClientSession,
+        session: httpx.AsyncClient,
         ip: str,
         model_filename: str,
         config: AppConfig,
@@ -95,37 +92,37 @@ class RemotePlayClient:
             type=model_type,
         ).model_dump()
         try:
-            async with session.post(url, json=payload, timeout=3600) as response:
-                response.raise_for_status()
-                return (await response.json())["agent_id"]
-        except aiohttp.ClientError as e:
+            response = await session.post(url, json=payload, timeout=3600)
+            response.raise_for_status()
+            return response.json()["agent_id"]
+        except httpx.HTTPError as e:
             logger.error(f"Error setting up agent on server {ip}: {e}")
             raise
 
     async def _run_game_on_server(
         self,
-        session: aiohttp.ClientSession,
+        session: httpx.AsyncClient,
         ip: str,
         agent_id: str,
     ) -> Tuple[List[GameHistoryStep], float]:
         url = f"http://{ip}:8000/run-self-play/"
         payload = RunGameRequest(agent_id=agent_id).model_dump()
         try:
-            async with session.post(url, json=payload, timeout=3600) as response:
-                response.raise_for_status()
-                raw_result = await response.json()
-                return self._deserialize_game_result(raw_result)
-        except aiohttp.ClientError as e:
+            response = await session.post(url, json=payload, timeout=3600)
+            response.raise_for_status()
+            raw_result = response.json()
+            return self._deserialize_game_result(raw_result)
+        except httpx.HTTPError as e:
             logger.error(f"Error running game on server {ip}: {e}")
             raise
 
     async def run_self_play_games(
         self, model_path: str, num_games: int, config: AppConfig, model_type: str
     ):
-        if not self.ips:
+        if not self.ips:  # todo dont upload if model_type is mcts
             return
 
-        async with aiohttp.ClientSession() as session:
+        async with httpx.AsyncClient() as session:
             upload_tasks = [
                 self._upload_model_to_server(session, ip, model_path) for ip in self.ips
             ]

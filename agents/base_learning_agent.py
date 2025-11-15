@@ -647,10 +647,12 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
         if not net_path.exists():
             return False
         map_location = self.device
-        self.network.load_state_dict(torch.load(net_path, map_location=map_location))
+        network_state_dict = torch.load(
+            net_path, map_location=map_location, weights_only=False
+        )
+        self.network.load_state_dict(network_state_dict)
         if opt_path.exists():
-            self.optimizer.load_state_dict(
-                torch.load(opt_path, map_location=map_location)
-            )
+            optimizer_state_dict = torch.load(opt_path, map_location=map_location)
+            self.optimizer.load_state_dict(optimizer_state_dict)
         self.loaded = True
         return True
