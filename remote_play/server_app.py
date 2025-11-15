@@ -11,6 +11,7 @@ from starlette import status
 from starlette.responses import JSONResponse
 
 from agents.base_learning_agent import GameHistoryStep
+from agents.mcts_agent import make_pure_mcts
 from core.config import AppConfig
 from factories import get_environment, create_learning_agent
 from models.training import _run_one_self_play_game
@@ -76,8 +77,12 @@ def setup_agent(request: SelfPlayRequest):
     env = get_environment(config.env)
 
     # Note: MCTSAgent is not a learning agent and is handled differently
-    agent = create_learning_agent(request.type, env, config)
-    if request.type != "mcts":
+    if request.type == "mcts":
+        agent = make_pure_mcts(
+            num_simulations=config.mcts.num_simulations,
+        )
+    else:
+        agent = create_learning_agent(request.type, env, config)
         if not request.filename:
             raise HTTPException(
                 status_code=400, detail="Filename must be provided for learning agents"

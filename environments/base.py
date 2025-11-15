@@ -10,7 +10,7 @@ ActionType = TypeVar("ActionType")
 class LRUCache(OrderedDict):
     """A simple LRU cache."""
 
-    def __init__(self, max_size: int = 100000, *args, **kwargs):
+    def __init__(self, max_size: int = 100_000, *args, **kwargs):
         self.max_size = max_size
         super().__init__(*args, **kwargs)
 
@@ -332,7 +332,7 @@ class ActionResult:
 class BaseEnvironment(abc.ABC):
     """Abstract base class for game environments."""
 
-    _cache = LRUCache(max_size=100000)
+    _cache = LRUCache(max_size=10_000)
 
     def __init__(self):
         self._dirty = True
