@@ -1,4 +1,5 @@
 import json
+import shutil
 import uuid
 from pathlib import Path
 from typing import List, Tuple, Dict, Any
@@ -6,7 +7,6 @@ from urllib.request import Request
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.exceptions import RequestValidationError
-from loguru import logger
 from starlette import status
 from starlette.responses import JSONResponse
 
@@ -49,22 +49,40 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 async def health():
     return "OK"
 
+    # @app.post("/upload-model/")
+    # def upload_model(file: UploadFile = File(...)):
+    #     filename = f"{uuid.uuid4()}_{file.filename}"
+    #     path = MODEL_DIR / filename
+    #     try:
+    #         with open(path, "wb") as buffer:
+    #             shutil.copyfileobj(file.file, buffer)
+    #         return {"filename": filename}
+    #     except Exception as e:
+    #         logger.error(f"Error uploading file: {e}")
+    #         raise HTTPException(status_code=500, detail="File upload failed")
+
+
+import anyio
+
 
 @app.post("/upload-model/")
 async def upload_model(file: UploadFile = File(...)):
     filename = f"{uuid.uuid4()}_{file.filename}"
     path = MODEL_DIR / filename
-    try:
+
+    contents = await file.read()
+
+    def write_file():
         with open(path, "wb") as buffer:
-            buffer.write(await file.read())
-        return {"filename": filename}
-    except Exception as e:
-        logger.error(f"Error uploading file: {e}")
-        raise HTTPException(status_code=500, detail="File upload failed")
+            buffer.write(contents)
+
+    await anyio.to_thread.run_sync(write_file)
+
+    return {"filename": filename}
 
 
 @app.post("/setup-agent/")
-async def setup_agent(request: SelfPlayRequest):
+def setup_agent(request: SelfPlayRequest):
     config = AppConfig.model_validate(json.loads(request.config_json))
     env = get_environment(config.env)
 
@@ -85,11 +103,13 @@ async def setup_agent(request: SelfPlayRequest):
 
 
 @app.post("/run-self-play/")
-async def run_self_play_endpoint(
+def run_self_play_endpoint(
     request: RunGameRequest,
 ) -> Tuple[List[Dict[str, Any]], float]:
     if request.agent_id not in CACHED_AGENTS:
-        raise HTTPException(status_code=404, detail="Agent not found. Please set it up first.")
+        raise HTTPException(
+            status_code=404, detail="Agent not found. Please set it up first."
+        )
 
     agent, env = CACHED_AGENTS[request.agent_id]
     game_history, final_outcome = _run_one_self_play_game(env, agent)

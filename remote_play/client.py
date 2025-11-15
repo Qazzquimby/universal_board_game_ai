@@ -25,6 +25,9 @@ class RunGameRequest(BaseModel):
     agent_id: str
 
 
+timeout = aiohttp.ClientTimeout(total=300, sock_read=300, sock_connect=60)
+
+
 class RemotePlayClient:
     def __init__(self):
         self.servers = []
@@ -41,11 +44,19 @@ class RemotePlayClient:
         self, session: aiohttp.ClientSession, ip: str, model_path: str
     ) -> str:
         url = f"http://{ip}:8000/upload-model/"
-        data = aiohttp.FormData()
-        data.add_field("file", open(model_path, "rb"), filename=Path(model_path).name)
-        async with session.post(url, data=data, timeout=360) as response:
-            response.raise_for_status()
-            return (await response.json())["filename"]
+        with open(model_path, "rb") as f:
+            async with session.get(f"http://{ip}:8000") as response:
+                response.raise_for_status()
+                print("Health okay")
+
+            data = aiohttp.FormData()
+            with open(model_path, "rb") as f:
+                payload = f.read()
+            data.add_field("file", payload, filename=Path(model_path).name)
+
+            async with session.post(url, data=data, timeout=timeout) as response:
+                response.raise_for_status()
+                return (await response.json())["filename"]
 
     def _deserialize_game_result(
         self, raw_result: Tuple[list, float]
@@ -152,11 +163,11 @@ class RemotePlayClient:
 
                 for task in done:
                     ip = active_tasks.pop(task)
-                    try:
-                        result = await task
-                        yield result
-                    except Exception as e:
-                        logger.error(f"A game task failed: {e}")
+                    # try:
+                    result = await task
+                    yield result
+                    # except Exception as e:
+                    #     logger.error(f"A game task failed: {e}")
 
                     # Start a new game on the now-free server
                     if game_queue:

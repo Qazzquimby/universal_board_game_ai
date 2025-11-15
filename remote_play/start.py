@@ -92,7 +92,7 @@ async def setup_server(server):
 async def send_requests(ips):
     async with aiohttp.ClientSession() as session:
         while True:
-            await asyncio.sleep(10)
+            await asyncio.sleep(30)
             for ip in ips:
                 try:
                     async with session.get(f"http://{ip}:8000") as resp:
@@ -135,7 +135,8 @@ async def main(local: bool = False):
     with open("servers.json", "w") as f:
         json.dump(servers_data, f)
 
-    print("ssh -i C:/users/user/.ssh/hetzner root@46.62.248.243")
+    print("ssh -i C:/users/user/.ssh/hetzner root@a.b.c.d")
     print("cat app.log")
+    print("Ready!")
 
     await send_requests(ips)
