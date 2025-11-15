@@ -272,7 +272,13 @@ def run_remote_self_play(
     logger.info("Running remote self play")
     client = RemotePlayClient()
     if not client.ips:
-        run_self_play(learning_agent, self_play_agent, env, config, iteration)
+        run_self_play(
+            learning_agent=learning_agent,
+            self_play_agent=self_play_agent,
+            env=env,
+            config=config,
+            iteration=iteration,
+        )
         return
 
     model_path = learning_agent.get_model_iter_path(iteration - 1)
@@ -285,7 +291,10 @@ def run_remote_self_play(
         pbar = tqdm(total=num_games, desc="Remote Self-Play Games")
 
         async for game_history, final_outcome in client.run_self_play_games(
-            str(model_path), num_games, config, model_type
+            model_path=str(model_path),
+            num_games=num_games,
+            config=config,
+            model_type=model_type,
         ):
             if not game_history:
                 continue
