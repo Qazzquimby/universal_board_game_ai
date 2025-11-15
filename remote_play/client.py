@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 from pathlib import Path
 
 import httpx
@@ -17,7 +17,7 @@ from environments.base import DataFrame
 
 
 class SelfPlayRequest(BaseModel):
-    filename: str
+    filename: Optional[str]
     config_json: str
     type: str
 
@@ -80,7 +80,7 @@ class RemotePlayClient:
         self,
         session: httpx.AsyncClient,
         ip: str,
-        model_filename: str,
+        model_filename: Optional[str],
         config: AppConfig,
         model_type: str,
     ) -> str:
@@ -119,17 +119,22 @@ class RemotePlayClient:
     async def run_self_play_games(
         self, model_path: str, num_games: int, config: AppConfig, model_type: str
     ):
-        if not self.ips:  # todo dont upload if model_type is mcts
+        if not self.ips:
             return
 
         async with httpx.AsyncClient() as session:
-            upload_tasks = [
-                self._upload_model_to_server(session, ip, model_path) for ip in self.ips
-            ]
-            model_filenames = await asyncio.gather(*upload_tasks)
-            model_filenames_map = {
-                ip: filename for ip, filename in zip(self.ips, model_filenames)
-            }
+            if model_type != "mcts":
+                upload_tasks = [
+                    self._upload_model_to_server(session, ip, model_path)
+                    for ip in self.ips
+                ]
+                model_filenames = await asyncio.gather(*upload_tasks)
+                model_filenames_map = {
+                    ip: filename for ip, filename in zip(self.ips, model_filenames)
+                }
+            else:
+                # For MCTS, no model is needed.
+                model_filenames_map = {ip: None for ip in self.ips}
 
             setup_tasks = [
                 self._setup_agent_on_server(

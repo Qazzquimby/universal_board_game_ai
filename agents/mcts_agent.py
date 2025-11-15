@@ -21,6 +21,9 @@ from environments.base import BaseEnvironment, ActionType, StateWithKey
 
 
 class BaseMCTSAgent(Agent):
+
+    model_type: str = "mcts"
+
     def __init__(
         self,
         num_simulations: int,

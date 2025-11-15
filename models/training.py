@@ -76,7 +76,6 @@ def run_training_loop(
                     env=env,
                     config=config,
                     iteration=iteration,
-                    model_type=model_type,
                 )
             else:
                 run_self_play(
@@ -267,7 +266,6 @@ def run_remote_self_play(
     env: BaseEnvironment,
     config: AppConfig,
     iteration: int,
-    model_type: str,
 ):
     logger.info("Running remote self play")
     client = RemotePlayClient()
@@ -294,7 +292,7 @@ def run_remote_self_play(
             model_path=str(model_path),
             num_games=num_games,
             config=config,
-            model_type=model_type,
+            model_type=self_play_agent.model_type,
         ):
             if not game_history:
                 continue

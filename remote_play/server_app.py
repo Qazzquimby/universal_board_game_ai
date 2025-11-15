@@ -22,6 +22,7 @@ MODEL_DIR = Path("uploaded_models")
 MODEL_DIR.mkdir(exist_ok=True)
 
 CACHED_AGENTS: Dict[str, Tuple[Any, Any]] = {}
+AGENT_CACHE_BY_SETUP: Dict[str, str] = {}
 
 
 def serialize_game_step(step: GameHistoryStep) -> Dict[str, Any]:
@@ -52,7 +53,7 @@ async def health():
 
 @app.post("/upload-model/")
 def upload_model(file: UploadFile = File(...)):
-    filename = f"{uuid.uuid4()}_{file.filename}"
+    filename = file.filename
     path = MODEL_DIR / filename
     try:
         with open(path, "wb") as buffer:
@@ -65,21 +66,32 @@ def upload_model(file: UploadFile = File(...)):
 
 @app.post("/setup-agent/")
 def setup_agent(request: SelfPlayRequest):
+    cache_key = request.filename if request.type != "mcts" else "mcts"
+    if cache_key in AGENT_CACHE_BY_SETUP:
+        agent_id = AGENT_CACHE_BY_SETUP[cache_key]
+        if agent_id in CACHED_AGENTS:
+            return {"agent_id": agent_id}
+
     config = AppConfig.model_validate(json.loads(request.config_json))
     env = get_environment(config.env)
 
     # Note: MCTSAgent is not a learning agent and is handled differently
     agent = create_learning_agent(request.type, env, config)
-    model_path = MODEL_DIR / request.filename
-    if not model_path.exists():
-        raise HTTPException(status_code=404, detail="Model not found")
-
-    agent.load(model_path)
-    if agent.network:
-        agent.network.eval()
+    if request.type != "mcts":
+        if not request.filename:
+            raise HTTPException(
+                status_code=400, detail="Filename must be provided for learning agents"
+            )
+        model_path = MODEL_DIR / request.filename
+        if not model_path.exists():
+            raise HTTPException(status_code=404, detail="Model not found")
+        agent.load(model_path)
+        if agent.network:
+            agent.network.eval()
 
     agent_id = str(uuid.uuid4())
     CACHED_AGENTS[agent_id] = (agent, env)
+    AGENT_CACHE_BY_SETUP[cache_key] = agent_id
 
     return {"agent_id": agent_id}
 
