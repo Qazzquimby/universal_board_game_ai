@@ -49,11 +49,15 @@ class RemotePlayClient:
         with open(model_path, "rb") as f:
             payload = f.read()
         files = {"file": (Path(model_path).name, payload)}
-        response = await session.post(
-            url, files=files, timeout=Timeout(60 * 2, write=60 * 5)
-        )
-        response.raise_for_status()
-        return response.json()["filename"]
+        for attempt_i in range(3):
+            try:
+                response = await session.post(
+                    url, files=files, timeout=Timeout(60 * 2, write=60 * 5)
+                )
+                response.raise_for_status()
+                return response.json()["filename"]
+            except:
+                print("Failed to upload")
 
     def _deserialize_game_result(
         self, raw_result: Tuple[list, float]
