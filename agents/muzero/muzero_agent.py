@@ -243,36 +243,37 @@ class MuZeroExpansion(ExpansionStrategy):
         self.network = network
 
     def expand(self, node: "MuZeroNode", env: BaseEnvironment) -> None:
-        if node.is_expanded:
+        if node.is_expanded or env.is_done:
             return
 
-        legal_actions = None
-        # If root node, use real environment actions
-        if node.state_with_key is not None:
+        is_root = node.state_with_key is not None
+
+        if is_root:
+            # use real environment actions
             legal_actions = env.get_legal_actions()
-            if not legal_actions:
-                node.is_expanded = True
-                return
             node.action_tokens = self.network.tokenize_actions(legal_actions)
-        else:  # If internal node, generate actions from hidden state
-            node.action_tokens = self.network.get_actions_for_hidden_state(
+        else:
+            # generate actions from hidden state
+            action_tokens_batch = self.network.get_actions_for_hidden_state(
                 node.hidden_state.unsqueeze(0)
-            )[0]
-            if not node.action_tokens:
-                node.is_expanded = True
-                return
+            )
+            node.action_tokens = action_tokens_batch[0]
+
+        if not node.action_tokens:
+            node.is_expanded = True
+            return
 
         policy_dict = self.network.get_policy(
             hidden_state=node.hidden_state, legal_action_tokens=node.action_tokens
         )
 
         for action_idx, prior in policy_dict.items():
-            # For root node, key edges by ActionType
-            if legal_actions:
+            if is_root:
+                # key edges by ActionType
                 action = legal_actions[action_idx]
                 action_key = tuple(action) if isinstance(action, list) else action
-            # For internal nodes, key edges by action index
             else:
+                # key edges by action index
                 action_key = action_idx
             node.edges[action_key] = MuZeroEdge(prior=prior)
         node.is_expanded = True
