@@ -126,7 +126,9 @@ class MCTSNode:
     ):
         self.state_with_key = state_with_key
 
-        self.edges: Dict[ActionType, Edge] = {}
+        self.edges: Dict[
+            ActionType, Edge
+        ] = {}  # should be index to edge, which should be list
         self.is_expanded = False
 
         # for value estimate, not actually needed

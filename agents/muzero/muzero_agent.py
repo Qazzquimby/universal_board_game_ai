@@ -259,7 +259,7 @@ class MuZeroExpansion(ExpansionStrategy):
             )
             node.action_tokens = action_tokens_batch[0]
 
-        if not node.action_tokens:
+        if not node.action_tokens.numel():
             node.is_expanded = True
             return
 
@@ -267,15 +267,8 @@ class MuZeroExpansion(ExpansionStrategy):
             hidden_state=node.hidden_state, legal_action_tokens=node.action_tokens
         )
 
-        for action_idx, prior in policy_dict.items():
-            if is_root:
-                # key edges by ActionType
-                action = legal_actions[action_idx]
-                action_key = tuple(action) if isinstance(action, list) else action
-            else:
-                # key edges by action index
-                action_key = action_idx
-            node.edges[action_key] = MuZeroEdge(prior=prior)
+        for action_index, prior in policy_dict.items():
+            node.edges[action_index] = MuZeroEdge(prior=prior)
         node.is_expanded = True
 
 
@@ -303,7 +296,7 @@ class MuZeroSelection(UCB1Selection):
     ) -> ActionType:
         """Selects the best action from a node's edges based on UCB score."""
         best_score = -float("inf")
-        best_action: Optional[ActionType] = None
+        best_action_index: Optional[ActionType] = None
 
         edges_to_consider = node.edges
         # At the root, we might have a restricted set of actions to consider.
@@ -314,19 +307,19 @@ class MuZeroSelection(UCB1Selection):
                 if action in contender_actions
             }
 
-        for action, edge in edges_to_consider.items():
+        for action_index, edge in edges_to_consider.items():
             score = self._score_edge(edge=edge, parent_node_num_visits=node.num_visits)
             if score > best_score:
                 best_score = score
-                best_action = action
+                best_action_index = action_index
 
-        assert best_action is not None
-        return best_action
+        assert best_action_index is not None
+        return best_action_index
 
     def _traverse_or_expand_edge(
         self,
         current_node: "MuZeroNode",
-        action: ActionType,
+        action_index: ActionType,
     ) -> Tuple[MuZeroNode, bool]:
         """
         Handles progressive widening for a selected edge.
@@ -341,17 +334,19 @@ class MuZeroSelection(UCB1Selection):
             - A boolean indicating if the selection phase was terminated (True if a
               new node was created).
         """
-        edge: MuZeroEdge = current_node.edges[action]
+        edge: MuZeroEdge = current_node.edges[action_index]
 
         child_limit = _calculate_child_limit(edge.num_visits)
 
         if len(edge.child_nodes) < child_limit:
             # Widen the edge by creating a new child node from a new dynamics sample.
             is_root = current_node.state_with_key is not None
-            if is_root:
-                action_token = self.network._action_to_token(action).unsqueeze(0)
-            else:
-                action_token = current_node.action_tokens[action]
+            # if is_root:
+            #     action = current_node # todo mm, should pretokenize all the actions, and look them up the same way whether theyre root or not
+            # action_token = self.network.tokenize_action(action)
+            # else:
+            # action_token = current_node.action_tokens[action]
+            action_token = current_node.action_tokens[action_index]
 
             (
                 next_hidden_state_mu,
@@ -405,13 +400,13 @@ class MuZeroSelection(UCB1Selection):
         while current_node.is_expanded and current_node.edges:
             # Only apply contender_actions at the root of the search.
             contenders = contender_actions if current_node is node else None
-            best_action = self._select_action_from_edges(current_node, contenders)
+            best_action_index = self._select_action_from_edges(current_node, contenders)
 
             next_node, terminated = self._traverse_or_expand_edge(
-                current_node, best_action
+                current_node=current_node, action_index=best_action_index
             )
 
-            path.add(next_node, best_action)
+            path.add(next_node, best_action_index)
             if terminated:
                 return SelectionResult(path=path, leaf_env=sim_env)
 
@@ -530,7 +525,7 @@ class MuZeroAgent(BaseLearningAgent):
 
             self._expand_leaf(leaf_node, leaf_env, train)
             value = self.evaluation_strategy.evaluate(leaf_node, leaf_env)
-            # todo check path that root is included
+            # The path goes back to the root sample
 
             self.backpropagation_strategy.backpropagate(
                 selection_result.path, {0: value, 1: -value}
