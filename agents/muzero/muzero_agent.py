@@ -222,6 +222,7 @@ class MuZeroNode(MCTSNode):
         hidden_state: torch.Tensor,
         state_with_key: Optional[StateWithKey] = None,
     ):
+        # state_with_key is only present for the root samples
         super().__init__(state_with_key=state_with_key)
         self.hidden_state = hidden_state
         self.player_idx = player_idx
@@ -258,6 +259,8 @@ class MuZeroExpansion(ExpansionStrategy):
                 node.hidden_state.unsqueeze(0)
             )
             node.action_tokens = action_tokens_batch[0]
+
+        assert node.action_tokens.dim() == 2
 
         if not node.action_tokens.numel():
             node.is_expanded = True
@@ -316,12 +319,8 @@ class MuZeroSelection(UCB1Selection):
                 current_node=current_node, action_index=best_action_index
             )
 
-            path.add(next_node, best_action_index)
-            if terminated:
-                return SelectionResult(path=path, leaf_env=sim_env)
-
             current_node = next_node
-
+            path.add(current_node, best_action_index)
         return SelectionResult(path=path, leaf_env=sim_env)
 
     def _traverse_or_expand_edge(

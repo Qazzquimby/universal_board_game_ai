@@ -167,7 +167,7 @@ class MuZeroNet(BaseTokenizingNet):
         self,
         hidden_state: torch.Tensor,
         max_actions: int = 10,
-    ) -> List[List[torch.Tensor]]:
+    ) -> List[torch.Tensor]:
         """
         Generates lists of candidate encoded actions from a batch of hidden states.
         """
@@ -214,6 +214,10 @@ class MuZeroNet(BaseTokenizingNet):
 
                 # The generated token is the input for the next step.
                 input_token_emb = next_action_tokens
+        batched_action_tokens = [
+            torch.stack(action_tokens).squeeze(1)
+            for action_tokens in batched_action_tokens
+        ]
         return batched_action_tokens
 
     def _get_policy_scores(

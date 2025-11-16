@@ -189,12 +189,10 @@ class BaseTokenizingNet(nn.Module):
             return action_embeddings
 
         # Handle complex, multi-type actions (e.g. Gobblet)
-        action_embeddings = torch.zeros(
-            batch_size, self.embedding_dim, device=device
-        )
+        action_embeddings = torch.zeros(batch_size, self.embedding_dim, device=device)
         action_types_spec = action_spec["types"]
 
-        for i, action in enumerate(actions):
+        for i, action in enumerate(actions):  # todo no loop
             action_type_name: str
             action_dict: dict
 
