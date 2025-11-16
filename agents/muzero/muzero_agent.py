@@ -320,7 +320,7 @@ class MuZeroSelection(UCB1Selection):
         self,
         current_node: "MuZeroNode",
         action_index: ActionType,
-    ) -> Tuple[MuZeroNode, bool]:
+    ) -> MuZeroNode:
         """
         Handles progressive widening for a selected edge.
 
@@ -337,54 +337,57 @@ class MuZeroSelection(UCB1Selection):
         edge: MuZeroEdge = current_node.edges[action_index]
 
         child_limit = _calculate_child_limit(edge.num_visits)
-
         if len(edge.child_nodes) < child_limit:
-            # Widen the edge by creating a new child node from a new dynamics sample.
-            # is_root = current_node.state_with_key is not None
-            # if is_root:
-            #     action = current_node # todo mm, should pretokenize all the actions, and look them up the same way whether theyre root or not
-            # action_token = self.network.tokenize_action(action)
-            # else:
-            # action_token = current_node.action_tokens[action]
-            action_token = current_node.action_tokens[action_index]
-
-            (
-                next_hidden_state_mu,
-                next_hidden_state_log_var,
-            ) = self.network.get_next_hidden_state_vae(
-                current_node.hidden_state, action_token.unsqueeze(0)
+            return self._widen_new_child(
+                current_node=current_node, action_index=action_index
             )
-            next_hidden_state = vae_take_sample(
-                next_hidden_state_mu, next_hidden_state_log_var
-            )
-
-            next_player_idx = 1 - current_node.player_idx
-            next_node = MuZeroNode(
-                player_idx=next_player_idx,
-                hidden_state=next_hidden_state,
-            )
-            edge.child_nodes.append(next_node)
-            return next_node, True  # Terminate selection
         else:
-            # Select from existing children using a UCB-like formula.
-            best_child = None
-            best_score = -float("inf")
-            for child in edge.child_nodes:
-                # Negate Q-value as child's value is from opponent's perspective.
-                q_value = (
-                    -child.total_value / child.num_visits
-                    if child.num_visits > 0
-                    else 0.0
-                )
-                exploration_term = self.exploration_constant * (
-                    (edge.num_visits) ** 0.5 / (1 + child.num_visits)
-                )
-                score = q_value + exploration_term
-                if score > best_score:
-                    best_score = score
-                    best_child = child
+            return self._select_child(edge=edge)
 
-            return best_child, False  # Continue selection
+    def _widen_new_child(
+        self,
+        current_node: "MuZeroNode",
+        action_index: ActionType,
+    ) -> MuZeroNode:
+        # Widen the edge by creating a new child node from a new dynamics sample.
+        action_token = current_node.action_tokens[action_index]
+        edge: MuZeroEdge = current_node.edges[action_index]
+
+        (
+            next_hidden_state_mu,
+            next_hidden_state_log_var,
+        ) = self.network.get_next_hidden_state_vae(
+            current_node.hidden_state, action_token.unsqueeze(0)
+        )
+        next_hidden_state = vae_take_sample(
+            next_hidden_state_mu, next_hidden_state_log_var
+        )
+
+        next_player_idx = 1 - current_node.player_idx
+        next_node = MuZeroNode(
+            player_idx=next_player_idx,
+            hidden_state=next_hidden_state,
+        )
+        edge.child_nodes.append(next_node)
+        return next_node  # new, unexpanded
+
+    def _select_child(self, edge: MuZeroEdge):
+        # Select from existing children using a UCB-like formula.
+        best_child = None
+        best_score = -float("inf")
+        for child in edge.child_nodes:
+            # Negate Q-value as child's value is from opponent's perspective.
+            q_value = (
+                -child.total_value / child.num_visits if child.num_visits > 0 else 0.0
+            )
+            exploration_term = self.exploration_constant * (
+                (edge.num_visits) ** 0.5 / (1 + child.num_visits)
+            )
+            score = q_value + exploration_term
+            if score > best_score:
+                best_score = score
+                best_child = child
+        return best_child
 
     def select(
         self,
