@@ -340,7 +340,7 @@ class MuZeroSelection(UCB1Selection):
 
         if len(edge.child_nodes) < child_limit:
             # Widen the edge by creating a new child node from a new dynamics sample.
-            is_root = current_node.state_with_key is not None
+            # is_root = current_node.state_with_key is not None
             # if is_root:
             #     action = current_node # todo mm, should pretokenize all the actions, and look them up the same way whether theyre root or not
             # action_token = self.network.tokenize_action(action)
@@ -352,7 +352,7 @@ class MuZeroSelection(UCB1Selection):
                 next_hidden_state_mu,
                 next_hidden_state_log_var,
             ) = self.network.get_next_hidden_state_vae(
-                current_node.hidden_state, action_token
+                current_node.hidden_state, action_token.unsqueeze(0)
             )
             next_hidden_state = vae_take_sample(
                 next_hidden_state_mu, next_hidden_state_log_var

@@ -363,6 +363,7 @@ class UCB1Selection(SelectionStrategy):
             best_score = -float("inf")
             best_action_index: Optional[ActionType] = None
 
+            # todo make get_contenders function
             edges_to_consider = current_node.edges
             if current_node is node and contender_actions is not None:
                 edges_to_consider = {
