@@ -70,7 +70,7 @@ def vae_take_sample(mu: torch.Tensor, log_var: torch.Tensor) -> torch.Tensor:
     # std = torch.exp(0.5 * log_var)
     # eps = torch.randn_like(std)
     # return mu + eps * std
-    return mu
+    return mu  # todo temp, since current game is not stochastic
 
 
 class MuZeroNet(BaseTokenizingNet):
@@ -136,10 +136,15 @@ class MuZeroNet(BaseTokenizingNet):
         """
         Representation function (h): Encodes a batch of states into a stochastic hidden state distribution.
         """
-        transformer_output = self._get_transformer_output(
-            state=state, batch_size=batch_size
-        )
-        game_token_output = transformer_output[:, 0, :]
+        tokens = self.tokenize_state(state)
+
+        # Prepend game token
+        game_token = self.game_token.expand(1, -1, -1)
+        sequence = torch.cat([game_token, tokens], dim=1)
+
+        transformer_output = self.transformer_encoder(sequence)
+        game_token_output = transformer_output[:, 0, :]  # (1, dim)
+
         mu = self.fc_hidden_state_mu(game_token_output)
         log_var = self.fc_hidden_state_log_var(game_token_output)
         return mu, log_var
@@ -231,7 +236,7 @@ class MuZeroNet(BaseTokenizingNet):
     def get_policy_batched(
         self,
         hidden_state: torch.Tensor,
-        candidate_action_tokens: List[List[torch.Tensor]],
+        candidate_action_tokens: List[torch.Tensor],
     ) -> torch.Tensor:
         # state and tokens are batches
         device = self.get_device()
@@ -260,28 +265,27 @@ class MuZeroNet(BaseTokenizingNet):
     def get_action_scores_and_counts(
         self,
         device,
-        candidate_action_tokens_batch: List[List[torch.Tensor]],
+        candidate_action_tokens_batch: List[torch.Tensor],
         hidden_state_batch: torch.Tensor,
     ) -> Tuple[torch.Tensor, List[int]]:
         batch_size = hidden_state_batch.shape[0]
-        flat_action_tokens = []
+        action_tokens_for_all_batches = []
         batch_indices_for_policy = []
         num_actions_per_item = []
         for i in range(batch_size):
-            actions = candidate_action_tokens_batch[i]
-            num_actions_per_item.append(len(actions))
-            if not actions:
+            action_tokens = candidate_action_tokens_batch[i]
+            num_actions = action_tokens.shape[0]
+            num_actions_per_item.append(num_actions)
+            if not action_tokens.numel():
                 continue
-            # candidate_action_tokens_batch[i] is a list of tensors.
-            action_tokens = torch.stack(actions)
-            action_tokens = action_tokens.squeeze(1)
-            flat_action_tokens.append(action_tokens)
-            batch_indices_for_policy.extend([i] * len(actions))
+            # todo maybe can use padded tensor for candidate... to avoid loop
+            action_tokens_for_all_batches.append(action_tokens)
+            batch_indices_for_policy.extend([i] * num_actions)
 
         if not batch_indices_for_policy:
             raise ValueError("No actions in batch")
 
-        flat_action_tokens_tensor = torch.cat(flat_action_tokens, dim=0)
+        flat_action_tokens_tensor = torch.cat(action_tokens_for_all_batches, dim=0)
         batch_indices_tensor = torch.tensor(
             batch_indices_for_policy, device=device, dtype=torch.long
         )
@@ -294,7 +298,7 @@ class MuZeroNet(BaseTokenizingNet):
         return scores, num_actions_per_item
 
     def get_policy(
-        self, hidden_state: torch.Tensor, legal_action_tokens: List[torch.Tensor]
+        self, hidden_state: torch.Tensor, legal_action_tokens: torch.Tensor
     ) -> Dict[int, float]:
         candidate_action_tokens_batch = [legal_action_tokens]
 
@@ -303,7 +307,7 @@ class MuZeroNet(BaseTokenizingNet):
             candidate_action_tokens=candidate_action_tokens_batch,
         )
         policy_dict = {}
-        if legal_action_tokens:
+        if legal_action_tokens.numel():
             # We have a batch of 1, so squeeze out the batch dimension.
             policy_logits_single = pred_policy.squeeze(0)
             policy_probs = F.softmax(policy_logits_single, dim=0)

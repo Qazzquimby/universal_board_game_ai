@@ -18,9 +18,9 @@ from factories import get_environment, create_learning_agent
 from remote_play.client import RemotePlayClient
 from utils.training_reporter import TrainingReporter, BenchmarkResults
 
-SELF_PLAY_ON_FIRST_ITER = True
+SELF_PLAY_ON_FIRST_ITER = False
 
-USE_REMOTE_SELF_PLAY = True
+USE_REMOTE_SELF_PLAY = False
 
 
 def run_training_loop(

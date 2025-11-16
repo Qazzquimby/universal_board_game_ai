@@ -253,9 +253,7 @@ class MuZeroExpansion(ExpansionStrategy):
             if not legal_actions:
                 node.is_expanded = True
                 return
-            node.action_tokens = [
-                self.network._action_to_token(a) for a in legal_actions
-            ]
+            node.action_tokens = self.network.tokenize_actions(legal_actions)
         else:  # If internal node, generate actions from hidden state
             node.action_tokens = self.network.get_actions_for_hidden_state(
                 node.hidden_state.unsqueeze(0)
