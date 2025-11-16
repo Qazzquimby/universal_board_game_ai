@@ -355,32 +355,18 @@ class UCB1Selection(SelectionStrategy):
         Modifies sim_env"""
         path = SearchPath(initial_node=node)
         current_node: MCTSNode = node
+        # todo rename node to start node?
 
         while not sim_env.is_done:
             if not current_node.is_expanded:
                 return SelectionResult(path=path, leaf_env=sim_env)
 
-            best_score = -float("inf")
-            best_action_index: Optional[ActionType] = None
-
-            # todo make get_contenders function
-            edges_to_consider = current_node.edges
-            if current_node is node and contender_actions is not None:
-                edges_to_consider = {
-                    action: edge
-                    for action, edge in current_node.edges.items()
-                    if action in contender_actions
-                }
-
-            for action_index, edge in edges_to_consider.items():
-                score = self._score_edge(
-                    edge=edge, parent_node_num_visits=current_node.num_visits
-                )
-                if score > best_score:
-                    best_score = score
-                    best_action_index = action_index
-
-            assert best_action_index is not None
+            best_action_index = self._select_action_index_from_edges(
+                current_node=current_node,
+                start_node=node,
+                sim_env=sim_env,
+                contender_actions=contender_actions,
+            )
 
             legal_actions = sim_env.get_legal_actions()
 
@@ -403,6 +389,33 @@ class UCB1Selection(SelectionStrategy):
             current_node = next_node
             path.add(current_node, best_action_index)
         return SelectionResult(path=path, leaf_env=sim_env)
+
+    def _select_action_index_from_edges(
+        self,
+        current_node: MCTSNode,
+        start_node: MCTSNode,
+        contender_actions: Optional[set],
+    ) -> int:
+        edges_to_consider = current_node.edges
+        if current_node is start_node and contender_actions is not None:
+            edges_to_consider = {
+                action: edge
+                for action, edge in current_node.edges.items()
+                if action in contender_actions
+            }
+
+        best_score = -float("inf")
+        best_action_index: Optional[ActionType] = None
+        for action_index, edge in edges_to_consider.items():
+            score = self._score_edge(
+                edge=edge, parent_node_num_visits=current_node.num_visits
+            )
+            if score > best_score:
+                best_score = score
+                best_action_index = action_index
+
+        assert best_action_index is not None
+        return best_action_index
 
 
 class UniformExpansion(ExpansionStrategy):

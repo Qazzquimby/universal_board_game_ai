@@ -291,24 +291,60 @@ class MuZeroSelection(UCB1Selection):
         super().__init__(exploration_constant)
         self.network = network
 
-    def _select_action_from_edges(
-        self, node: MCTSNode, contender_actions: Optional[set]
-    ) -> ActionType:
-        """Selects the best action from a node's edges based on UCB score."""
-        best_score = -float("inf")
-        best_action_index: Optional[ActionType] = None
+    def select(
+        self,
+        node: MuZeroNode,
+        sim_env: BaseEnvironment,
+        cache: MCTSNodeCache,
+        remaining_sims: int,
+        contender_actions: Optional[set],
+    ) -> SelectionResult:
+        path = SearchPath(initial_node=node)
+        current_node: MuZeroNode = node
+        # todo It's a little silly to be passing around the simenv in muzero since it's not used?
+        while current_node.edges:
+            if not current_node.is_expanded:
+                return SelectionResult(path=path, leaf_env=sim_env)
 
-        edges_to_consider = node.edges
-        # At the root, we might have a restricted set of actions to consider.
-        if contender_actions is not None:
+            # Only apply contender_actions at the root of the search.
+            contenders = contender_actions if current_node is node else None
+            best_action_index = self._select_action_index_from_edges(
+                current_node=current_node, contender_actions=contenders
+            )
+
+            next_node = self._traverse_or_expand_edge(
+                current_node=current_node, action_index=best_action_index
+            )
+
+            path.add(next_node, best_action_index)
+            if terminated:
+                return SelectionResult(path=path, leaf_env=sim_env)
+
+            current_node = next_node
+
+        return SelectionResult(path=path, leaf_env=sim_env)
+
+    def _select_action_index_from_edges(
+        self,
+        current_node: MCTSNode,
+        start_node: MCTSNode,
+        contender_actions: Optional[set],
+    ) -> int:
+        """Selects the best action from a node's edges based on UCB score."""
+        edges_to_consider = current_node.edges
+        if current_node is start_node and contender_actions is not None:
             edges_to_consider = {
                 action: edge
-                for action, edge in node.edges.items()
+                for action, edge in current_node.edges.items()
                 if action in contender_actions
             }
 
+        best_score = -float("inf")
+        best_action_index: Optional[ActionType] = None
         for action_index, edge in edges_to_consider.items():
-            score = self._score_edge(edge=edge, parent_node_num_visits=node.num_visits)
+            score = self._score_edge(
+                edge=edge, parent_node_num_visits=current_node.num_visits
+            )
             if score > best_score:
                 best_score = score
                 best_action_index = action_index
@@ -388,34 +424,6 @@ class MuZeroSelection(UCB1Selection):
                 best_score = score
                 best_child = child
         return best_child
-
-    def select(
-        self,
-        node: MuZeroNode,
-        sim_env: BaseEnvironment,
-        cache: MCTSNodeCache,
-        remaining_sims: int,
-        contender_actions: Optional[set],
-    ) -> SelectionResult:
-        path = SearchPath(initial_node=node)
-        current_node: MuZeroNode = node
-
-        while current_node.is_expanded and current_node.edges:
-            # Only apply contender_actions at the root of the search.
-            contenders = contender_actions if current_node is node else None
-            best_action_index = self._select_action_from_edges(current_node, contenders)
-
-            next_node, terminated = self._traverse_or_expand_edge(
-                current_node=current_node, action_index=best_action_index
-            )
-
-            path.add(next_node, best_action_index)
-            if terminated:
-                return SelectionResult(path=path, leaf_env=sim_env)
-
-            current_node = next_node
-
-        return SelectionResult(path=path, leaf_env=sim_env)
 
 
 @dataclass
