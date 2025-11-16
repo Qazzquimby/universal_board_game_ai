@@ -364,12 +364,9 @@ class UCB1Selection(SelectionStrategy):
             best_action_index = self._select_action_index_from_edges(
                 current_node=current_node,
                 start_node=node,
-                sim_env=sim_env,
                 contender_actions=contender_actions,
             )
-
             legal_actions = sim_env.get_legal_actions()
-
             best_action = legal_actions[best_action_index]
             step_result = sim_env.step(best_action)
 
