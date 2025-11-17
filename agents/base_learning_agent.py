@@ -77,6 +77,7 @@ def get_tokenizing_collate_fn(network: nn.Module) -> callable:
     def collate_fn(
         batch: Tuple[Dict, torch.Tensor, torch.Tensor, List[ActionType]]
     ) -> BaseCollation:
+        # todo check action vs action_index
         state_dicts, policy_targets, value_targets, legal_actions_batch = zip(*batch)
         batch_size = len(state_dicts)
 
@@ -600,7 +601,6 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
         """Creates and returns training and validation data loaders."""
         if not self.network or not self.optimizer:
             raise ValueError("Network or optimizer not initialized.")
-        # Temporarily disable buffer size checks for overfitting test.
         if not self.train_replay_buffer:
             raise ValueError("Training buffer is empty.")
 

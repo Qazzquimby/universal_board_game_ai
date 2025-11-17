@@ -17,6 +17,7 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 from geomloss import SamplesLoss
 import torch
+from pydantic import BaseModel, ConfigDict
 from torch import nn, optim
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
@@ -80,26 +81,28 @@ class MuZeroDataset(Dataset):
     def __len__(self):
         return len(self.buffer)
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx) -> MuZeroExperience:
         exp = self.buffer[idx]
-        states = [step.state for step in exp.steps]
-        action_indices = [
-            step.action_index for step in exp.steps if step.action_index is not None
-        ]
-        policy_targets = [
-            torch.tensor(step.policy_target, dtype=torch.float32) for step in exp.steps
-        ]
-        value_targets = torch.tensor(
-            [step.value_target for step in exp.steps], dtype=torch.float32
-        )
-        legal_actions_per_step = [step.legal_actions for step in exp.steps]
-        return (
-            states,
-            action_indices,
-            policy_targets,
-            value_targets,
-            legal_actions_per_step,
-        )
+        return exp
+
+    #     states = [step.state for step in exp.steps]
+    #     action_indices = [
+    #         step.action_index for step in exp.steps if step.action_index is not None
+    #     ]
+    #     policy_targets = [
+    #         torch.tensor(step.policy_target, dtype=torch.float32) for step in exp.steps
+    #     ]
+    #     value_targets = torch.tensor(
+    #         [step.value_target for step in exp.steps], dtype=torch.float32
+    #     )
+    #     legal_actions_per_step = [step.legal_actions for step in exp.steps]
+    #     return MuzeroDatasetItem(
+    #         states=states,
+    #         action_indices=action_indices,
+    #         policy_targets=policy_targets,
+    #         value_targets=value_targets,
+    #         legal_actions_per_step=legal_actions_per_step,
+    #     )
 
 
 @dataclass
@@ -112,90 +115,100 @@ class MuZeroCollation:
     target_states_batch: List[Dict[str, DataFrame]]
 
 
-def muzero_collate_fn(batch):
-    """Collates a batch of MuZero experiences."""
-    (
-        states_seqs,
-        action_seqs,
-        policy_target_seqs,
-        value_target_seqs,
-        candidate_actions_seqs,
-    ) = zip(*batch)
+def get_muzero_tokenizing_collate_fn(network: nn.Module) -> callable:
+    def collate_fn(batch: List[MuZeroExperience]):
+        """Collates a batch of MuZero experiences."""
+        batch_size = len(batch)
 
-    initial_states = [seq[0] for seq in states_seqs]
-    batched_state = _get_batched_state(state_dicts=initial_states)
-
-    target_states_batch = []
-    if states_seqs:
-        # Longest sequence of states
-        max_len = max(len(s) for s in states_seqs)
-        # We need states for steps 1...N for hidden state consistency loss
-        for i in range(1, max_len):
-            states_for_step = [
-                seq[i] if i < len(seq) else seq[-1] for seq in states_seqs
-            ]
-            target_states_batch.append(_get_batched_state(state_dicts=states_for_step))
-
-    max_action_len = max((len(seq) for seq in action_seqs), default=0)
-    actions_batch = torch.zeros((len(action_seqs), max_action_len), dtype=torch.long)
-    for i, seq in enumerate(action_seqs):
-        if seq:
-            actions_batch[i, : len(seq)] = torch.tensor(seq, dtype=torch.long)
-
-    # policy_target_seqs is a tuple of lists of tensors (policy vectors).
-    # First, pad each policy vector in each sequence to the max policy vector length in the batch.
-    all_policies = [p for p_seq in policy_target_seqs for p in p_seq]
-    if all_policies:
-        padded_policy_vectors = torch.nn.utils.rnn.pad_sequence(
-            all_policies, batch_first=True, padding_value=0.0
+        # Tokenize states
+        initial_states = [seq[0] for seq in states_seqs]
+        batched_state = _get_batched_state(state_dicts=initial_states)
+        state_tokens, state_padding_mask = network.tokenize_state_batch(
+            batched_state, batch_size=batch_size
         )
+        # todo I think I want the tokenized version of every state, not just initial
+        #  because they're used to measure how good the prediction was
 
-        # Reconstruct the sequences of padded policy vectors.
-        seq_lengths = [len(s) for s in policy_target_seqs]
-        padded_policy_seqs = []
-        current_idx = 0
-        for length in seq_lengths:
-            padded_policy_seqs.append(
-                padded_policy_vectors[current_idx : current_idx + length]
+        # Tokenize actions
+
+        # TODO update like base learning agent's collate fn
+        target_states_batch = []
+        if states_seqs:
+            # Longest sequence of states
+            max_len = max(len(s) for s in states_seqs)
+            # We need states for steps 1...N for hidden state consistency loss
+            for i in range(1, max_len):
+                states_for_step = [
+                    seq[i] if i < len(seq) else seq[-1] for seq in states_seqs
+                ]
+                target_states_batch.append(
+                    _get_batched_state(state_dicts=states_for_step)
+                )
+
+        max_action_len = max((len(seq) for seq in action_index_seqs), default=0)
+        actions_batch = torch.zeros(
+            (len(action_index_seqs), max_action_len), dtype=torch.long
+        )
+        for i, seq in enumerate(action_index_seqs):
+            if seq:
+                actions_batch[i, : len(seq)] = torch.tensor(seq, dtype=torch.long)
+
+        # policy_target_seqs is a tuple of lists of tensors (policy vectors).
+        # First, pad each policy vector in each sequence to the max policy vector length in the batch.
+        all_policies = [p for p_seq in policy_target_seqs for p in p_seq]
+        if all_policies:
+            padded_policy_vectors = torch.nn.utils.rnn.pad_sequence(
+                all_policies, batch_first=True, padding_value=0.0
             )
-            current_idx += length
 
-        # Pad the sequences of policy vectors to the max sequence length.
-        policy_targets_batch = torch.nn.utils.rnn.pad_sequence(
-            padded_policy_seqs, batch_first=True, padding_value=0.0
+            # Reconstruct the sequences of padded policy vectors.
+            seq_lengths = [len(s) for s in policy_target_seqs]
+            padded_policy_seqs = []
+            current_idx = 0
+            for length in seq_lengths:
+                padded_policy_seqs.append(
+                    padded_policy_vectors[current_idx : current_idx + length]
+                )
+                current_idx += length
+
+            # Pad the sequences of policy vectors to the max sequence length.
+            policy_targets_batch = torch.nn.utils.rnn.pad_sequence(
+                padded_policy_seqs, batch_first=True, padding_value=0.0
+            )
+        else:
+            # Handle case with no policies (e.g., batch of terminal states).
+            policy_targets_batch = torch.empty(len(batch), 0, 0)
+
+        value_targets_batch = torch.nn.utils.rnn.pad_sequence(
+            list(value_target_seqs), batch_first=True, padding_value=0.0
         )
-    else:
-        # Handle case with no policies (e.g., batch of terminal states).
-        policy_targets_batch = torch.empty(len(batch), 0, 0)
 
-    value_targets_batch = torch.nn.utils.rnn.pad_sequence(
-        list(value_target_seqs), batch_first=True, padding_value=0.0
-    )
+        batch_size = policy_targets_batch.shape[0]
+        assert (
+            value_targets_batch.shape[0]
+            == actions_batch.shape[0]
+            == len(candidate_actions_seqs)
+            == batch_size
+        )
 
-    batch_size = policy_targets_batch.shape[0]
-    assert (
-        value_targets_batch.shape[0]
-        == actions_batch.shape[0]
-        == len(candidate_actions_seqs)
-        == batch_size
-    )
+        future_unroll_length = len(target_states_batch)
+        assert actions_batch.shape[1] == future_unroll_length
+        assert (
+            policy_targets_batch.shape[1]
+            == value_targets_batch.shape[1]
+            == future_unroll_length + 1
+        )
 
-    future_unroll_length = len(target_states_batch)
-    assert actions_batch.shape[1] == future_unroll_length
-    assert (
-        policy_targets_batch.shape[1]
-        == value_targets_batch.shape[1]
-        == future_unroll_length + 1
-    )
+        return MuZeroCollation(
+            batched_state=batched_state,
+            policy_targets=policy_targets_batch,
+            value_targets=value_targets_batch,
+            action_batch=actions_batch,
+            candidate_actions=list(candidate_actions_seqs),
+            target_states_batch=target_states_batch,
+        )
 
-    return MuZeroCollation(
-        batched_state=batched_state,
-        policy_targets=policy_targets_batch,
-        value_targets=value_targets_batch,
-        action_batch=actions_batch,
-        candidate_actions=list(candidate_actions_seqs),
-        target_states_batch=target_states_batch,
-    )
+    return collate_fn
 
 
 def _calculate_child_limit(num_visits: int) -> int:
@@ -587,7 +600,7 @@ class MuZeroAgent(BaseLearningAgent):
 
     def _get_collate_fn(self) -> callable:
         """Returns the collate function for the DataLoader for MuZero."""
-        return muzero_collate_fn
+        return get_muzero_tokenizing_collate_fn(network=self.network)
 
     def _process_game_log_data(self, game_data: List[Dict]) -> List["MuZeroExperience"]:
         """Processes data from a single game log file into a list of experiences."""
