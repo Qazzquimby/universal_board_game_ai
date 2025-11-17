@@ -591,14 +591,11 @@ class MuZeroAgent(BaseLearningAgent):
 
     def _process_game_log_data(self, game_data: List[Dict]) -> List["MuZeroExperience"]:
         """Processes data from a single game log file into a list of experiences."""
-        if not game_data:
-            return []
-
         game_history: List[GameHistoryStep] = []
         value_targets: List[float] = []
         for step_data in game_data:
             state_json = step_data.get("state")
-            action = step_data.get("action")
+            action_index = step_data.get("action_index")
             policy_target_list = step_data.get("policy_target")
             value_target = step_data.get("value_target")
 
@@ -624,9 +621,8 @@ class MuZeroAgent(BaseLearningAgent):
                     legal_actions = [
                         row[action_id_idx] for row in legal_actions_df._data
                     ]
-                action_index = legal_actions.index(action)
-                assert 0 <= action <= 6
-                # todo better to just save the index, but connect4 saved action
+                assert 0 <= action_index < len(legal_actions)
+
                 game_history_step = GameHistoryStep(
                     state=state,
                     action_index=action_index,
@@ -637,7 +633,8 @@ class MuZeroAgent(BaseLearningAgent):
                 game_history.append(game_history_step)
                 value_targets.append(value_target)
 
-        return self._create_buffer_experiences(game_history, value_targets)
+        experiences = self._create_buffer_experiences(game_history, value_targets)
+        return experiences
 
     def _run_epoch(
         self,

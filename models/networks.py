@@ -62,6 +62,9 @@ class BaseTokenizingNet(nn.Module):
         Converts a game state (dict of DataFrames) into a tensor of token embeddings.
         Assumes that any necessary transformations have already been applied to the state.
         """
+        assert (
+            "batch_idx" not in state["game"]
+        ), "Trying to use tokenize_state on batched state. Use tokenize_state_batch instead"
         device = self.get_device()
         # Create a batched version of the state with batch_idx = 0
         batched_state = {}
