@@ -13,7 +13,7 @@ INFERENCE_DEVICE = "cpu"
 
 # --- Environment Configuration ---
 class EnvConfig(BaseModel):
-    name: str = "gobblet"  # "connect4"  # Default environment
+    name: str = "connect4"
 
 
 class MCTSConfig(BaseModel):

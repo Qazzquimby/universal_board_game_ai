@@ -53,14 +53,16 @@ from core.config import MuZeroConfig, TrainingConfig
 
 
 @dataclass
-class MuZeroTrainingStep:
-    """A single step of experience for MuZero training."""
+class MuZeroUnrollStep:
+    """
+    A single step of experience for MuZero training.
+    A MuZeroExperience contains an unrolled trajectory containing MuZeroUnrollSteps"""
 
     state: StateType
     policy_target: np.ndarray
     value_target: float
     legal_actions: List[ActionType]
-    action: Optional[ActionType] = None
+    action_index: Optional[int] = None
     # Action taken from this step's state. None for the last state in unroll.
 
 
@@ -68,7 +70,7 @@ class MuZeroTrainingStep:
 class MuZeroExperience:
     """Holds a trajectory of experience for MuZero training."""
 
-    steps: List[MuZeroTrainingStep]
+    steps: List[MuZeroUnrollStep]
 
 
 class MuZeroDataset(Dataset):
@@ -81,7 +83,9 @@ class MuZeroDataset(Dataset):
     def __getitem__(self, idx):
         exp = self.buffer[idx]
         states = [step.state for step in exp.steps]
-        actions = [step.action for step in exp.steps if step.action is not None]
+        action_indices = [
+            step.action_index for step in exp.steps if step.action_index is not None
+        ]
         policy_targets = [
             torch.tensor(step.policy_target, dtype=torch.float32) for step in exp.steps
         ]
@@ -91,7 +95,7 @@ class MuZeroDataset(Dataset):
         legal_actions_per_step = [step.legal_actions for step in exp.steps]
         return (
             states,
-            actions,
+            action_indices,
             policy_targets,
             value_targets,
             legal_actions_per_step,
@@ -541,43 +545,41 @@ class MuZeroAgent(BaseLearningAgent):
         value_targets: List[float],
     ) -> List[MuZeroExperience]:
         """Creates MuZeroExperience objects for the replay buffer."""
-        muzero_experiences = []
         num_unroll_steps = self.config.num_unroll_steps
 
-        for turn_index in range(len(game_history)):
-            steps = []
-            for unroll_index in range(num_unroll_steps + 1):
-                step_idx = turn_index + unroll_index
-                if step_idx >= len(game_history):
+        experiences = []
+        for turn_index, step in enumerate(game_history):
+            unroll_steps_for_turn = []
+            for unroll_delta in range(num_unroll_steps + 1):
+                unroll_step_index = turn_index + unroll_delta
+                if unroll_step_index >= len(game_history):
                     break
+                unroll_step = game_history[unroll_step_index]
+                # want to cache apply transforms? Else everything is being done num_unroll_steps times
+                transformed_state = self.network.apply_transforms(unroll_step.state)
+                value_target = value_targets[unroll_step_index]
 
-                game_step = game_history[step_idx]
-                transformed_state = self.network._apply_transforms(game_step.state)
-                value_target = value_targets[step_idx]
-
-                is_last_step = (unroll_index == num_unroll_steps) or (
-                    step_idx + 1 >= len(game_history)
+                is_last_step = (unroll_delta == num_unroll_steps) or (
+                    unroll_step_index + 1 >= len(game_history)
                 )
                 if is_last_step:
-                    action_for_step = None
+                    action_index_for_unroll_step = None
                 else:
-                    action_for_step = game_step.action_index
-                # todo check if theres a problem with using action index
-                assert False
+                    action_index_for_unroll_step = unroll_step.action_index
 
-                steps.append(
-                    MuZeroTrainingStep(
+                unroll_steps_for_turn.append(
+                    MuZeroUnrollStep(
                         state=transformed_state,
-                        policy_target=game_step.policy,
+                        policy_target=step.policy,
                         value_target=value_target,
-                        legal_actions=game_step.legal_actions,
-                        action=action_for_step,
+                        legal_actions=step.legal_actions,
+                        action_index=action_index_for_unroll_step,
                     )
                 )
 
-            if steps:
-                muzero_experiences.append(MuZeroExperience(steps=steps))
-        return muzero_experiences
+            if unroll_steps_for_turn:
+                experiences.append(MuZeroExperience(steps=unroll_steps_for_turn))
+        return experiences
 
     def _get_dataset(self, buffer: deque) -> Dataset:
         """Creates a dataset from a replay buffer for MuZero."""
@@ -587,9 +589,7 @@ class MuZeroAgent(BaseLearningAgent):
         """Returns the collate function for the DataLoader for MuZero."""
         return muzero_collate_fn
 
-    def _process_game_log_data(
-        self, game_data: List[Dict[str, DataFrame]]
-    ) -> List["MuZeroExperience"]:
+    def _process_game_log_data(self, game_data: List[Dict]) -> List["MuZeroExperience"]:
         """Processes data from a single game log file into a list of experiences."""
         if not game_data:
             return []
@@ -624,9 +624,12 @@ class MuZeroAgent(BaseLearningAgent):
                     legal_actions = [
                         row[action_id_idx] for row in legal_actions_df._data
                     ]
+                action_index = legal_actions.index(action)
+                assert 0 <= action <= 6
+                # todo better to just save the index, but connect4 saved action
                 game_history_step = GameHistoryStep(
                     state=state,
-                    action_index=action,
+                    action_index=action_index,
                     policy=policy_target,
                     legal_actions=legal_actions,
                 )
@@ -634,9 +637,7 @@ class MuZeroAgent(BaseLearningAgent):
                 game_history.append(game_history_step)
                 value_targets.append(value_target)
 
-        if game_history:
-            return self._create_buffer_experiences(game_history, value_targets)
-        return []
+        return self._create_buffer_experiences(game_history, value_targets)
 
     def _run_epoch(
         self,
