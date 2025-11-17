@@ -120,18 +120,26 @@ def get_muzero_tokenizing_collate_fn(network: nn.Module) -> callable:
         """Collates a batch of MuZero experiences."""
         batch_size = len(batch)
 
-        # Tokenize states
+        states_seqs = [[step.state for step in exp.steps] for exp in batch]
+        action_index_seqs = [
+            [step.action_index for step in exp.steps if step.action_index is not None]
+            for exp in batch
+        ]
+        policy_target_seqs = [
+            [torch.tensor(step.policy_target, dtype=torch.float32) for step in exp.steps]
+            for exp in batch
+        ]
+        value_target_seqs = [
+            torch.tensor([step.value_target for step in exp.steps], dtype=torch.float32)
+            for exp in batch
+        ]
+        candidate_actions_seqs = [
+            [step.legal_actions for step in exp.steps] for exp in batch
+        ]
+
         initial_states = [seq[0] for seq in states_seqs]
         batched_state = _get_batched_state(state_dicts=initial_states)
-        state_tokens, state_padding_mask = network.tokenize_state_batch(
-            batched_state, batch_size=batch_size
-        )
-        # todo I think I want the tokenized version of every state, not just initial
-        #  because they're used to measure how good the prediction was
 
-        # Tokenize actions
-
-        # TODO update like base learning agent's collate fn
         target_states_batch = []
         if states_seqs:
             # Longest sequence of states
