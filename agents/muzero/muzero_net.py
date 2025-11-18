@@ -234,6 +234,8 @@ class MuZeroNet(BaseTokenizingNet):
                 input_token_emb = next_action_tokens
         batched_action_tokens = [
             torch.stack(action_tokens).squeeze(1)
+            if action_tokens
+            else torch.empty(0, self.embedding_dim, device=hidden_state.device)
             for action_tokens in batched_action_tokens
         ]
         return batched_action_tokens

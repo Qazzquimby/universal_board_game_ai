@@ -748,10 +748,9 @@ class MuZeroAgent(BaseLearningAgent):
                     ),
                 )
                 loss_statistics: MuZeroLossStatistics = self._calculate_loss(
-                    network_output=network_output,  #  todo params are out of date
+                    network_output=network_output,
                     policy_targets=policy_targets_batch,
                     value_targets=value_targets_batch,
-                    candidate_actions=batch_data.candidate_actions,
                 )
 
                 if is_training:
@@ -805,7 +804,87 @@ class MuZeroAgent(BaseLearningAgent):
             action_pred_loss_by_step=action_pred_loss_list,
         )
 
-    def _calculate_action_prediction_loss(
+    def _calculate_loss(
+        self,
+        network_output: MuZeroNetworkOutput,
+        policy_targets: torch.Tensor,
+        value_targets: torch.Tensor,
+    ) -> MuZeroLossStatistics:
+        """Calculates the MuZero loss over an unrolled trajectory."""
+
+        (policy_losses_per_step, total_policy_loss,) = self._compute_policy_loss(
+            pred_policies=network_output.pred_policies, policy_targets=policy_targets
+        )
+
+        value_losses_per_step, total_value_loss = self._compute_value_loss(
+            pred_values=network_output.pred_values, value_targets=value_targets
+        )
+
+        (
+            hidden_state_losses_per_step,
+            total_hidden_state_loss,
+        ) = self._compute_hidden_state_consistency_loss(network_output=network_output)
+
+        (
+            action_pred_losses_per_step,
+            total_action_pred_loss,
+        ) = self._compute_action_prediction_loss(network_output=network_output)
+
+        total_loss = (
+            total_value_loss
+            + total_policy_loss
+            + total_hidden_state_loss
+            + total_action_pred_loss
+        )
+
+        return MuZeroLossStatistics(
+            batch_loss=total_loss,
+            total_value_loss=total_value_loss,
+            value_losses_per_step=value_losses_per_step,
+            total_policy_loss=total_policy_loss,
+            policy_losses_per_step=policy_losses_per_step,
+            total_hidden_state_loss=total_hidden_state_loss,
+            hidden_state_losses_per_step=hidden_state_losses_per_step,
+            total_action_pred_loss=total_action_pred_loss,
+            action_pred_losses_per_step=action_pred_losses_per_step,
+        )
+
+    def _compute_policy_loss(self, pred_policies, policy_targets):
+        policy_losses = self._calculate_policy_loss_per_step(
+            pred_policies=pred_policies, policy_targets=policy_targets
+        )
+        scaled_policy_losses = scale_loss_by_step(policy_losses)
+        total_policy_loss = torch.sum(scaled_policy_losses)
+        return policy_losses, total_policy_loss
+
+    def _compute_value_loss(self, pred_values, value_targets):
+        value_losses = self._calculate_value_loss_per_step(
+            pred_values=pred_values, value_targets=value_targets
+        )
+        scaled_value_losses = scale_loss_by_step(value_losses)
+        total_value_loss = torch.sum(scaled_value_losses)
+        return value_losses, total_value_loss
+
+    def _compute_hidden_state_consistency_loss(self, network_output):
+        hidden_state_losses = self._calculate_hidden_state_consistency_loss_per_step(
+            network_output=network_output
+        )
+        scaled_hidden_state_losses = scale_loss_by_step(hidden_state_losses)
+        total_hidden_state_loss = torch.sum(scaled_hidden_state_losses)
+        return hidden_state_losses, total_hidden_state_loss
+
+    def _compute_action_prediction_loss(self, network_output):
+        action_pred_losses = self._calculate_action_prediction_loss_per_step(
+            pred_actions=network_output.pred_actions,
+            pred_actions_mask=network_output.pred_actions_mask,
+            target_actions=network_output.candidate_action_tokens,
+            target_actions_mask=network_output.candidate_action_tokens_mask,
+        )
+        scaled_action_pred_losses = scale_loss_by_step(action_pred_losses)
+        total_action_pred_loss = torch.sum(scaled_action_pred_losses)
+        return action_pred_losses, total_action_pred_loss
+
+    def _calculate_action_prediction_loss_per_step(
         self,
         pred_actions: torch.Tensor,
         pred_actions_mask: torch.Tensor,
@@ -851,66 +930,9 @@ class MuZeroAgent(BaseLearningAgent):
 
         return torch.stack(step_losses)
 
-    def _calculate_loss(
-        self,
-        network_output: MuZeroNetworkOutput,
-        policy_targets: torch.Tensor,
-        value_targets: torch.Tensor,
-        candidate_actions: List[List[List[ActionType]]],
-    ):
-        """Calculates the MuZero loss over an unrolled trajectory."""
-
-        policy_losses = self._calculate_policy_loss(
-            pred_policies=network_output.pred_policies, policy_targets=policy_targets
-        )
-        scaled_policy_losses = scale_loss_by_step(policy_losses)
-        total_policy_loss = torch.sum(scaled_policy_losses)
-
-        value_losses = self._calculate_value_loss(
-            pred_values=network_output.pred_values, value_targets=value_targets
-        )
-        scaled_value_loss = scale_loss_by_step(value_losses)
-        total_value_loss = torch.sum(scaled_value_loss)
-
-        hidden_state_losses = self._calculate_hidden_state_consistency_loss(
-            network_output=network_output
-        )
-        scaled_hidden_state_loss = scale_loss_by_step(hidden_state_losses)
-        total_hidden_state_loss = torch.sum(scaled_hidden_state_loss)
-
-        action_pred_losses = self._calculate_action_prediction_loss(
-            pred_actions=network_output.pred_actions,
-            pred_actions_mask=network_output.pred_actions_mask,
-            target_actions=network_output.candidate_action_tokens,
-            target_actions_mask=network_output.candidate_action_tokens_mask,
-        )
-        scaled_action_pred_loss = scale_loss_by_step(action_pred_losses)
-        total_action_pred_loss = torch.sum(scaled_action_pred_loss)
-
-        total_loss = (
-            total_value_loss
-            + total_policy_loss
-            + total_hidden_state_loss
-            + total_action_pred_loss
-        )
-
-        return MuZeroLossStatistics(
-            batch_loss=total_loss,
-            #
-            total_value_loss=total_value_loss,
-            value_losses_per_step=value_losses,
-            #
-            total_policy_loss=total_policy_loss,
-            policy_losses_per_step=policy_losses,
-            #
-            total_hidden_state_loss=total_hidden_state_loss,
-            hidden_state_losses_per_step=hidden_state_losses,
-            #
-            total_action_pred_loss=total_action_pred_loss,
-            action_pred_losses_per_step=action_pred_losses,
-        )
-
-    def _calculate_value_loss(self, pred_values, value_targets) -> torch.Tensor:
+    def _calculate_value_loss_per_step(
+        self, pred_values, value_targets
+    ) -> torch.Tensor:
         num_steps = pred_values.shape[1]
         assert value_targets.shape[1] == num_steps
 
@@ -926,7 +948,9 @@ class MuZeroAgent(BaseLearningAgent):
 
         return value_losses_tensor
 
-    def _calculate_policy_loss(self, pred_policies, policy_targets) -> torch.Tensor:
+    def _calculate_policy_loss_per_step(
+        self, pred_policies, policy_targets
+    ) -> torch.Tensor:
         num_steps = pred_policies.shape[1]
         assert policy_targets.shape[1] == num_steps
 
@@ -943,7 +967,7 @@ class MuZeroAgent(BaseLearningAgent):
         policy_losses_tensor = torch.stack(policy_losses_per_step)
         return policy_losses_tensor
 
-    def _calculate_hidden_state_consistency_loss(self, network_output):
+    def _calculate_hidden_state_consistency_loss_per_step(self, network_output):
         if not network_output.pred_dynamics_mu.numel():
             return torch.tensor(0.0, network_output.pred_policies.device)
 
