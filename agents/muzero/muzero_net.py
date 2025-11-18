@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Tuple, Dict, List
+from typing import Tuple, Dict, List, Optional
 
 import torch
 import torch.nn as nn
@@ -38,7 +38,7 @@ def _pad_action_sets(
         )
 
     batch_size = len(action_sets)
-    num_unroll_steps = len(action_sets[0])
+    num_unroll_steps = len(action_sets[0])  # todo duplicate 1
 
     max_actions = 0
     for batch_index in range(batch_size):
@@ -131,26 +131,36 @@ class MuZeroNet(BaseTokenizingNet):
         self.action_generation_stop_head = nn.Linear(embedding_dim, 1)
 
     def get_hidden_state_vae(
-        self, state: StateType, batch_size: int = 1
+        self,
+        state_tokens: torch.Tensor,
+        state_padding_mask: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Representation function (h): Encodes a batch of states into a stochastic hidden state distribution.
         """
-        # todo this should be handled in collate
-        # padded_tokens, padding_mask = self.tokenize_state_batch(
-        #     state, batch_size=batch_size  # convert during collate?
-        # )
+        batch_size = state_tokens.shape[0]
 
         # Prepend game token
-        game_token = self.game_token.expand(1, -1, -1)
-        sequence = torch.cat([game_token, padded_tokens], dim=1)
+        game_token = self.game_token.expand(batch_size, -1, -1)
+        sequence = torch.cat([game_token, state_tokens], dim=1)
 
-        transformer_output = self.transformer_encoder(sequence)
-        game_token_output = transformer_output[:, 0, :]  # (1, dim)
+        if state_padding_mask is not None:
+            # The mask needs to be extended for the game token.
+            # Game token is not masked, so we add False for it.
+            game_token_mask = torch.zeros(
+                (batch_size, 1), dtype=torch.bool, device=state_padding_mask.device
+            )
+            padding_mask = torch.cat([game_token_mask, state_padding_mask], dim=1)
+        else:
+            padding_mask = None
+
+        transformer_output = self.transformer_encoder(
+            sequence, src_key_padding_mask=padding_mask
+        )
+        game_token_output = transformer_output[:, 0, :]  # (batch_size, dim)
 
         mu = self.fc_hidden_state_mu(game_token_output)
         log_var = self.fc_hidden_state_log_var(game_token_output)
-        assert mu.shape[0] == log_var.shape[0] == batch_size
         return mu, log_var
 
     def get_next_hidden_state_vae(
@@ -332,54 +342,42 @@ class MuZeroNet(BaseTokenizingNet):
 
     def forward(
         self,
-        initial_state: Dict[str, "DataFrame"],
-        action_history: torch.Tensor,
-        legal_actions: List[List[List[ActionType]]],
-        unrolled_state: List[Dict[str, "DataFrame"]],
+        initial_state_tokens: torch.Tensor,
+        initial_state_padding_mask: torch.Tensor,
+        action_tokens_history: torch.Tensor,
+        candidate_action_tokens: torch.Tensor,
+        candidate_action_tokens_mask: torch.Tensor,
+        unrolled_states_tokens: torch.Tensor,
+        unrolled_states_padding_mask: torch.Tensor,
     ) -> MuZeroNetworkOutput:
         # All data variables are batches
-        batch_size = action_history.shape[0]
-        assert len(legal_actions) == batch_size
-
-        num_unroll_steps = action_history.shape[1]
-        assert len(unrolled_state) == num_unroll_steps
-        assert len(legal_actions[0]) <= num_unroll_steps + 1
+        batch_size = action_tokens_history.shape[0]
+        num_unroll_steps = action_tokens_history.shape[1]
 
         unrolled_pred_policies = []
         unrolled_pred_values = []
         unrolled_pred_actions = []
-        unrolled_candidate_action_tokens = []
         unrolled_pred_dynamics_mu = []
         unrolled_pred_dynamics_log_var = []
-        unrolled_pred_representation_mu = []
-        unrolled_pred_representation_log_var = []
+        unrolled_target_representation_mu = []
+        unrolled_target_representation_log_var = []
 
         hidden_state_mu, hidden_state_log_var = self.get_hidden_state_vae(
-            initial_state, batch_size=batch_size
+            initial_state_tokens, initial_state_padding_mask
         )
         current_hidden_state = vae_take_sample(hidden_state_mu, hidden_state_log_var)
-        assert current_hidden_state.shape[0] == batch_size
 
         for i in range(num_unroll_steps + 1):
             # POLICY
-            # Uses actual actions rather than predicted actions to keep unroll close
-            #  to reality. Action generation is trained separately rather than
-            #  downstream of this
-            legal_actions_for_step = [
-                seq[i] if i < len(seq) else [] for seq in legal_actions
-            ]
-            candidate_action_tokens_tensors = [
-                self._actions_to_tokens(actions) for actions in legal_actions_for_step
-            ]
-            # Convert to list of lists of tensors to match predicted actions structure
-            candidate_action_tokens = [
-                [row.unsqueeze(0) for row in tensor]
-                for tensor in candidate_action_tokens_tensors
-            ]
-            unrolled_candidate_action_tokens.append(candidate_action_tokens)
+            candidate_tokens_for_step = []
+            for batch_idx in range(batch_size):
+                mask = candidate_action_tokens_mask[batch_idx, i]
+                tokens = candidate_action_tokens[batch_idx, i][mask]
+                candidate_tokens_for_step.append(tokens)
+
             pred_policy = self.get_policy_batched(
                 hidden_state=current_hidden_state,
-                candidate_action_tokens=candidate_action_tokens,
+                candidate_action_tokens=candidate_tokens_for_step,
             )
             unrolled_pred_policies.append(pred_policy)
 
@@ -394,16 +392,20 @@ class MuZeroNet(BaseTokenizingNet):
             unrolled_pred_actions.append(pred_actions)
 
             if i < num_unroll_steps:
-                # REPRESENTATION
+                # TARGET REPRESENTATION
                 (
-                    pred_representation_mu,
-                    pred_representation_log_var,
-                ) = self.get_hidden_state_vae(unrolled_state[i], batch_size=batch_size)
-                unrolled_pred_representation_mu.append(pred_representation_mu)
-                unrolled_pred_representation_log_var.append(pred_representation_log_var)
+                    target_representation_mu,
+                    target_representation_log_var,
+                ) = self.get_hidden_state_vae(
+                    unrolled_states_tokens[:, i], unrolled_states_padding_mask[:, i]
+                )
+                unrolled_target_representation_mu.append(target_representation_mu)
+                unrolled_target_representation_log_var.append(
+                    target_representation_log_var
+                )
 
                 # DYNAMICS
-                action_tokens = self._actions_to_tokens(action_history[:, i].tolist())
+                action_tokens = action_tokens_history[:, i]
                 (
                     pred_dynamics_mu,
                     pred_dynamics_log_var,
@@ -421,6 +423,13 @@ class MuZeroNet(BaseTokenizingNet):
         )
         padded_policies = [
             F.pad(p, (0, max_actions - p.shape[1]), "constant", value=-torch.inf)
+            if p.numel() > 0
+            else torch.full(
+                (p.shape[0], max_actions),
+                -torch.inf,
+                device=p.device,
+                dtype=p.dtype,
+            )
             for p in unrolled_pred_policies
         ]
         pred_policies = torch.stack(padded_policies, dim=1)
@@ -428,9 +437,11 @@ class MuZeroNet(BaseTokenizingNet):
         pred_values = torch.stack(unrolled_pred_values, dim=1)
 
         if num_unroll_steps > 0:
-            pred_representation_mu = torch.stack(unrolled_pred_representation_mu, dim=1)
-            pred_representation_log_var = torch.stack(
-                unrolled_pred_representation_log_var, dim=1
+            target_representation_mu = torch.stack(
+                unrolled_target_representation_mu, dim=1
+            )
+            target_representation_log_var = torch.stack(
+                unrolled_target_representation_log_var, dim=1
             )
             pred_dynamics_mu = torch.stack(unrolled_pred_dynamics_mu, dim=1)
             pred_dynamics_log_var = torch.stack(unrolled_pred_dynamics_log_var, dim=1)
@@ -438,22 +449,24 @@ class MuZeroNet(BaseTokenizingNet):
             empty_hidden_state_part = torch.empty(
                 batch_size, 0, current_hidden_state.shape[-1], device=self.get_device()
             )
-            pred_representation_mu = empty_hidden_state_part
-            pred_representation_log_var = empty_hidden_state_part
+            target_representation_mu = empty_hidden_state_part
+            target_representation_log_var = empty_hidden_state_part
             pred_dynamics_mu = empty_hidden_state_part
             pred_dynamics_log_var = empty_hidden_state_part
 
         # Transpose from step, batch to batch, step.
         pred_actions_transposed = [list(x) for x in zip(*unrolled_pred_actions)]
-        candidate_action_tokens_transposed = [
-            list(x) for x in zip(*unrolled_candidate_action_tokens)
-        ]
-
+        pred_actions_transposed_lists = []
+        for batch_item in pred_actions_transposed:
+            steps = []
+            for step_actions in batch_item:
+                if step_actions.numel() > 0:
+                    steps.append([row.unsqueeze(0) for row in step_actions])
+                else:
+                    steps.append([])
+            pred_actions_transposed_lists.append(steps)
         pred_actions, pred_actions_mask = _pad_action_sets(
-            pred_actions_transposed, self.embedding_dim, self.get_device()
-        )
-        candidate_actions, candidate_actions_mask = _pad_action_sets(
-            candidate_action_tokens_transposed, self.embedding_dim, self.get_device()
+            pred_actions_transposed_lists, self.embedding_dim, self.get_device()
         )
 
         return MuZeroNetworkOutput(
@@ -461,12 +474,12 @@ class MuZeroNet(BaseTokenizingNet):
             pred_values=pred_values,
             pred_dynamics_mu=pred_dynamics_mu,
             pred_dynamics_log_var=pred_dynamics_log_var,
-            target_representation_mu=pred_representation_mu,
-            target_representation_log_var=pred_representation_log_var,
+            target_representation_mu=target_representation_mu,
+            target_representation_log_var=target_representation_log_var,
             pred_actions=pred_actions,
             pred_actions_mask=pred_actions_mask,
-            candidate_action_tokens=candidate_actions,
-            candidate_action_tokens_mask=candidate_actions_mask,
+            candidate_action_tokens=candidate_action_tokens,
+            candidate_action_tokens_mask=candidate_action_tokens_mask,
         )
 
     def init_zero(self):
