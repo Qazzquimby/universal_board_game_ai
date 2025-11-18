@@ -5,7 +5,7 @@ import torch
 import wandb
 from pydantic import BaseModel, Field
 
-GAMES_PER_TRAINING_LOOP = 500
+GAMES_PER_TRAINING_LOOP = 1500
 MCTS_SIMULATIONS = 400
 
 TRAINING_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"

@@ -111,15 +111,14 @@ class RemotePlayClient:
     ) -> Tuple[List[GameHistoryStep], float]:
         url = f"http://{ip}:8000/run-self-play/"
         payload = RunGameRequest(agent_id=agent_id).model_dump()
-        for attempt_i in range(3):
+        for attempt_i in range(5):
             try:
                 response = await session.post(url, json=payload, timeout=60 * 10)
                 response.raise_for_status()
                 raw_result = response.json()
                 return self._deserialize_game_result(raw_result)
-            except httpx.HTTPError as e:
+            except Exception as e:
                 logger.error(f"Error {attempt_i} running game on server {ip}: {e}")
-                raise
 
     async def run_self_play_games(
         self, model_path: str, num_games: int, config: AppConfig, model_type: str
