@@ -48,8 +48,7 @@ def run_training_loop(
     self_play_agent.temperature = 0.15
 
     current_agent.load_game_logs(
-        config.env.name,
-        100,  # todo current_agent.config.replay_buffer_size
+        config.env.name, current_agent.config.replay_buffer_size
     )
 
     logger.info(
