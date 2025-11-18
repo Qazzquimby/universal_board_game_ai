@@ -128,33 +128,34 @@ def _pad_action_sets(
         )
 
     batch_size = len(action_sets)
-    if not batch_size or not action_sets[0]:
-        return torch.empty(batch_size, 0, 0, embedding_dim, device=device), torch.empty(
-            batch_size, 0, 0, dtype=torch.bool, device=device
+    if batch_size == 0:
+        return torch.empty(0, 0, 0, embedding_dim, device=device), torch.empty(
+            0, 0, 0, dtype=torch.bool, device=device
         )
 
-    num_unroll_steps = len(action_sets[0])  # todo duplicate 1
-
+    max_steps = 0
     max_actions = 0
     for batch in action_sets:
+        if len(batch) > max_steps:
+            max_steps = len(batch)
         for step in batch:
-            num_actions = len(step)
-            if num_actions > max_actions:
-                max_actions = num_actions
+            if len(step) > max_actions:
+                max_actions = len(step)
 
     padded_tensor = torch.zeros(
-        batch_size, num_unroll_steps, max_actions, embedding_dim, device=device
+        batch_size, max_steps, max_actions, embedding_dim, device=device
     )
     mask = torch.zeros(
-        batch_size, num_unroll_steps, max_actions, dtype=torch.bool, device=device
+        batch_size, max_steps, max_actions, dtype=torch.bool, device=device
     )
 
     for batch_index, batch in enumerate(action_sets):
         for step_index, actions in enumerate(batch):
-            num_actions = len(actions)
-            action_tensor = torch.cat(actions, dim=0)
-            padded_tensor[batch_index, step_index, :num_actions] = action_tensor
-            mask[batch_index, step_index, :num_actions] = True
+            if actions:
+                num_actions = len(actions)
+                action_tensor = torch.cat(actions, dim=0)
+                padded_tensor[batch_index, step_index, :num_actions] = action_tensor
+                mask[batch_index, step_index, :num_actions] = True
 
     return padded_tensor, mask
 
