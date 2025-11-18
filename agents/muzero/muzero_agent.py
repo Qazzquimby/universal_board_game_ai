@@ -12,12 +12,12 @@
 # but the root node has a known set of legal actions
 import math
 import random
-from typing import Optional, List, Tuple, Dict, Union
+from typing import Optional, List, Dict, Union
 from collections import defaultdict, deque
 from dataclasses import dataclass
+
 from geomloss import SamplesLoss
 import torch
-from pydantic import BaseModel, ConfigDict
 from torch import nn, optim
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
@@ -29,7 +29,12 @@ from agents.base_learning_agent import (
     _get_batched_state,
     GameHistoryStep,
 )
-from agents.muzero.muzero_net import MuZeroNet, MuZeroNetworkOutput, vae_take_sample
+from agents.muzero.muzero_net import (
+    MuZeroNet,
+    MuZeroNetworkOutput,
+    pad_action_sets,
+    vae_take_sample,
+)
 from algorithms.mcts import (
     SelectionStrategy,
     ExpansionStrategy,
@@ -116,48 +121,6 @@ class MuZeroCollation:
     candidate_action_tokens_mask: torch.Tensor
     unrolled_states_tokens: torch.Tensor
     unrolled_states_padding_mask: torch.Tensor
-
-
-def _pad_action_sets(
-    action_sets: List[List[List[torch.Tensor]]], embedding_dim: int, device
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    # actions are batch, step, action, dim
-    if not action_sets:
-        return torch.empty(0, 0, 0, 0, device=device), torch.empty(
-            0, 0, 0, dtype=torch.bool, device=device
-        )
-
-    batch_size = len(action_sets)
-    if batch_size == 0:
-        return torch.empty(0, 0, 0, embedding_dim, device=device), torch.empty(
-            0, 0, 0, dtype=torch.bool, device=device
-        )
-
-    max_steps = 0
-    max_actions = 0
-    for batch in action_sets:
-        if len(batch) > max_steps:
-            max_steps = len(batch)
-        for step in batch:
-            if len(step) > max_actions:
-                max_actions = len(step)
-
-    padded_tensor = torch.zeros(
-        batch_size, max_steps, max_actions, embedding_dim, device=device
-    )
-    mask = torch.zeros(
-        batch_size, max_steps, max_actions, dtype=torch.bool, device=device
-    )
-
-    for batch_index, batch in enumerate(action_sets):
-        for step_index, actions in enumerate(batch):
-            if actions:
-                num_actions = len(actions)
-                action_tensor = torch.cat(actions, dim=0)
-                padded_tensor[batch_index, step_index, :num_actions] = action_tensor
-                mask[batch_index, step_index, :num_actions] = True
-
-    return padded_tensor, mask
 
 
 def get_muzero_tokenizing_collate_fn(network: nn.Module) -> callable:
@@ -249,7 +212,7 @@ def get_muzero_tokenizing_collate_fn(network: nn.Module) -> callable:
                 )
             tokenized_candidate_actions_seqs.append(step_list)
 
-        (candidate_action_tokens, candidate_action_tokens_mask,) = _pad_action_sets(
+        (candidate_action_tokens, candidate_action_tokens_mask,) = pad_action_sets(
             tokenized_candidate_actions_seqs, network.embedding_dim, device
         )
 
@@ -785,7 +748,7 @@ class MuZeroAgent(BaseLearningAgent):
                     ),
                 )
                 loss_statistics: MuZeroLossStatistics = self._calculate_loss(
-                    network_output=network_output,
+                    network_output=network_output,  #  todo params are out of date
                     policy_targets=policy_targets_batch,
                     value_targets=value_targets_batch,
                     candidate_actions=batch_data.candidate_actions,

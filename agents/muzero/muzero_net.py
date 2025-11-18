@@ -28,7 +28,7 @@ class MuZeroNetworkOutput:
 # A hidden state tensor can be used to predict a variable length list of encoded action tokens with size action_dim. These should be stored with the hidden state tensor.
 
 
-def _pad_action_sets(
+def pad_action_sets(
     action_sets: List[List[List[torch.Tensor]]], embedding_dim: int, device
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     # actions are batch, step, action, dim
@@ -469,7 +469,7 @@ class MuZeroNet(BaseTokenizingNet):
                 else:
                     steps.append([])
             pred_actions_transposed_lists.append(steps)
-        pred_actions, pred_actions_mask = _pad_action_sets(
+        pred_actions, pred_actions_mask = pad_action_sets(
             pred_actions_transposed_lists, self.embedding_dim, self.get_device()
         )
 
