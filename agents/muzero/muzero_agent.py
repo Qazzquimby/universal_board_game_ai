@@ -948,41 +948,92 @@ class MuZeroAgent(BaseLearningAgent):
         target_actions_mask: torch.Tensor,
     ) -> torch.Tensor:
         loss_fn = SamplesLoss(loss="sinkhorn", p=2, blur=0.05)
-        step_losses = []
         device = self.network.get_device()
 
-        if pred_actions.shape[0] == 0:
-            return torch.tensor(0.0, device=device)
+        batch_size, num_unroll_steps, num_pred, embed_dim = pred_actions.shape
+        if num_unroll_steps == 0:
+            return torch.tensor([], device=device)
 
-        batch_size, num_unroll_steps, _, _ = pred_actions.shape
+        _, _, num_target, _ = target_actions.shape
 
-        for step_index in range(num_unroll_steps):
-            batch_step_losses = []
-            for batch_index in range(batch_size):
-                pred_set = pred_actions[batch_index, step_index][
-                    pred_actions_mask[batch_index, step_index]
-                ]
-                target_set = target_actions[batch_index, step_index][
-                    target_actions_mask[batch_index, step_index]
-                ]
+        # Flatten batch and unroll steps dimensions
+        flat_batch_size = batch_size * num_unroll_steps
+        if flat_batch_size == 0:
+            return torch.zeros(num_unroll_steps, device=device)
 
-                if target_set.shape[0] == 0:
-                    # no actions exist, means state is terminal, and we wouldn't ask it to generate actions anyway
-                    continue
+        pred_actions_flat = pred_actions.reshape(flat_batch_size, num_pred, embed_dim)
+        pred_mask_flat = pred_actions_mask.reshape(flat_batch_size, num_pred)
 
-                # geomloss' SamplesLoss crashes if one of the sets is empty.
-                _pred_set = pred_set
-                if _pred_set.shape[0] == 0:
-                    _pred_set = torch.zeros(1, pred_actions.shape[-1], device=device)
+        target_actions_flat = target_actions.reshape(
+            flat_batch_size, num_target, embed_dim
+        )
+        target_mask_flat = target_actions_mask.reshape(flat_batch_size, num_target)
 
-                loss = loss_fn(_pred_set, target_set)  # todo, must batch, not loops
-                batch_step_losses.append(loss)
+        pred_weights_flat = (~pred_mask_flat).float()
+        target_weights_flat = (~target_mask_flat).float()
 
-            if batch_step_losses:
-                step_losses.append(torch.stack(batch_step_losses).mean())
+        # Identify samples that have target actions
+        has_targets = target_weights_flat.sum(dim=1) > 0
+        indices_with_targets = torch.where(has_targets)[0]
 
-        if not step_losses:
-            return torch.tensor(0.0, device=device)
+        if indices_with_targets.numel() == 0:
+            return torch.zeros(num_unroll_steps, device=device)
+
+        # Filter to only include samples with targets
+        pred_actions_f = pred_actions_flat[indices_with_targets]
+        pred_weights_f = pred_weights_flat[indices_with_targets]
+        target_actions_f = target_actions_flat[indices_with_targets]
+        target_weights_f = target_weights_flat[indices_with_targets]
+
+        has_preds_f = pred_weights_f.sum(dim=1) > 0
+
+        indices_with_preds = torch.where(has_preds_f)[0]
+        indices_without_preds = torch.where(~has_preds_f)[0]
+
+        all_losses = torch.zeros(flat_batch_size, device=device)
+
+        # Case 1: has both predictions and targets
+        if indices_with_preds.numel() > 0:
+            pred_actions_1 = pred_actions_f[indices_with_preds]
+            pred_weights_1 = pred_weights_f[indices_with_preds]
+            target_actions_1 = target_actions_f[indices_with_preds]
+            target_weights_1 = target_weights_f[indices_with_preds]
+
+            losses1 = loss_fn(
+                pred_weights_1, pred_actions_1, target_weights_1, target_actions_1
+            )
+            all_losses.scatter_(0, indices_with_targets[indices_with_preds], losses1)
+
+        # Case 2: has targets but no predictions
+        if indices_without_preds.numel() > 0:
+            target_actions_2 = target_actions_f[indices_without_preds]
+            target_weights_2 = target_weights_f[indices_without_preds]
+
+            dummy_pred = torch.zeros(
+                indices_without_preds.numel(), 1, embed_dim, device=device
+            )
+            dummy_weights = torch.ones(
+                indices_without_preds.numel(), 1, device=device
+            )
+
+            losses2 = loss_fn(
+                dummy_weights, dummy_pred, target_weights_2, target_actions_2
+            )
+            all_losses.scatter_(
+                0, indices_with_targets[indices_without_preds], losses2
+            )
+
+        all_losses_by_step = all_losses.reshape(batch_size, num_unroll_steps)
+        has_targets_by_step = has_targets.reshape(batch_size, num_unroll_steps)
+
+        step_losses = []
+        for i in range(num_unroll_steps):
+            mask = has_targets_by_step[:, i]
+            if mask.any():
+                step_loss = all_losses_by_step[:, i][mask].mean()
+                step_losses.append(step_loss)
+            else:
+                step_losses.append(torch.tensor(0.0, device=device))
 
         return torch.stack(step_losses)
 
