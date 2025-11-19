@@ -472,7 +472,9 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
                         state[k] = v.to(self.device)
 
     def train_network(
-        self, epoch_callback: Optional[Callable[[int, float], None]] = None
+        self,
+        iteration: int,
+        epoch_callback: Optional[Callable[[int, float], None]] = None,
     ) -> Optional[BestEpochMetrics]:
         """
         Trains the network with early stopping.
@@ -488,7 +490,9 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
         max_epochs = 100
         patience = 10
         best_val_loss, epochs_no_improve = float("inf"), 0
-        best_model_state, best_metrics = None, None
+        best_model_state = None
+        best_optimizer_state = None
+        best_metrics = None
 
         self._set_device_and_mode(training=True)
         for epoch in range(max_epochs):
@@ -515,6 +519,7 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
                 best_val_loss = val_metrics.loss
                 epochs_no_improve = 0
                 best_model_state = copy.deepcopy(self.network.state_dict())
+                best_optimizer_state = copy.deepcopy(self.optimizer.state_dict())
                 best_metrics = BestEpochMetrics(train=train_metrics, val=val_metrics)
             else:
                 epochs_no_improve += 1
@@ -522,8 +527,21 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
                     logger.info(f"Early stopping after {epoch + 1} epochs.")
                     break
 
+            if best_model_state and (epoch + 1) % 5 == 0:
+                logger.info(
+                    f"Saving periodic checkpoint for iteration {iteration} at epoch {epoch + 1}..."
+                )
+                original_net_state = copy.deepcopy(self.network.state_dict())
+                original_opt_state = copy.deepcopy(self.optimizer.state_dict())
+                self.network.load_state_dict(best_model_state)
+                self.optimizer.load_state_dict(best_optimizer_state)
+                self.save(iteration)
+                self.network.load_state_dict(original_net_state)
+                self.optimizer.load_state_dict(original_opt_state)
+
         if best_model_state:
             self.network.load_state_dict(best_model_state)
+            self.optimizer.load_state_dict(best_optimizer_state)
         self._set_device_and_mode(training=False)
         self.network.cache = {}
         return best_metrics

@@ -133,7 +133,9 @@ def _extract_sequences_from_batch(batch: List[MuZeroExperience]):
         torch.tensor([step.value_target for step in exp.steps], dtype=torch.float32)
         for exp in batch
     ]
-    candidate_actions_seqs = [[step.legal_actions for step in exp.steps] for exp in batch]
+    candidate_actions_seqs = [
+        [step.legal_actions for step in exp.steps] for exp in batch
+    ]
     action_index_seqs = [
         [
             step.legal_actions[step.action_index]
@@ -209,9 +211,7 @@ def _tokenize_and_pad_actions(
     action_index_seqs, candidate_actions_seqs, network, batch_size, device
 ):
     # Tokenize actions
-    max_action_index_hist_len = max(
-        (len(seq) for seq in action_index_seqs), default=0
-    )
+    max_action_index_hist_len = max((len(seq) for seq in action_index_seqs), default=0)
     action_tokens_history = torch.zeros(
         batch_size,
         max_action_index_hist_len,
@@ -975,7 +975,7 @@ class MuZeroAgent(BaseLearningAgent):
                 if _pred_set.shape[0] == 0:
                     _pred_set = torch.zeros(1, pred_actions.shape[-1], device=device)
 
-                loss = loss_fn(_pred_set, target_set)
+                loss = loss_fn(_pred_set, target_set)  # todo, must batch, not loops
                 batch_step_losses.append(loss)
 
             if batch_step_losses:

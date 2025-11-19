@@ -87,7 +87,7 @@ def run_training_loop(
                 )
 
         logger.info("Running learning step...")
-        metrics = current_agent.train_network()
+        metrics = current_agent.train_network(iteration=iteration)
         if metrics:
             reporter.log_iteration_end(iteration=iteration, metrics=metrics)
 
