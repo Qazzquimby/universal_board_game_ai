@@ -12,9 +12,10 @@
 # but the root node has a known set of legal actions
 import math
 import random
-from typing import Optional, List, Tuple, Dict, Union
+from typing import Optional, List, Dict, Union
 from collections import defaultdict, deque
 from dataclasses import dataclass
+
 from geomloss import SamplesLoss
 import torch
 from torch import nn, optim
@@ -28,7 +29,12 @@ from agents.base_learning_agent import (
     _get_batched_state,
     GameHistoryStep,
 )
-from agents.muzero.muzero_net import MuZeroNet, MuZeroNetworkOutput, vae_take_sample
+from agents.muzero.muzero_net import (
+    MuZeroNet,
+    MuZeroNetworkOutput,
+    pad_action_sets,
+    vae_take_sample,
+)
 from algorithms.mcts import (
     SelectionStrategy,
     ExpansionStrategy,
@@ -53,14 +59,16 @@ from core.config import MuZeroConfig, TrainingConfig
 
 
 @dataclass
-class MuZeroTrainingStep:
-    """A single step of experience for MuZero training."""
+class MuZeroUnrollStep:
+    """
+    A single step of experience for MuZero training.
+    A MuZeroExperience contains an unrolled trajectory containing MuZeroUnrollSteps"""
 
     state: StateType
     policy_target: np.ndarray
     value_target: float
     legal_actions: List[ActionType]
-    action: Optional[ActionType] = None
+    action_index: Optional[int] = None
     # Action taken from this step's state. None for the last state in unroll.
 
 
@@ -68,7 +76,7 @@ class MuZeroTrainingStep:
 class MuZeroExperience:
     """Holds a trajectory of experience for MuZero training."""
 
-    steps: List[MuZeroTrainingStep]
+    steps: List[MuZeroUnrollStep]
 
 
 class MuZeroDataset(Dataset):
@@ -78,75 +86,167 @@ class MuZeroDataset(Dataset):
     def __len__(self):
         return len(self.buffer)
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx) -> MuZeroExperience:
         exp = self.buffer[idx]
-        states = [step.state for step in exp.steps]
-        actions = [step.action for step in exp.steps if step.action is not None]
-        policy_targets = [
-            torch.tensor(step.policy_target, dtype=torch.float32) for step in exp.steps
-        ]
-        value_targets = torch.tensor(
-            [step.value_target for step in exp.steps], dtype=torch.float32
-        )
-        legal_actions_per_step = [step.legal_actions for step in exp.steps]
-        return (
-            states,
-            actions,
-            policy_targets,
-            value_targets,
-            legal_actions_per_step,
-        )
+        return exp
+
+    #     states = [step.state for step in exp.steps]
+    #     action_indices = [
+    #         step.action_index for step in exp.steps if step.action_index is not None
+    #     ]
+    #     policy_targets = [
+    #         torch.tensor(step.policy_target, dtype=torch.float32) for step in exp.steps
+    #     ]
+    #     value_targets = torch.tensor(
+    #         [step.value_target for step in exp.steps], dtype=torch.float32
+    #     )
+    #     legal_actions_per_step = [step.legal_actions for step in exp.steps]
+    #     return MuzeroDatasetItem(
+    #         states=states,
+    #         action_indices=action_indices,
+    #         policy_targets=policy_targets,
+    #         value_targets=value_targets,
+    #         legal_actions_per_step=legal_actions_per_step,
+    #     )
 
 
 @dataclass
 class MuZeroCollation:
-    batched_state: Dict[str, DataFrame]
+    initial_state_tokens: torch.Tensor
+    initial_state_padding_mask: torch.Tensor
     policy_targets: torch.Tensor
     value_targets: torch.Tensor
-    action_batch: torch.Tensor  # tensor rather than ActionType because encoded
-    candidate_actions: List[List[List[ActionType]]]
-    target_states_batch: List[Dict[str, DataFrame]]
+    action_tokens_history: torch.Tensor
+    candidate_action_tokens: torch.Tensor
+    candidate_action_tokens_mask: torch.Tensor
+    unrolled_states_tokens: torch.Tensor
+    unrolled_states_padding_mask: torch.Tensor
 
 
-def muzero_collate_fn(batch):
-    """Collates a batch of MuZero experiences."""
-    (
+def _extract_sequences_from_batch(batch: List[MuZeroExperience]):
+    states_seqs = [[step.state for step in exp.steps] for exp in batch]
+    policy_target_seqs = [
+        [torch.tensor(step.policy_target, dtype=torch.float32) for step in exp.steps]
+        for exp in batch
+    ]
+    value_target_seqs = [
+        torch.tensor([step.value_target for step in exp.steps], dtype=torch.float32)
+        for exp in batch
+    ]
+    candidate_actions_seqs = [
+        [step.legal_actions for step in exp.steps] for exp in batch
+    ]
+    action_index_seqs = [
+        [
+            step.legal_actions[step.action_index]
+            for step in exp.steps
+            if step.action_index is not None
+        ]
+        for exp in batch
+    ]
+    return (
         states_seqs,
-        action_seqs,
         policy_target_seqs,
         value_target_seqs,
         candidate_actions_seqs,
-    ) = zip(*batch)
+        action_index_seqs,
+    )
 
+
+def _tokenize_and_pad_states(states_seqs, network, batch_size):
+    # Tokenize states
     initial_states = [seq[0] for seq in states_seqs]
-    batched_state = _get_batched_state(state_dicts=initial_states)
+    batched_initial_state = _get_batched_state(state_dicts=initial_states)
+    initial_state_tokens, initial_state_padding_mask = network.tokenize_state_batch(
+        batched_initial_state, batch_size=batch_size
+    )
 
-    target_states_batch = []
+    unrolled_states_tokens_list = []
+    unrolled_states_padding_mask_list = []
+    max_tokens = 0
     if states_seqs:
-        # Longest sequence of states
         max_len = max(len(s) for s in states_seqs)
-        # We need states for steps 1...N for hidden state consistency loss
         for i in range(1, max_len):
             states_for_step = [
                 seq[i] if i < len(seq) else seq[-1] for seq in states_seqs
             ]
-            target_states_batch.append(_get_batched_state(state_dicts=states_for_step))
+            batched_step_state = _get_batched_state(state_dicts=states_for_step)
+            (
+                step_tokens,
+                step_padding_mask,
+            ) = network.tokenize_state_batch(batched_step_state, batch_size=batch_size)
+            if step_tokens.shape[1] > max_tokens:
+                max_tokens = step_tokens.shape[1]
+            unrolled_states_tokens_list.append(step_tokens)
+            unrolled_states_padding_mask_list.append(step_padding_mask)
 
-    max_action_len = max((len(seq) for seq in action_seqs), default=0)
-    actions_batch = torch.zeros((len(action_seqs), max_action_len), dtype=torch.long)
-    for i, seq in enumerate(action_seqs):
+    if unrolled_states_tokens_list:
+        # Pad tokens and masks to the max token length in any step
+        padded_tokens_list = []
+        padded_masks_list = []
+        for tokens, mask in zip(
+            unrolled_states_tokens_list, unrolled_states_padding_mask_list
+        ):
+            pad_len = max_tokens - tokens.shape[1]
+            padded_tokens = F.pad(tokens, (0, 0, 0, pad_len), "constant", 0)
+            padded_mask = F.pad(mask, (0, pad_len), "constant", True)
+            padded_tokens_list.append(padded_tokens)
+            padded_masks_list.append(padded_mask)
+
+        unrolled_states_tokens = torch.stack(padded_tokens_list, dim=1)
+        unrolled_states_padding_mask = torch.stack(padded_masks_list, dim=1)
+    else:
+        unrolled_states_tokens = torch.empty(batch_size, 0, 0, 0)
+        unrolled_states_padding_mask = torch.empty(batch_size, 0, 0)
+
+    return (
+        initial_state_tokens,
+        initial_state_padding_mask,
+        unrolled_states_tokens,
+        unrolled_states_padding_mask,
+    )
+
+
+def _tokenize_and_pad_actions(
+    action_index_seqs, candidate_actions_seqs, network, batch_size, device
+):
+    # Tokenize actions
+    max_action_index_hist_len = max((len(seq) for seq in action_index_seqs), default=0)
+    action_tokens_history = torch.zeros(
+        batch_size,
+        max_action_index_hist_len,
+        network.embedding_dim,
+        device=device,
+    )
+    for i, seq in enumerate(action_index_seqs):
         if seq:
-            actions_batch[i, : len(seq)] = torch.tensor(seq, dtype=torch.long)
+            tokens = network.tokenize_actions(seq)
+            action_tokens_history[i, : len(seq), :] = tokens
 
-    # policy_target_seqs is a tuple of lists of tensors (policy vectors).
-    # First, pad each policy vector in each sequence to the max policy vector length in the batch.
+    tokenized_candidate_actions_seqs = []
+    for seq in candidate_actions_seqs:
+        step_list = []
+        for step_actions in seq:
+            tokenized = network.tokenize_actions(step_actions) if step_actions else []
+            step_list.append(
+                [row.unsqueeze(0) for row in tokenized] if tokenized.numel() else []
+            )
+        tokenized_candidate_actions_seqs.append(step_list)
+
+    (
+        candidate_action_tokens,
+        candidate_action_tokens_mask,
+    ) = pad_action_sets(tokenized_candidate_actions_seqs, network.embedding_dim, device)
+    return action_tokens_history, candidate_action_tokens, candidate_action_tokens_mask
+
+
+def _pad_targets(policy_target_seqs, value_target_seqs, batch_size):
+    # Pad targets
     all_policies = [p for p_seq in policy_target_seqs for p in p_seq]
     if all_policies:
         padded_policy_vectors = torch.nn.utils.rnn.pad_sequence(
             all_policies, batch_first=True, padding_value=0.0
         )
-
-        # Reconstruct the sequences of padded policy vectors.
         seq_lengths = [len(s) for s in policy_target_seqs]
         padded_policy_seqs = []
         current_idx = 0
@@ -155,43 +255,64 @@ def muzero_collate_fn(batch):
                 padded_policy_vectors[current_idx : current_idx + length]
             )
             current_idx += length
-
-        # Pad the sequences of policy vectors to the max sequence length.
-        policy_targets_batch = torch.nn.utils.rnn.pad_sequence(
+        policy_targets = torch.nn.utils.rnn.pad_sequence(
             padded_policy_seqs, batch_first=True, padding_value=0.0
         )
     else:
-        # Handle case with no policies (e.g., batch of terminal states).
-        policy_targets_batch = torch.empty(len(batch), 0, 0)
+        policy_targets = torch.empty(batch_size, 0, 0)
 
-    value_targets_batch = torch.nn.utils.rnn.pad_sequence(
+    value_targets = torch.nn.utils.rnn.pad_sequence(
         list(value_target_seqs), batch_first=True, padding_value=0.0
     )
+    return policy_targets, value_targets
 
-    batch_size = policy_targets_batch.shape[0]
-    assert (
-        value_targets_batch.shape[0]
-        == actions_batch.shape[0]
-        == len(candidate_actions_seqs)
-        == batch_size
-    )
 
-    future_unroll_length = len(target_states_batch)
-    assert actions_batch.shape[1] == future_unroll_length
-    assert (
-        policy_targets_batch.shape[1]
-        == value_targets_batch.shape[1]
-        == future_unroll_length + 1
-    )
+def get_muzero_tokenizing_collate_fn(network: nn.Module) -> callable:
+    def collate_fn(batch: List[MuZeroExperience]):
+        """Collates a batch of MuZero experiences."""
+        batch_size = len(batch)
+        device = network.get_device()
 
-    return MuZeroCollation(
-        batched_state=batched_state,
-        policy_targets=policy_targets_batch,
-        value_targets=value_targets_batch,
-        action_batch=actions_batch,
-        candidate_actions=list(candidate_actions_seqs),
-        target_states_batch=target_states_batch,
-    )
+        (
+            states_seqs,
+            policy_target_seqs,
+            value_target_seqs,
+            candidate_actions_seqs,
+            action_index_seqs,
+        ) = _extract_sequences_from_batch(batch)
+
+        (
+            initial_state_tokens,
+            initial_state_padding_mask,
+            unrolled_states_tokens,
+            unrolled_states_padding_mask,
+        ) = _tokenize_and_pad_states(states_seqs, network, batch_size)
+
+        (
+            action_tokens_history,
+            candidate_action_tokens,
+            candidate_action_tokens_mask,
+        ) = _tokenize_and_pad_actions(
+            action_index_seqs, candidate_actions_seqs, network, batch_size, device
+        )
+
+        policy_targets, value_targets = _pad_targets(
+            policy_target_seqs, value_target_seqs, batch_size
+        )
+
+        return MuZeroCollation(
+            initial_state_tokens=initial_state_tokens,
+            initial_state_padding_mask=initial_state_padding_mask,
+            policy_targets=policy_targets,
+            value_targets=value_targets,
+            action_tokens_history=action_tokens_history,
+            candidate_action_tokens=candidate_action_tokens,
+            candidate_action_tokens_mask=candidate_action_tokens_mask,
+            unrolled_states_tokens=unrolled_states_tokens,
+            unrolled_states_padding_mask=unrolled_states_padding_mask,
+        )
+
+    return collate_fn
 
 
 def _calculate_child_limit(num_visits: int) -> int:
@@ -222,6 +343,7 @@ class MuZeroNode(MCTSNode):
         hidden_state: torch.Tensor,
         state_with_key: Optional[StateWithKey] = None,
     ):
+        # state_with_key is only present for the root samples
         super().__init__(state_with_key=state_with_key)
         self.hidden_state = hidden_state
         self.player_idx = player_idx
@@ -243,40 +365,34 @@ class MuZeroExpansion(ExpansionStrategy):
         self.network = network
 
     def expand(self, node: "MuZeroNode", env: BaseEnvironment) -> None:
-        if node.is_expanded:
+        if node.is_expanded or env.is_done:
             return
 
-        legal_actions = None
-        # If root node, use real environment actions
-        if node.state_with_key is not None:
+        is_root = node.state_with_key is not None
+
+        if is_root:
+            # use real environment actions
             legal_actions = env.get_legal_actions()
-            if not legal_actions:
-                node.is_expanded = True
-                return
-            node.action_tokens = [
-                self.network._action_to_token(a) for a in legal_actions
-            ]
-        else:  # If internal node, generate actions from hidden state
-            node.action_tokens = self.network.get_actions_for_hidden_state(
+            node.action_tokens = self.network.tokenize_actions(legal_actions)
+        else:
+            # generate actions from hidden state
+            action_tokens_batch = self.network.get_actions_for_hidden_state(
                 node.hidden_state.unsqueeze(0)
-            )[0]
-            if not node.action_tokens:
-                node.is_expanded = True
-                return
+            )
+            node.action_tokens = action_tokens_batch[0]
+
+        assert node.action_tokens.dim() == 2
+
+        if not node.action_tokens.numel():
+            node.is_expanded = True
+            return
 
         policy_dict = self.network.get_policy(
             hidden_state=node.hidden_state, legal_action_tokens=node.action_tokens
         )
 
-        for action_idx, prior in policy_dict.items():
-            # For root node, key edges by ActionType
-            if legal_actions:
-                action = legal_actions[action_idx]
-                action_key = tuple(action) if isinstance(action, list) else action
-            # For internal nodes, key edges by action index
-            else:
-                action_key = action_idx
-            node.edges[action_key] = MuZeroEdge(prior=prior)
+        for action_index, prior in policy_dict.items():
+            node.edges[action_index] = MuZeroEdge(prior=prior)
         node.is_expanded = True
 
 
@@ -299,36 +415,40 @@ class MuZeroSelection(UCB1Selection):
         super().__init__(exploration_constant)
         self.network = network
 
-    def _select_action_from_edges(
-        self, node: MCTSNode, contender_actions: Optional[set]
-    ) -> ActionType:
-        """Selects the best action from a node's edges based on UCB score."""
-        best_score = -float("inf")
-        best_action: Optional[ActionType] = None
+    def select(
+        self,
+        node: MuZeroNode,
+        sim_env: BaseEnvironment,
+        cache: MCTSNodeCache,
+        remaining_sims: int,
+        contender_actions: Optional[set],
+    ) -> SelectionResult:
+        path = SearchPath(initial_node=node)
+        current_node: MuZeroNode = node
+        # todo It's a little silly to be passing around the simenv in muzero since it's not used?
+        while current_node.edges:
+            if not current_node.is_expanded:
+                return SelectionResult(path=path, leaf_env=sim_env)
 
-        edges_to_consider = node.edges
-        # At the root, we might have a restricted set of actions to consider.
-        if contender_actions is not None:
-            edges_to_consider = {
-                action: edge
-                for action, edge in node.edges.items()
-                if action in contender_actions
-            }
+            best_action_index = self._select_action_index_from_edges(
+                current_node=current_node,
+                start_node=node,
+                contender_actions=contender_actions,
+            )
 
-        for action, edge in edges_to_consider.items():
-            score = self._score_edge(edge=edge, parent_node_num_visits=node.num_visits)
-            if score > best_score:
-                best_score = score
-                best_action = action
+            next_node = self._traverse_or_expand_edge(
+                current_node=current_node, action_index=best_action_index
+            )
 
-        assert best_action is not None
-        return best_action
+            current_node = next_node
+            path.add(current_node, best_action_index)
+        return SelectionResult(path=path, leaf_env=sim_env)
 
     def _traverse_or_expand_edge(
         self,
         current_node: "MuZeroNode",
-        action: ActionType,
-    ) -> Tuple[MuZeroNode, bool]:
+        action_index: ActionType,
+    ) -> MuZeroNode:
         """
         Handles progressive widening for a selected edge.
 
@@ -342,83 +462,60 @@ class MuZeroSelection(UCB1Selection):
             - A boolean indicating if the selection phase was terminated (True if a
               new node was created).
         """
-        edge: MuZeroEdge = current_node.edges[action]
+        edge: MuZeroEdge = current_node.edges[action_index]
 
         child_limit = _calculate_child_limit(edge.num_visits)
-
         if len(edge.child_nodes) < child_limit:
-            # Widen the edge by creating a new child node from a new dynamics sample.
-            is_root = current_node.state_with_key is not None
-            if is_root:
-                action_token = self.network._action_to_token(action).unsqueeze(0)
-            else:
-                action_token = current_node.action_tokens[action]
-
-            (
-                next_hidden_state_mu,
-                next_hidden_state_log_var,
-            ) = self.network.get_next_hidden_state_vae(
-                current_node.hidden_state, action_token
+            return self._widen_new_child(
+                current_node=current_node, action_index=action_index
             )
-            next_hidden_state = vae_take_sample(
-                next_hidden_state_mu, next_hidden_state_log_var
-            )
-
-            next_player_idx = 1 - current_node.player_idx
-            next_node = MuZeroNode(
-                player_idx=next_player_idx,
-                hidden_state=next_hidden_state,
-            )
-            edge.child_nodes.append(next_node)
-            return next_node, True  # Terminate selection
         else:
-            # Select from existing children using a UCB-like formula.
-            best_child = None
-            best_score = -float("inf")
-            for child in edge.child_nodes:
-                # Negate Q-value as child's value is from opponent's perspective.
-                q_value = (
-                    -child.total_value / child.num_visits
-                    if child.num_visits > 0
-                    else 0.0
-                )
-                exploration_term = self.exploration_constant * (
-                    (edge.num_visits) ** 0.5 / (1 + child.num_visits)
-                )
-                score = q_value + exploration_term
-                if score > best_score:
-                    best_score = score
-                    best_child = child
+            return self._select_child(edge=edge)
 
-            return best_child, False  # Continue selection
-
-    def select(
+    def _widen_new_child(
         self,
-        node: MuZeroNode,
-        sim_env: BaseEnvironment,
-        cache: MCTSNodeCache,
-        remaining_sims: int,
-        contender_actions: Optional[set],
-    ) -> SelectionResult:
-        path = SearchPath(initial_node=node)
-        current_node: MuZeroNode = node
+        current_node: "MuZeroNode",
+        action_index: ActionType,
+    ) -> MuZeroNode:
+        # Widen the edge by creating a new child node from a new dynamics sample.
+        action_token = current_node.action_tokens[action_index]
+        edge: MuZeroEdge = current_node.edges[action_index]
 
-        while current_node.is_expanded and current_node.edges:
-            # Only apply contender_actions at the root of the search.
-            contenders = contender_actions if current_node is node else None
-            best_action = self._select_action_from_edges(current_node, contenders)
+        (
+            next_hidden_state_mu,
+            next_hidden_state_log_var,
+        ) = self.network.get_next_hidden_state_vae(
+            current_node.hidden_state, action_token.unsqueeze(0)
+        )
+        next_hidden_state = vae_take_sample(
+            next_hidden_state_mu, next_hidden_state_log_var
+        )
 
-            next_node, terminated = self._traverse_or_expand_edge(
-                current_node, best_action
+        next_player_idx = 1 - current_node.player_idx
+        next_node = MuZeroNode(
+            player_idx=next_player_idx,
+            hidden_state=next_hidden_state,
+        )
+        edge.child_nodes.append(next_node)
+        return next_node  # new, unexpanded
+
+    def _select_child(self, edge: MuZeroEdge):
+        # Select from existing children using a UCB-like formula.
+        best_child = None
+        best_score = -float("inf")
+        for child in edge.child_nodes:
+            # Negate Q-value as child's value is from opponent's perspective.
+            q_value = (
+                -child.total_value / child.num_visits if child.num_visits > 0 else 0.0
             )
-
-            path.add(next_node, best_action)
-            if terminated:
-                return SelectionResult(path=path, leaf_env=sim_env)
-
-            current_node = next_node
-
-        return SelectionResult(path=path, leaf_env=sim_env)
+            exploration_term = self.exploration_constant * (
+                (edge.num_visits) ** 0.5 / (1 + child.num_visits)
+            )
+            score = q_value + exploration_term
+            if score > best_score:
+                best_score = score
+                best_child = child
+        return best_child
 
 
 @dataclass
@@ -531,7 +628,7 @@ class MuZeroAgent(BaseLearningAgent):
 
             self._expand_leaf(leaf_node, leaf_env, train)
             value = self.evaluation_strategy.evaluate(leaf_node, leaf_env)
-            # todo check path that root is included
+            # The path goes back to the root sample
 
             self.backpropagation_strategy.backpropagate(
                 selection_result.path, {0: value, 1: -value}
@@ -565,43 +662,41 @@ class MuZeroAgent(BaseLearningAgent):
         value_targets: List[float],
     ) -> List[MuZeroExperience]:
         """Creates MuZeroExperience objects for the replay buffer."""
-        muzero_experiences = []
         num_unroll_steps = self.config.num_unroll_steps
 
-        for turn_index in range(len(game_history)):
-            steps = []
-            for unroll_index in range(num_unroll_steps + 1):
-                step_idx = turn_index + unroll_index
-                if step_idx >= len(game_history):
+        experiences = []
+        for turn_index, step in enumerate(game_history):
+            unroll_steps_for_turn = []
+            for unroll_delta in range(num_unroll_steps + 1):
+                unroll_step_index = turn_index + unroll_delta
+                if unroll_step_index >= len(game_history):
                     break
+                unroll_step = game_history[unroll_step_index]
+                # want to cache apply transforms? Else everything is being done num_unroll_steps times
+                transformed_state = self.network.apply_transforms(unroll_step.state)
+                value_target = value_targets[unroll_step_index]
 
-                game_step = game_history[step_idx]
-                transformed_state = self.network._apply_transforms(game_step.state)
-                value_target = value_targets[step_idx]
-
-                is_last_step = (unroll_index == num_unroll_steps) or (
-                    step_idx + 1 >= len(game_history)
+                is_last_step = (unroll_delta == num_unroll_steps) or (
+                    unroll_step_index + 1 >= len(game_history)
                 )
                 if is_last_step:
-                    action_for_step = None
+                    action_index_for_unroll_step = None
                 else:
-                    action_for_step = game_step.action_index
-                # todo check if theres a problem with using action index
-                assert False
+                    action_index_for_unroll_step = unroll_step.action_index
 
-                steps.append(
-                    MuZeroTrainingStep(
+                unroll_steps_for_turn.append(
+                    MuZeroUnrollStep(
                         state=transformed_state,
-                        policy_target=game_step.policy,
+                        policy_target=step.policy,
                         value_target=value_target,
-                        legal_actions=game_step.legal_actions,
-                        action=action_for_step,
+                        legal_actions=step.legal_actions,
+                        action_index=action_index_for_unroll_step,
                     )
                 )
 
-            if steps:
-                muzero_experiences.append(MuZeroExperience(steps=steps))
-        return muzero_experiences
+            if unroll_steps_for_turn:
+                experiences.append(MuZeroExperience(steps=unroll_steps_for_turn))
+        return experiences
 
     def _get_dataset(self, buffer: deque) -> Dataset:
         """Creates a dataset from a replay buffer for MuZero."""
@@ -609,20 +704,15 @@ class MuZeroAgent(BaseLearningAgent):
 
     def _get_collate_fn(self) -> callable:
         """Returns the collate function for the DataLoader for MuZero."""
-        return muzero_collate_fn
+        return get_muzero_tokenizing_collate_fn(network=self.network)
 
-    def _process_game_log_data(
-        self, game_data: List[Dict[str, DataFrame]]
-    ) -> List["MuZeroExperience"]:
+    def _process_game_log_data(self, game_data: List[Dict]) -> List["MuZeroExperience"]:
         """Processes data from a single game log file into a list of experiences."""
-        if not game_data:
-            return []
-
         game_history: List[GameHistoryStep] = []
         value_targets: List[float] = []
         for step_data in game_data:
             state_json = step_data.get("state")
-            action = step_data.get("action")
+            action_index = step_data.get("action_index")
             policy_target_list = step_data.get("policy_target")
             value_target = step_data.get("value_target")
 
@@ -648,9 +738,11 @@ class MuZeroAgent(BaseLearningAgent):
                     legal_actions = [
                         row[action_id_idx] for row in legal_actions_df._data
                     ]
+                assert 0 <= action_index < len(legal_actions)
+
                 game_history_step = GameHistoryStep(
                     state=state,
-                    action_index=action,
+                    action_index=action_index,
                     policy=policy_target,
                     legal_actions=legal_actions,
                 )
@@ -658,9 +750,45 @@ class MuZeroAgent(BaseLearningAgent):
                 game_history.append(game_history_step)
                 value_targets.append(value_target)
 
-        if game_history:
-            return self._create_buffer_experiences(game_history, value_targets)
-        return []
+        experiences = self._create_buffer_experiences(game_history, value_targets)
+        return experiences
+
+    def _run_batch(
+        self, batch_data: MuZeroCollation, is_training: bool
+    ) -> MuZeroLossStatistics:
+        policy_targets_batch = batch_data.policy_targets.to(self.device)
+        value_targets_batch = batch_data.value_targets.to(self.device)
+
+        if is_training:
+            self.optimizer.zero_grad()
+
+        network_output: MuZeroNetworkOutput = self.network(
+            initial_state_tokens=batch_data.initial_state_tokens.to(self.device),
+            initial_state_padding_mask=batch_data.initial_state_padding_mask.to(
+                self.device
+            ),
+            action_tokens_history=batch_data.action_tokens_history.to(self.device),
+            candidate_action_tokens=batch_data.candidate_action_tokens.to(self.device),
+            candidate_action_tokens_mask=batch_data.candidate_action_tokens_mask.to(
+                self.device
+            ),
+            unrolled_states_tokens=batch_data.unrolled_states_tokens.to(self.device),
+            unrolled_states_padding_mask=batch_data.unrolled_states_padding_mask.to(
+                self.device
+            ),
+        )
+        loss_statistics: MuZeroLossStatistics = self._calculate_loss(
+            network_output=network_output,
+            policy_targets=policy_targets_batch,
+            value_targets=value_targets_batch,
+        )
+
+        if is_training:
+            loss_statistics.batch_loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.network.parameters(), max_norm=1.0)
+            self.optimizer.step()
+
+        return loss_statistics
 
     def _run_epoch(
         self,
@@ -686,33 +814,7 @@ class MuZeroAgent(BaseLearningAgent):
         context = torch.enable_grad() if is_training else torch.no_grad()
         with context:
             for batch_data in iterator:
-                batch_data: MuZeroCollation
-                policy_targets_batch = batch_data.policy_targets.to(self.device)
-                value_targets_batch = batch_data.value_targets.to(self.device)
-                action_batch = batch_data.action_batch.to(self.device)
-
-                if is_training:
-                    self.optimizer.zero_grad()
-
-                network_output: MuZeroNetworkOutput = self.network(
-                    initial_state=batch_data.batched_state,
-                    action_history=action_batch,
-                    legal_actions=batch_data.candidate_actions,
-                    unrolled_state=batch_data.target_states_batch,
-                )
-                loss_statistics: MuZeroLossStatistics = self._calculate_loss(
-                    network_output=network_output,
-                    policy_targets=policy_targets_batch,
-                    value_targets=value_targets_batch,
-                    candidate_actions=batch_data.candidate_actions,
-                )
-
-                if is_training:
-                    loss_statistics.batch_loss.backward()
-                    torch.nn.utils.clip_grad_norm_(
-                        self.network.parameters(), max_norm=1.0
-                    )
-                    self.optimizer.step()
+                loss_statistics = self._run_batch(batch_data, is_training)
 
                 total_loss += loss_statistics.batch_loss.item()
                 total_value_loss += loss_statistics.total_value_loss.item()
@@ -758,87 +860,31 @@ class MuZeroAgent(BaseLearningAgent):
             action_pred_loss_by_step=action_pred_loss_list,
         )
 
-    def _calculate_action_prediction_loss(
-        self,
-        pred_actions: torch.Tensor,
-        pred_actions_mask: torch.Tensor,
-        target_actions: torch.Tensor,
-        target_actions_mask: torch.Tensor,
-    ) -> torch.Tensor:
-        loss_fn = SamplesLoss(loss="sinkhorn", p=2, blur=0.05)
-        step_losses = []
-        device = self.network.get_device()
-
-        if pred_actions.shape[0] == 0:
-            return torch.tensor(0.0, device=device)
-
-        batch_size, num_unroll_steps, _, _ = pred_actions.shape
-
-        for step_index in range(num_unroll_steps):
-            batch_step_losses = []
-            for batch_index in range(batch_size):
-                pred_set = pred_actions[batch_index, step_index][
-                    pred_actions_mask[batch_index, step_index]
-                ]
-                target_set = target_actions[batch_index, step_index][
-                    target_actions_mask[batch_index, step_index]
-                ]
-
-                if target_set.shape[0] == 0:
-                    # no actions exist, means state is terminal, and we wouldn't ask it to generate actions anyway
-                    continue
-
-                # geomloss' SamplesLoss crashes if one of the sets is empty.
-                _pred_set = pred_set
-                if _pred_set.shape[0] == 0:
-                    _pred_set = torch.zeros(1, pred_actions.shape[-1], device=device)
-
-                loss = loss_fn(_pred_set, target_set)
-                batch_step_losses.append(loss)
-
-            if batch_step_losses:
-                step_losses.append(torch.stack(batch_step_losses).mean())
-
-        if not step_losses:
-            return torch.tensor(0.0, device=device)
-
-        return torch.stack(step_losses)
-
     def _calculate_loss(
         self,
         network_output: MuZeroNetworkOutput,
         policy_targets: torch.Tensor,
         value_targets: torch.Tensor,
-        candidate_actions: List[List[List[ActionType]]],
-    ):
+    ) -> MuZeroLossStatistics:
         """Calculates the MuZero loss over an unrolled trajectory."""
 
-        policy_losses = self._calculate_policy_loss(
+        (policy_losses_per_step, total_policy_loss,) = self._compute_policy_loss(
             pred_policies=network_output.pred_policies, policy_targets=policy_targets
         )
-        scaled_policy_losses = scale_loss_by_step(policy_losses)
-        total_policy_loss = torch.sum(scaled_policy_losses)
 
-        value_losses = self._calculate_value_loss(
+        value_losses_per_step, total_value_loss = self._compute_value_loss(
             pred_values=network_output.pred_values, value_targets=value_targets
         )
-        scaled_value_loss = scale_loss_by_step(value_losses)
-        total_value_loss = torch.sum(scaled_value_loss)
 
-        hidden_state_losses = self._calculate_hidden_state_consistency_loss(
-            network_output=network_output
-        )
-        scaled_hidden_state_loss = scale_loss_by_step(hidden_state_losses)
-        total_hidden_state_loss = torch.sum(scaled_hidden_state_loss)
+        (
+            hidden_state_losses_per_step,
+            total_hidden_state_loss,
+        ) = self._compute_hidden_state_consistency_loss(network_output=network_output)
 
-        action_pred_losses = self._calculate_action_prediction_loss(
-            pred_actions=network_output.pred_actions,
-            pred_actions_mask=network_output.pred_actions_mask,
-            target_actions=network_output.candidate_action_tokens,
-            target_actions_mask=network_output.candidate_action_tokens_mask,
-        )
-        scaled_action_pred_loss = scale_loss_by_step(action_pred_losses)
-        total_action_pred_loss = torch.sum(scaled_action_pred_loss)
+        (
+            action_pred_losses_per_step,
+            total_action_pred_loss,
+        ) = self._compute_action_prediction_loss(network_output=network_output)
 
         total_loss = (
             total_value_loss
@@ -849,21 +895,151 @@ class MuZeroAgent(BaseLearningAgent):
 
         return MuZeroLossStatistics(
             batch_loss=total_loss,
-            #
             total_value_loss=total_value_loss,
-            value_losses_per_step=value_losses,
-            #
+            value_losses_per_step=value_losses_per_step,
             total_policy_loss=total_policy_loss,
-            policy_losses_per_step=policy_losses,
-            #
+            policy_losses_per_step=policy_losses_per_step,
             total_hidden_state_loss=total_hidden_state_loss,
-            hidden_state_losses_per_step=hidden_state_losses,
-            #
+            hidden_state_losses_per_step=hidden_state_losses_per_step,
             total_action_pred_loss=total_action_pred_loss,
-            action_pred_losses_per_step=action_pred_losses,
+            action_pred_losses_per_step=action_pred_losses_per_step,
         )
 
-    def _calculate_value_loss(self, pred_values, value_targets) -> torch.Tensor:
+    def _compute_policy_loss(self, pred_policies, policy_targets):
+        policy_losses = self._calculate_policy_loss_per_step(
+            pred_policies=pred_policies, policy_targets=policy_targets
+        )
+        scaled_policy_losses = scale_loss_by_step(policy_losses)
+        total_policy_loss = torch.sum(scaled_policy_losses)
+        return policy_losses, total_policy_loss
+
+    def _compute_value_loss(self, pred_values, value_targets):
+        value_losses = self._calculate_value_loss_per_step(
+            pred_values=pred_values, value_targets=value_targets
+        )
+        scaled_value_losses = scale_loss_by_step(value_losses)
+        total_value_loss = torch.sum(scaled_value_losses)
+        return value_losses, total_value_loss
+
+    def _compute_hidden_state_consistency_loss(self, network_output):
+        hidden_state_losses = self._calculate_hidden_state_consistency_loss_per_step(
+            network_output=network_output
+        )
+        scaled_hidden_state_losses = scale_loss_by_step(hidden_state_losses)
+        total_hidden_state_loss = torch.sum(scaled_hidden_state_losses)
+        return hidden_state_losses, total_hidden_state_loss
+
+    def _compute_action_prediction_loss(self, network_output):
+        action_pred_losses = self._calculate_action_prediction_loss_per_step(
+            pred_actions=network_output.pred_actions,
+            pred_actions_mask=network_output.pred_actions_mask,
+            target_actions=network_output.candidate_action_tokens,
+            target_actions_mask=network_output.candidate_action_tokens_mask,
+        )
+        scaled_action_pred_losses = scale_loss_by_step(action_pred_losses)
+        total_action_pred_loss = torch.sum(scaled_action_pred_losses)
+        return action_pred_losses, total_action_pred_loss
+
+    def _calculate_action_prediction_loss_per_step(
+        self,
+        pred_actions: torch.Tensor,
+        pred_actions_mask: torch.Tensor,
+        target_actions: torch.Tensor,
+        target_actions_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        loss_fn = SamplesLoss(loss="sinkhorn", p=2, blur=0.05)
+        device = self.network.get_device()
+
+        batch_size, num_unroll_steps, num_pred, embed_dim = pred_actions.shape
+        if num_unroll_steps == 0:
+            return torch.tensor([], device=device)
+
+        _, _, num_target, _ = target_actions.shape
+
+        # Flatten batch and unroll steps dimensions
+        flat_batch_size = batch_size * num_unroll_steps
+        if flat_batch_size == 0:
+            return torch.zeros(num_unroll_steps, device=device)
+
+        pred_actions_flat = pred_actions.reshape(flat_batch_size, num_pred, embed_dim)
+        pred_mask_flat = pred_actions_mask.reshape(flat_batch_size, num_pred)
+
+        target_actions_flat = target_actions.reshape(
+            flat_batch_size, num_target, embed_dim
+        )
+        target_mask_flat = target_actions_mask.reshape(flat_batch_size, num_target)
+
+        pred_weights_flat = (~pred_mask_flat).float()
+        target_weights_flat = (~target_mask_flat).float()
+
+        # Identify samples that have target actions
+        has_targets = target_weights_flat.sum(dim=1) > 0
+        indices_with_targets = torch.where(has_targets)[0]
+
+        if indices_with_targets.numel() == 0:
+            return torch.zeros(num_unroll_steps, device=device)
+
+        # Filter to only include samples with targets
+        pred_actions_f = pred_actions_flat[indices_with_targets]
+        pred_weights_f = pred_weights_flat[indices_with_targets]
+        target_actions_f = target_actions_flat[indices_with_targets]
+        target_weights_f = target_weights_flat[indices_with_targets]
+
+        has_preds_f = pred_weights_f.sum(dim=1) > 0
+
+        indices_with_preds = torch.where(has_preds_f)[0]
+        indices_without_preds = torch.where(~has_preds_f)[0]
+
+        all_losses = torch.zeros(flat_batch_size, device=device)
+
+        # Case 1: has both predictions and targets
+        if indices_with_preds.numel() > 0:
+            pred_actions_1 = pred_actions_f[indices_with_preds]
+            pred_weights_1 = pred_weights_f[indices_with_preds]
+            target_actions_1 = target_actions_f[indices_with_preds]
+            target_weights_1 = target_weights_f[indices_with_preds]
+
+            losses1 = loss_fn(
+                pred_weights_1, pred_actions_1, target_weights_1, target_actions_1
+            )
+            all_losses.scatter_(0, indices_with_targets[indices_with_preds], losses1)
+
+        # Case 2: has targets but no predictions
+        if indices_without_preds.numel() > 0:
+            target_actions_2 = target_actions_f[indices_without_preds]
+            target_weights_2 = target_weights_f[indices_without_preds]
+
+            dummy_pred = torch.zeros(
+                indices_without_preds.numel(), 1, embed_dim, device=device
+            )
+            dummy_weights = torch.ones(
+                indices_without_preds.numel(), 1, device=device
+            )
+
+            losses2 = loss_fn(
+                dummy_weights, dummy_pred, target_weights_2, target_actions_2
+            )
+            all_losses.scatter_(
+                0, indices_with_targets[indices_without_preds], losses2
+            )
+
+        all_losses_by_step = all_losses.reshape(batch_size, num_unroll_steps)
+        has_targets_by_step = has_targets.reshape(batch_size, num_unroll_steps)
+
+        step_losses = []
+        for i in range(num_unroll_steps):
+            mask = has_targets_by_step[:, i]
+            if mask.any():
+                step_loss = all_losses_by_step[:, i][mask].mean()
+                step_losses.append(step_loss)
+            else:
+                step_losses.append(torch.tensor(0.0, device=device))
+
+        return torch.stack(step_losses)
+
+    def _calculate_value_loss_per_step(
+        self, pred_values, value_targets
+    ) -> torch.Tensor:
         num_steps = pred_values.shape[1]
         assert value_targets.shape[1] == num_steps
 
@@ -879,7 +1055,9 @@ class MuZeroAgent(BaseLearningAgent):
 
         return value_losses_tensor
 
-    def _calculate_policy_loss(self, pred_policies, policy_targets) -> torch.Tensor:
+    def _calculate_policy_loss_per_step(
+        self, pred_policies, policy_targets
+    ) -> torch.Tensor:
         num_steps = pred_policies.shape[1]
         assert policy_targets.shape[1] == num_steps
 
@@ -896,7 +1074,7 @@ class MuZeroAgent(BaseLearningAgent):
         policy_losses_tensor = torch.stack(policy_losses_per_step)
         return policy_losses_tensor
 
-    def _calculate_hidden_state_consistency_loss(self, network_output):
+    def _calculate_hidden_state_consistency_loss_per_step(self, network_output):
         if not network_output.pred_dynamics_mu.numel():
             return torch.tensor(0.0, network_output.pred_policies.device)
 

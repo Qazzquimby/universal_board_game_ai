@@ -62,6 +62,9 @@ class BaseTokenizingNet(nn.Module):
         Converts a game state (dict of DataFrames) into a tensor of token embeddings.
         Assumes that any necessary transformations have already been applied to the state.
         """
+        assert (
+            "batch_idx" not in state["game"]
+        ), "Trying to use tokenize_state on batched state. Use tokenize_state_batch instead"
         device = self.get_device()
         # Create a batched version of the state with batch_idx = 0
         batched_state = {}
@@ -189,12 +192,10 @@ class BaseTokenizingNet(nn.Module):
             return action_embeddings
 
         # Handle complex, multi-type actions (e.g. Gobblet)
-        action_embeddings = torch.zeros(
-            batch_size, self.embedding_dim, device=device
-        )
+        action_embeddings = torch.zeros(batch_size, self.embedding_dim, device=device)
         action_types_spec = action_spec["types"]
 
-        for i, action in enumerate(actions):
+        for i, action in enumerate(actions):  # todo no loop
             action_type_name: str
             action_dict: dict
 

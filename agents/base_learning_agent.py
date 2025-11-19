@@ -30,6 +30,8 @@ from core.config import (
     INFERENCE_DEVICE,
 )
 
+NUM_EPOCHS_PER_CHECKPOINT = 5
+
 
 @dataclass
 class BaseCollation:
@@ -77,6 +79,7 @@ def get_tokenizing_collate_fn(network: nn.Module) -> callable:
     def collate_fn(
         batch: Tuple[Dict, torch.Tensor, torch.Tensor, List[ActionType]]
     ) -> BaseCollation:
+        # todo check action vs action_index
         state_dicts, policy_targets, value_targets, legal_actions_batch = zip(*batch)
         batch_size = len(state_dicts)
 
@@ -474,7 +477,9 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
                         state[k] = v.to(self.device)
 
     def train_network(
-        self, epoch_callback: Optional[Callable[[int, float], None]] = None
+        self,
+        iteration: int,
+        epoch_callback: Optional[Callable[[int, float], None]] = None,
     ) -> Optional[BestEpochMetrics]:
         """
         Trains the network with early stopping.
@@ -490,7 +495,9 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
         max_epochs = 100
         patience = 10
         best_val_loss, epochs_no_improve = float("inf"), 0
-        best_model_state, best_metrics = None, None
+        best_model_state = None
+        best_optimizer_state = None
+        best_metrics = None
 
         self._set_device_and_mode(training=True)
         for epoch in range(max_epochs):
@@ -517,6 +524,7 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
                 best_val_loss = val_metrics.loss
                 epochs_no_improve = 0
                 best_model_state = copy.deepcopy(self.network.state_dict())
+                best_optimizer_state = copy.deepcopy(self.optimizer.state_dict())
                 best_metrics = BestEpochMetrics(train=train_metrics, val=val_metrics)
             else:
                 epochs_no_improve += 1
@@ -524,11 +532,34 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
                     logger.info(f"Early stopping after {epoch + 1} epochs.")
                     break
 
+            if best_model_state and (epoch + 1) % NUM_EPOCHS_PER_CHECKPOINT == 0:
+                self._save_checkpoint(
+                    iteration=iteration,
+                    epoch=epoch,
+                    model_state=best_model_state,
+                    optimizer_state=best_optimizer_state,
+                )
+
         if best_model_state:
             self.network.load_state_dict(best_model_state)
+            self.optimizer.load_state_dict(best_optimizer_state)
         self._set_device_and_mode(training=False)
         self.network.cache = {}
         return best_metrics
+
+    def _save_checkpoint(
+        self, iteration: int, epoch: int, model_state, optimizer_state
+    ):
+        logger.info(
+            f"Saving periodic checkpoint for iteration {iteration} at epoch {epoch + 1}..."
+        )
+        original_net_state = copy.deepcopy(self.network.state_dict())
+        original_opt_state = copy.deepcopy(self.optimizer.state_dict())
+        self.network.load_state_dict(model_state)
+        self.optimizer.load_state_dict(optimizer_state)
+        self.save(iteration)
+        self.network.load_state_dict(original_net_state)
+        self.optimizer.load_state_dict(original_opt_state)
 
     def _get_model_dir(self) -> Path:
         env_name = type(self.env).__name__.lower()
@@ -603,7 +634,6 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
         """Creates and returns training and validation data loaders."""
         if not self.network or not self.optimizer:
             raise ValueError("Network or optimizer not initialized.")
-        # Temporarily disable buffer size checks for overfitting test.
         if not self.train_replay_buffer:
             raise ValueError("Training buffer is empty.")
 
