@@ -162,6 +162,7 @@ def get_muzero_tokenizing_collate_fn(network: nn.Module) -> callable:
 
         unrolled_states_tokens_list = []
         unrolled_states_padding_mask_list = []
+        max_tokens = 0
         if states_seqs:
             max_len = max(len(s) for s in states_seqs)
             for i in range(1, max_len):
@@ -172,19 +173,29 @@ def get_muzero_tokenizing_collate_fn(network: nn.Module) -> callable:
                 (step_tokens, step_padding_mask,) = network.tokenize_state_batch(
                     batched_step_state, batch_size=batch_size
                 )
+                if step_tokens.shape[1] > max_tokens:
+                    max_tokens = step_tokens.shape[1]
                 unrolled_states_tokens_list.append(step_tokens)
                 unrolled_states_padding_mask_list.append(step_padding_mask)
 
-        unrolled_states_tokens = (
-            torch.stack(unrolled_states_tokens_list, dim=1)
-            if unrolled_states_tokens_list
-            else torch.empty(batch_size, 0, 0, 0)
-        )
-        unrolled_states_padding_mask = (
-            torch.stack(unrolled_states_padding_mask_list, dim=1)
-            if unrolled_states_padding_mask_list
-            else torch.empty(batch_size, 0, 0)
-        )
+        if unrolled_states_tokens_list:
+            # Pad tokens and masks to the max token length in any step
+            padded_tokens_list = []
+            padded_masks_list = []
+            for tokens, mask in zip(
+                unrolled_states_tokens_list, unrolled_states_padding_mask_list
+            ):
+                pad_len = max_tokens - tokens.shape[1]
+                padded_tokens = F.pad(tokens, (0, 0, 0, pad_len), "constant", 0)
+                padded_mask = F.pad(mask, (0, pad_len), "constant", True)
+                padded_tokens_list.append(padded_tokens)
+                padded_masks_list.append(padded_mask)
+
+            unrolled_states_tokens = torch.stack(padded_tokens_list, dim=1)
+            unrolled_states_padding_mask = torch.stack(padded_masks_list, dim=1)
+        else:
+            unrolled_states_tokens = torch.empty(batch_size, 0, 0, 0)
+            unrolled_states_padding_mask = torch.empty(batch_size, 0, 0)
 
         # Tokenize actions
         max_action_index_hist_len = max(
