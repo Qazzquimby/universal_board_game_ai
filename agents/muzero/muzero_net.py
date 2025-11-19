@@ -10,6 +10,18 @@ from models.networks import BaseTokenizingNet
 
 
 @dataclass
+class UnrollStepOutput:
+    pred_policy: torch.Tensor
+    pred_value: torch.Tensor
+    pred_actions: List[torch.Tensor]
+    next_hidden_state: Optional[torch.Tensor]
+    target_representation_mu: Optional[torch.Tensor]
+    target_representation_log_var: Optional[torch.Tensor]
+    pred_dynamics_mu: Optional[torch.Tensor]
+    pred_dynamics_log_var: Optional[torch.Tensor]
+
+
+@dataclass
 class MuZeroNetworkOutput:
     pred_policies: torch.Tensor
     pred_values: torch.Tensor
@@ -346,83 +358,88 @@ class MuZeroNet(BaseTokenizingNet):
         value = pred_value.squeeze().cpu().item()
         return value
 
-    def forward(
+    def _unroll_step(
         self,
-        initial_state_tokens: torch.Tensor,
-        initial_state_padding_mask: torch.Tensor,
-        action_tokens_history: torch.Tensor,
-        candidate_action_tokens: torch.Tensor,
-        candidate_action_tokens_mask: torch.Tensor,
-        unrolled_states_tokens: torch.Tensor,
-        unrolled_states_padding_mask: torch.Tensor,
-    ) -> MuZeroNetworkOutput:
-        # All data variables are batches
-        batch_size = action_tokens_history.shape[0]
-        num_unroll_steps = action_tokens_history.shape[1]
+        i,
+        num_unroll_steps,
+        current_hidden_state,
+        batch_size,
+        candidate_action_tokens,
+        candidate_action_tokens_mask,
+        action_tokens_history,
+        unrolled_states_tokens,
+        unrolled_states_padding_mask,
+    ) -> "UnrollStepOutput":
+        # POLICY
+        candidate_tokens_for_step = []
+        for batch_idx in range(batch_size):
+            mask = candidate_action_tokens_mask[batch_idx, i]
+            tokens = candidate_action_tokens[batch_idx, i][mask]
+            candidate_tokens_for_step.append(tokens)
 
-        unrolled_pred_policies = []
-        unrolled_pred_values = []
-        unrolled_pred_actions = []
-        unrolled_pred_dynamics_mu = []
-        unrolled_pred_dynamics_log_var = []
-        unrolled_target_representation_mu = []
-        unrolled_target_representation_log_var = []
-
-        hidden_state_mu, hidden_state_log_var = self.get_hidden_state_vae(
-            initial_state_tokens, initial_state_padding_mask
+        pred_policy = self.get_policy_batched(
+            hidden_state=current_hidden_state,
+            candidate_action_tokens=candidate_tokens_for_step,
         )
-        current_hidden_state = vae_take_sample(hidden_state_mu, hidden_state_log_var)
 
-        for i in range(num_unroll_steps + 1):
-            # POLICY
-            candidate_tokens_for_step = []
-            for batch_idx in range(batch_size):
-                mask = candidate_action_tokens_mask[batch_idx, i]
-                tokens = candidate_action_tokens[batch_idx, i][mask]
-                candidate_tokens_for_step.append(tokens)
+        # VALUE
+        pred_value = self.get_value_batched(hidden_state_batch=current_hidden_state)
 
-            pred_policy = self.get_policy_batched(
-                hidden_state=current_hidden_state,
-                candidate_action_tokens=candidate_tokens_for_step,
+        # ACTIONS
+        pred_actions = self.get_actions_for_hidden_state(
+            hidden_state=current_hidden_state
+        )
+
+        next_hidden_state = None
+        target_representation_mu = None
+        target_representation_log_var = None
+        pred_dynamics_mu = None
+        pred_dynamics_log_var = None
+
+        if i < num_unroll_steps:
+            # TARGET REPRESENTATION
+            (
+                target_representation_mu,
+                target_representation_log_var,
+            ) = self.get_hidden_state_vae(
+                unrolled_states_tokens[:, i], unrolled_states_padding_mask[:, i]
             )
-            unrolled_pred_policies.append(pred_policy)
 
-            # VALUE
-            pred_value = self.get_value_batched(hidden_state_batch=current_hidden_state)
-            unrolled_pred_values.append(pred_value)
+            # DYNAMICS
+            action_tokens = action_tokens_history[:, i]
+            (
+                pred_dynamics_mu,
+                pred_dynamics_log_var,
+            ) = self.get_next_hidden_state_vae(current_hidden_state, action_tokens)
 
-            # ACTIONS
-            pred_actions = self.get_actions_for_hidden_state(
-                hidden_state=current_hidden_state
+            next_hidden_state = vae_take_sample(
+                pred_dynamics_mu, pred_dynamics_log_var
             )
-            unrolled_pred_actions.append(pred_actions)
 
-            if i < num_unroll_steps:
-                # TARGET REPRESENTATION
-                (
-                    target_representation_mu,
-                    target_representation_log_var,
-                ) = self.get_hidden_state_vae(
-                    unrolled_states_tokens[:, i], unrolled_states_padding_mask[:, i]
-                )
-                unrolled_target_representation_mu.append(target_representation_mu)
-                unrolled_target_representation_log_var.append(
-                    target_representation_log_var
-                )
+        return UnrollStepOutput(
+            pred_policy=pred_policy,
+            pred_value=pred_value,
+            pred_actions=pred_actions,
+            next_hidden_state=next_hidden_state,
+            target_representation_mu=target_representation_mu,
+            target_representation_log_var=target_representation_log_var,
+            pred_dynamics_mu=pred_dynamics_mu,
+            pred_dynamics_log_var=pred_dynamics_log_var,
+        )
 
-                # DYNAMICS
-                action_tokens = action_tokens_history[:, i]
-                (
-                    pred_dynamics_mu,
-                    pred_dynamics_log_var,
-                ) = self.get_next_hidden_state_vae(current_hidden_state, action_tokens)
-                unrolled_pred_dynamics_mu.append(pred_dynamics_mu)
-                unrolled_pred_dynamics_log_var.append(pred_dynamics_log_var)
-
-                current_hidden_state = vae_take_sample(
-                    pred_dynamics_mu, pred_dynamics_log_var
-                )
-
+    def _collate_unrolled_outputs(
+        self,
+        unrolled_pred_policies,
+        unrolled_pred_values,
+        unrolled_pred_actions,
+        unrolled_target_representation_mu,
+        unrolled_target_representation_log_var,
+        unrolled_pred_dynamics_mu,
+        unrolled_pred_dynamics_log_var,
+        num_unroll_steps,
+        batch_size,
+        current_hidden_state_for_shape,
+    ):
         # Collate and return all predictions.
         max_actions = max(
             (p.shape[1] for p in unrolled_pred_policies if p.numel() > 0), default=0
@@ -453,7 +470,10 @@ class MuZeroNet(BaseTokenizingNet):
             pred_dynamics_log_var = torch.stack(unrolled_pred_dynamics_log_var, dim=1)
         else:
             empty_hidden_state_part = torch.empty(
-                batch_size, 0, current_hidden_state.shape[-1], device=self.get_device()
+                batch_size,
+                0,
+                current_hidden_state_for_shape.shape[-1],
+                device=self.get_device(),
             )
             target_representation_mu = empty_hidden_state_part
             target_representation_log_var = empty_hidden_state_part
@@ -473,6 +493,93 @@ class MuZeroNet(BaseTokenizingNet):
             pred_actions_transposed_lists.append(steps)
         pred_actions, pred_actions_mask = pad_action_sets(
             pred_actions_transposed_lists, self.embedding_dim, self.get_device()
+        )
+        return (
+            pred_policies,
+            pred_values,
+            pred_dynamics_mu,
+            pred_dynamics_log_var,
+            target_representation_mu,
+            target_representation_log_var,
+            pred_actions,
+            pred_actions_mask,
+        )
+
+    def forward(
+        self,
+        initial_state_tokens: torch.Tensor,
+        initial_state_padding_mask: torch.Tensor,
+        action_tokens_history: torch.Tensor,
+        candidate_action_tokens: torch.Tensor,
+        candidate_action_tokens_mask: torch.Tensor,
+        unrolled_states_tokens: torch.Tensor,
+        unrolled_states_padding_mask: torch.Tensor,
+    ) -> MuZeroNetworkOutput:
+        # All data variables are batches
+        batch_size = action_tokens_history.shape[0]
+        num_unroll_steps = action_tokens_history.shape[1]
+
+        unrolled_pred_policies = []
+        unrolled_pred_values = []
+        unrolled_pred_actions = []
+        unrolled_pred_dynamics_mu = []
+        unrolled_pred_dynamics_log_var = []
+        unrolled_target_representation_mu = []
+        unrolled_target_representation_log_var = []
+
+        hidden_state_mu, hidden_state_log_var = self.get_hidden_state_vae(
+            initial_state_tokens, initial_state_padding_mask
+        )
+        current_hidden_state = vae_take_sample(hidden_state_mu, hidden_state_log_var)
+
+        for i in range(num_unroll_steps + 1):
+            step_output = self._unroll_step(
+                i,
+                num_unroll_steps,
+                current_hidden_state,
+                batch_size,
+                candidate_action_tokens,
+                candidate_action_tokens_mask,
+                action_tokens_history,
+                unrolled_states_tokens,
+                unrolled_states_padding_mask,
+            )
+            unrolled_pred_policies.append(step_output.pred_policy)
+            unrolled_pred_values.append(step_output.pred_value)
+            unrolled_pred_actions.append(step_output.pred_actions)
+
+            if i < num_unroll_steps:
+                unrolled_target_representation_mu.append(
+                    step_output.target_representation_mu
+                )
+                unrolled_target_representation_log_var.append(
+                    step_output.target_representation_log_var
+                )
+                unrolled_pred_dynamics_mu.append(step_output.pred_dynamics_mu)
+                unrolled_pred_dynamics_log_var.append(step_output.pred_dynamics_log_var)
+
+                current_hidden_state = step_output.next_hidden_state
+
+        (
+            pred_policies,
+            pred_values,
+            pred_dynamics_mu,
+            pred_dynamics_log_var,
+            target_representation_mu,
+            target_representation_log_var,
+            pred_actions,
+            pred_actions_mask,
+        ) = self._collate_unrolled_outputs(
+            unrolled_pred_policies,
+            unrolled_pred_values,
+            unrolled_pred_actions,
+            unrolled_target_representation_mu,
+            unrolled_target_representation_log_var,
+            unrolled_pred_dynamics_mu,
+            unrolled_pred_dynamics_log_var,
+            num_unroll_steps,
+            batch_size,
+            current_hidden_state,
         )
 
         return MuZeroNetworkOutput(

@@ -123,133 +123,181 @@ class MuZeroCollation:
     unrolled_states_padding_mask: torch.Tensor
 
 
+def _extract_sequences_from_batch(batch: List[MuZeroExperience]):
+    states_seqs = [[step.state for step in exp.steps] for exp in batch]
+    policy_target_seqs = [
+        [torch.tensor(step.policy_target, dtype=torch.float32) for step in exp.steps]
+        for exp in batch
+    ]
+    value_target_seqs = [
+        torch.tensor([step.value_target for step in exp.steps], dtype=torch.float32)
+        for exp in batch
+    ]
+    candidate_actions_seqs = [[step.legal_actions for step in exp.steps] for exp in batch]
+    action_index_seqs = [
+        [
+            step.legal_actions[step.action_index]
+            for step in exp.steps
+            if step.action_index is not None
+        ]
+        for exp in batch
+    ]
+    return (
+        states_seqs,
+        policy_target_seqs,
+        value_target_seqs,
+        candidate_actions_seqs,
+        action_index_seqs,
+    )
+
+
+def _tokenize_and_pad_states(states_seqs, network, batch_size):
+    # Tokenize states
+    initial_states = [seq[0] for seq in states_seqs]
+    batched_initial_state = _get_batched_state(state_dicts=initial_states)
+    initial_state_tokens, initial_state_padding_mask = network.tokenize_state_batch(
+        batched_initial_state, batch_size=batch_size
+    )
+
+    unrolled_states_tokens_list = []
+    unrolled_states_padding_mask_list = []
+    max_tokens = 0
+    if states_seqs:
+        max_len = max(len(s) for s in states_seqs)
+        for i in range(1, max_len):
+            states_for_step = [
+                seq[i] if i < len(seq) else seq[-1] for seq in states_seqs
+            ]
+            batched_step_state = _get_batched_state(state_dicts=states_for_step)
+            (
+                step_tokens,
+                step_padding_mask,
+            ) = network.tokenize_state_batch(batched_step_state, batch_size=batch_size)
+            if step_tokens.shape[1] > max_tokens:
+                max_tokens = step_tokens.shape[1]
+            unrolled_states_tokens_list.append(step_tokens)
+            unrolled_states_padding_mask_list.append(step_padding_mask)
+
+    if unrolled_states_tokens_list:
+        # Pad tokens and masks to the max token length in any step
+        padded_tokens_list = []
+        padded_masks_list = []
+        for tokens, mask in zip(
+            unrolled_states_tokens_list, unrolled_states_padding_mask_list
+        ):
+            pad_len = max_tokens - tokens.shape[1]
+            padded_tokens = F.pad(tokens, (0, 0, 0, pad_len), "constant", 0)
+            padded_mask = F.pad(mask, (0, pad_len), "constant", True)
+            padded_tokens_list.append(padded_tokens)
+            padded_masks_list.append(padded_mask)
+
+        unrolled_states_tokens = torch.stack(padded_tokens_list, dim=1)
+        unrolled_states_padding_mask = torch.stack(padded_masks_list, dim=1)
+    else:
+        unrolled_states_tokens = torch.empty(batch_size, 0, 0, 0)
+        unrolled_states_padding_mask = torch.empty(batch_size, 0, 0)
+
+    return (
+        initial_state_tokens,
+        initial_state_padding_mask,
+        unrolled_states_tokens,
+        unrolled_states_padding_mask,
+    )
+
+
+def _tokenize_and_pad_actions(
+    action_index_seqs, candidate_actions_seqs, network, batch_size, device
+):
+    # Tokenize actions
+    max_action_index_hist_len = max(
+        (len(seq) for seq in action_index_seqs), default=0
+    )
+    action_tokens_history = torch.zeros(
+        batch_size,
+        max_action_index_hist_len,
+        network.embedding_dim,
+        device=device,
+    )
+    for i, seq in enumerate(action_index_seqs):
+        if seq:
+            tokens = network.tokenize_actions(seq)
+            action_tokens_history[i, : len(seq), :] = tokens
+
+    tokenized_candidate_actions_seqs = []
+    for seq in candidate_actions_seqs:
+        step_list = []
+        for step_actions in seq:
+            tokenized = network.tokenize_actions(step_actions) if step_actions else []
+            step_list.append(
+                [row.unsqueeze(0) for row in tokenized] if tokenized.numel() else []
+            )
+        tokenized_candidate_actions_seqs.append(step_list)
+
+    (
+        candidate_action_tokens,
+        candidate_action_tokens_mask,
+    ) = pad_action_sets(tokenized_candidate_actions_seqs, network.embedding_dim, device)
+    return action_tokens_history, candidate_action_tokens, candidate_action_tokens_mask
+
+
+def _pad_targets(policy_target_seqs, value_target_seqs, batch_size):
+    # Pad targets
+    all_policies = [p for p_seq in policy_target_seqs for p in p_seq]
+    if all_policies:
+        padded_policy_vectors = torch.nn.utils.rnn.pad_sequence(
+            all_policies, batch_first=True, padding_value=0.0
+        )
+        seq_lengths = [len(s) for s in policy_target_seqs]
+        padded_policy_seqs = []
+        current_idx = 0
+        for length in seq_lengths:
+            padded_policy_seqs.append(
+                padded_policy_vectors[current_idx : current_idx + length]
+            )
+            current_idx += length
+        policy_targets = torch.nn.utils.rnn.pad_sequence(
+            padded_policy_seqs, batch_first=True, padding_value=0.0
+        )
+    else:
+        policy_targets = torch.empty(batch_size, 0, 0)
+
+    value_targets = torch.nn.utils.rnn.pad_sequence(
+        list(value_target_seqs), batch_first=True, padding_value=0.0
+    )
+    return policy_targets, value_targets
+
+
 def get_muzero_tokenizing_collate_fn(network: nn.Module) -> callable:
     def collate_fn(batch: List[MuZeroExperience]):
         """Collates a batch of MuZero experiences."""
         batch_size = len(batch)
         device = network.get_device()
 
-        states_seqs = [[step.state for step in exp.steps] for exp in batch]
-        policy_target_seqs = [
-            [
-                torch.tensor(step.policy_target, dtype=torch.float32)
-                for step in exp.steps
-            ]
-            for exp in batch
-        ]
-        value_target_seqs = [
-            torch.tensor([step.value_target for step in exp.steps], dtype=torch.float32)
-            for exp in batch
-        ]
-        candidate_actions_seqs = [
-            [step.legal_actions for step in exp.steps] for exp in batch
-        ]
-        action_index_seqs = [
-            [
-                step.legal_actions[step.action_index]
-                for step in exp.steps
-                if step.action_index is not None
-            ]
-            for exp in batch
-        ]
+        (
+            states_seqs,
+            policy_target_seqs,
+            value_target_seqs,
+            candidate_actions_seqs,
+            action_index_seqs,
+        ) = _extract_sequences_from_batch(batch)
 
-        # Tokenize states
-        initial_states = [seq[0] for seq in states_seqs]
-        batched_initial_state = _get_batched_state(state_dicts=initial_states)
-        initial_state_tokens, initial_state_padding_mask = network.tokenize_state_batch(
-            batched_initial_state, batch_size=batch_size
+        (
+            initial_state_tokens,
+            initial_state_padding_mask,
+            unrolled_states_tokens,
+            unrolled_states_padding_mask,
+        ) = _tokenize_and_pad_states(states_seqs, network, batch_size)
+
+        (
+            action_tokens_history,
+            candidate_action_tokens,
+            candidate_action_tokens_mask,
+        ) = _tokenize_and_pad_actions(
+            action_index_seqs, candidate_actions_seqs, network, batch_size, device
         )
 
-        unrolled_states_tokens_list = []
-        unrolled_states_padding_mask_list = []
-        max_tokens = 0
-        if states_seqs:
-            max_len = max(len(s) for s in states_seqs)
-            for i in range(1, max_len):
-                states_for_step = [
-                    seq[i] if i < len(seq) else seq[-1] for seq in states_seqs
-                ]
-                batched_step_state = _get_batched_state(state_dicts=states_for_step)
-                (step_tokens, step_padding_mask,) = network.tokenize_state_batch(
-                    batched_step_state, batch_size=batch_size
-                )
-                if step_tokens.shape[1] > max_tokens:
-                    max_tokens = step_tokens.shape[1]
-                unrolled_states_tokens_list.append(step_tokens)
-                unrolled_states_padding_mask_list.append(step_padding_mask)
-
-        if unrolled_states_tokens_list:
-            # Pad tokens and masks to the max token length in any step
-            padded_tokens_list = []
-            padded_masks_list = []
-            for tokens, mask in zip(
-                unrolled_states_tokens_list, unrolled_states_padding_mask_list
-            ):
-                pad_len = max_tokens - tokens.shape[1]
-                padded_tokens = F.pad(tokens, (0, 0, 0, pad_len), "constant", 0)
-                padded_mask = F.pad(mask, (0, pad_len), "constant", True)
-                padded_tokens_list.append(padded_tokens)
-                padded_masks_list.append(padded_mask)
-
-            unrolled_states_tokens = torch.stack(padded_tokens_list, dim=1)
-            unrolled_states_padding_mask = torch.stack(padded_masks_list, dim=1)
-        else:
-            unrolled_states_tokens = torch.empty(batch_size, 0, 0, 0)
-            unrolled_states_padding_mask = torch.empty(batch_size, 0, 0)
-
-        # Tokenize actions
-        max_action_index_hist_len = max(
-            (len(seq) for seq in action_index_seqs), default=0
-        )
-        action_tokens_history = torch.zeros(
-            batch_size,
-            max_action_index_hist_len,
-            network.embedding_dim,
-            device=device,
-        )
-        for i, seq in enumerate(action_index_seqs):
-            if seq:
-                tokens = network.tokenize_actions(seq)
-                action_tokens_history[i, : len(seq), :] = tokens
-
-        tokenized_candidate_actions_seqs = []
-        for seq in candidate_actions_seqs:
-            step_list = []
-            for step_actions in seq:
-                tokenized = (
-                    network.tokenize_actions(step_actions) if step_actions else []
-                )
-                step_list.append(
-                    [row.unsqueeze(0) for row in tokenized] if tokenized.numel() else []
-                )
-            tokenized_candidate_actions_seqs.append(step_list)
-
-        (candidate_action_tokens, candidate_action_tokens_mask,) = pad_action_sets(
-            tokenized_candidate_actions_seqs, network.embedding_dim, device
-        )
-
-        # Pad targets
-        all_policies = [p for p_seq in policy_target_seqs for p in p_seq]
-        if all_policies:
-            padded_policy_vectors = torch.nn.utils.rnn.pad_sequence(
-                all_policies, batch_first=True, padding_value=0.0
-            )
-            seq_lengths = [len(s) for s in policy_target_seqs]
-            padded_policy_seqs = []
-            current_idx = 0
-            for length in seq_lengths:
-                padded_policy_seqs.append(
-                    padded_policy_vectors[current_idx : current_idx + length]
-                )
-                current_idx += length
-            policy_targets = torch.nn.utils.rnn.pad_sequence(
-                padded_policy_seqs, batch_first=True, padding_value=0.0
-            )
-        else:
-            policy_targets = torch.empty(len(batch), 0, 0)
-
-        value_targets = torch.nn.utils.rnn.pad_sequence(
-            list(value_target_seqs), batch_first=True, padding_value=0.0
+        policy_targets, value_targets = _pad_targets(
+            policy_target_seqs, value_target_seqs, batch_size
         )
 
         return MuZeroCollation(
@@ -705,6 +753,43 @@ class MuZeroAgent(BaseLearningAgent):
         experiences = self._create_buffer_experiences(game_history, value_targets)
         return experiences
 
+    def _run_batch(
+        self, batch_data: MuZeroCollation, is_training: bool
+    ) -> MuZeroLossStatistics:
+        policy_targets_batch = batch_data.policy_targets.to(self.device)
+        value_targets_batch = batch_data.value_targets.to(self.device)
+
+        if is_training:
+            self.optimizer.zero_grad()
+
+        network_output: MuZeroNetworkOutput = self.network(
+            initial_state_tokens=batch_data.initial_state_tokens.to(self.device),
+            initial_state_padding_mask=batch_data.initial_state_padding_mask.to(
+                self.device
+            ),
+            action_tokens_history=batch_data.action_tokens_history.to(self.device),
+            candidate_action_tokens=batch_data.candidate_action_tokens.to(self.device),
+            candidate_action_tokens_mask=batch_data.candidate_action_tokens_mask.to(
+                self.device
+            ),
+            unrolled_states_tokens=batch_data.unrolled_states_tokens.to(self.device),
+            unrolled_states_padding_mask=batch_data.unrolled_states_padding_mask.to(
+                self.device
+            ),
+        )
+        loss_statistics: MuZeroLossStatistics = self._calculate_loss(
+            network_output=network_output,
+            policy_targets=policy_targets_batch,
+            value_targets=value_targets_batch,
+        )
+
+        if is_training:
+            loss_statistics.batch_loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.network.parameters(), max_norm=1.0)
+            self.optimizer.step()
+
+        return loss_statistics
+
     def _run_epoch(
         self,
         loader: DataLoader,
@@ -729,48 +814,7 @@ class MuZeroAgent(BaseLearningAgent):
         context = torch.enable_grad() if is_training else torch.no_grad()
         with context:
             for batch_data in iterator:
-                batch_data: MuZeroCollation
-                policy_targets_batch = batch_data.policy_targets.to(self.device)
-                value_targets_batch = batch_data.value_targets.to(self.device)
-
-                if is_training:
-                    self.optimizer.zero_grad()
-
-                network_output: MuZeroNetworkOutput = self.network(
-                    initial_state_tokens=batch_data.initial_state_tokens.to(
-                        self.device
-                    ),
-                    initial_state_padding_mask=batch_data.initial_state_padding_mask.to(
-                        self.device
-                    ),
-                    action_tokens_history=batch_data.action_tokens_history.to(
-                        self.device
-                    ),
-                    candidate_action_tokens=batch_data.candidate_action_tokens.to(
-                        self.device
-                    ),
-                    candidate_action_tokens_mask=batch_data.candidate_action_tokens_mask.to(
-                        self.device
-                    ),
-                    unrolled_states_tokens=batch_data.unrolled_states_tokens.to(
-                        self.device
-                    ),
-                    unrolled_states_padding_mask=batch_data.unrolled_states_padding_mask.to(
-                        self.device
-                    ),
-                )
-                loss_statistics: MuZeroLossStatistics = self._calculate_loss(
-                    network_output=network_output,
-                    policy_targets=policy_targets_batch,
-                    value_targets=value_targets_batch,
-                )
-
-                if is_training:
-                    loss_statistics.batch_loss.backward()
-                    torch.nn.utils.clip_grad_norm_(
-                        self.network.parameters(), max_norm=1.0
-                    )
-                    self.optimizer.step()
+                loss_statistics = self._run_batch(batch_data, is_training)
 
                 total_loss += loss_statistics.batch_loss.item()
                 total_value_loss += loss_statistics.total_value_loss.item()
