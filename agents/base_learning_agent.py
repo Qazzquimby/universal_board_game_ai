@@ -81,6 +81,9 @@ def get_tokenizing_collate_fn(network: nn.Module) -> callable:
         batch_size = len(state_dicts)
 
         # Tokenize states
+        # Tokenizing in collate because I think its slightly more efficient for padding calculation?
+        #  Not sure. tokenize_state_batch may be no more efficient.
+        #  Anything that could be done in the dataset get_item stage could be saved to disk and skipped
         batched_state = _get_batched_state(state_dicts=state_dicts)
         state_tokens, state_padding_mask = network.tokenize_state_batch(
             batched_state, batch_size=batch_size

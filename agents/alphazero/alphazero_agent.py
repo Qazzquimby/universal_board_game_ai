@@ -34,7 +34,6 @@ from core.config import (
 )
 
 
-# Seems reusable by muzero
 class AlphaZeroEvaluation(EvaluationStrategy):
     def __init__(self, network: nn.Module):
         self.network = network
