@@ -30,6 +30,8 @@ from core.config import (
     INFERENCE_DEVICE,
 )
 
+NUM_EPOCHS_PER_CHECKPOINT = 5
+
 
 @dataclass
 class BaseCollation:
@@ -527,17 +529,13 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
                     logger.info(f"Early stopping after {epoch + 1} epochs.")
                     break
 
-            if best_model_state and (epoch + 1) % 5 == 0:
-                logger.info(
-                    f"Saving periodic checkpoint for iteration {iteration} at epoch {epoch + 1}..."
+            if best_model_state and (epoch + 1) % NUM_EPOCHS_PER_CHECKPOINT == 0:
+                self._save_checkpoint(
+                    iteration=iteration,
+                    epoch=epoch,
+                    model_state=best_model_state,
+                    optimizer_state=best_optimizer_state,
                 )
-                original_net_state = copy.deepcopy(self.network.state_dict())
-                original_opt_state = copy.deepcopy(self.optimizer.state_dict())
-                self.network.load_state_dict(best_model_state)
-                self.optimizer.load_state_dict(best_optimizer_state)
-                self.save(iteration)
-                self.network.load_state_dict(original_net_state)
-                self.optimizer.load_state_dict(original_opt_state)
 
         if best_model_state:
             self.network.load_state_dict(best_model_state)
@@ -545,6 +543,20 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
         self._set_device_and_mode(training=False)
         self.network.cache = {}
         return best_metrics
+
+    def _save_checkpoint(
+        self, iteration: int, epoch: int, model_state, optimizer_state
+    ):
+        logger.info(
+            f"Saving periodic checkpoint for iteration {iteration} at epoch {epoch + 1}..."
+        )
+        original_net_state = copy.deepcopy(self.network.state_dict())
+        original_opt_state = copy.deepcopy(self.optimizer.state_dict())
+        self.network.load_state_dict(model_state)
+        self.optimizer.load_state_dict(optimizer_state)
+        self.save(iteration)
+        self.network.load_state_dict(original_net_state)
+        self.optimizer.load_state_dict(original_opt_state)
 
     def _get_model_dir(self) -> Path:
         env_name = type(self.env).__name__.lower()
