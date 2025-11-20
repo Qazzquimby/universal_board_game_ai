@@ -711,10 +711,10 @@ class MuZeroAgent(BaseLearningAgent):
         game_history: List[GameHistoryStep] = []
         value_targets: List[float] = []
         for step_data in game_data:
-            state_json = step_data.get("state")
-            action_index = step_data.get("action_index")
-            policy_target_list = step_data.get("policy_target")
-            value_target = step_data.get("value_target")
+            state_json = step_data["state"]
+            action_index = step_data["action_index"]
+            policy_target_list = step_data["policy_target"]
+            value_target = step_data["value_target"]
 
             if (
                 state_json is not None
@@ -888,9 +888,9 @@ class MuZeroAgent(BaseLearningAgent):
 
         total_loss = (
             total_value_loss
-            + total_policy_loss
+            + total_policy_loss * 0.6
             + total_hidden_state_loss
-            + total_action_pred_loss
+            + total_action_pred_loss * 0.4
         )
 
         return MuZeroLossStatistics(

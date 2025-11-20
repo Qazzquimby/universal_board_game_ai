@@ -38,14 +38,12 @@ def save_game_log(
         filename = f"game_{timestamp}_{game_index:04d}.json"
         filepath = log_dir / filename
 
-        # Prepare data for JSON
         serializable_log = []
-        for state, action, policy, value in logged_history:
-            # Ensure state and action are serializable
+        for state, action_index, policy, value in logged_history:
             serializable_log.append(
                 {
                     "state": state,
-                    "action": action,
+                    "action_index": action_index,
                     "policy_target": policy.tolist(),  # Convert numpy array
                     "value_target": value,
                 }
