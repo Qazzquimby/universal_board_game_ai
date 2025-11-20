@@ -600,10 +600,13 @@ class MuZeroAgent(BaseLearningAgent):
             # Progressive widening at the root.
             child_limit = _calculate_child_limit(self.root.num_visits)
             if len(self.root.child_samples) < child_limit:
+                state_tokens = self.network.tokenize_state(
+                    state=self.root.state_with_key.state
+                )
                 (
                     hidden_state_mu,
                     hidden_state_log_var,
-                ) = self.network.get_hidden_state_vae(self.root.state_with_key.state)
+                ) = self.network.get_hidden_state_vae(state_tokens=state_tokens)
                 hidden_state = vae_take_sample(hidden_state_mu, hidden_state_log_var)
                 new_sample_node = MuZeroNode(
                     player_idx=self.root.player_idx,

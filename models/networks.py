@@ -63,7 +63,7 @@ class BaseTokenizingNet(nn.Module):
         Assumes that any necessary transformations have already been applied to the state.
         """
         assert (
-            "batch_idx" not in state["game"]
+            "batch_idx" not in state["game"].columns
         ), "Trying to use tokenize_state on batched state. Use tokenize_state_batch instead"
         device = self.get_device()
         # Create a batched version of the state with batch_idx = 0
