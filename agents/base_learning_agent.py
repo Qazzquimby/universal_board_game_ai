@@ -480,6 +480,7 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
         self,
         iteration: int,
         epoch_callback: Optional[Callable[[int, float], None]] = None,
+        save_checkpoints=True,
     ) -> Optional[BestEpochMetrics]:
         """
         Trains the network with early stopping.
@@ -532,7 +533,11 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
                     logger.info(f"Early stopping after {epoch + 1} epochs.")
                     break
 
-            if best_model_state and (epoch + 1) % NUM_EPOCHS_PER_CHECKPOINT == 0:
+            if (
+                save_checkpoints
+                and best_model_state
+                and (epoch + 1) % NUM_EPOCHS_PER_CHECKPOINT == 0
+            ):
                 self._save_checkpoint(
                     iteration=iteration,
                     epoch=epoch,

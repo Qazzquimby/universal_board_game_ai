@@ -13,7 +13,7 @@ INFERENCE_DEVICE = "cpu"
 
 # --- Environment Configuration ---
 class EnvConfig(BaseModel):
-    name: str = "connect4"
+    name: str = "gobblet"
 
 
 class MCTSConfig(BaseModel):
@@ -22,9 +22,9 @@ class MCTSConfig(BaseModel):
     num_simulations: int = MCTS_SIMULATIONS
 
 
-TRAINING_BATCH_SIZE = 256
+TRAINING_BATCH_SIZE = 128
 
-REPLAY_BUFFER_SIZE = 10_000  # 1_000_000
+REPLAY_BUFFER_SIZE = 1_000_000
 
 
 class SomethingZeroConfig(BaseModel):
