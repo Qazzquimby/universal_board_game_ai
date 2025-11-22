@@ -5,6 +5,7 @@ from typing import List, Tuple
 import numpy as np
 from loguru import logger
 
+from agents.base_learning_agent import LoggedStep
 from core.config import DATA_DIR
 from environments.base import StateType, ActionType
 
@@ -24,37 +25,29 @@ def _default_serializer(obj):
 
 
 def save_game_log(
-    logged_history: List[Tuple[StateType, ActionType, np.ndarray, float]],
+    logged_history: List[LoggedStep],
     iteration: int,
     game_index: int,
     env_name: str,
     model_name: str,
 ):
     """Saves the processed game history to a JSON file."""
-    try:
-        log_dir = DATA_DIR / env_name / "game_logs" / model_name
-        log_dir.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        filename = f"game_{timestamp}_{game_index:04d}.json"
-        filepath = log_dir / filename
+    log_dir = DATA_DIR / env_name / "game_logs" / model_name
+    log_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    filename = f"game_{iteration}_{timestamp}_{game_index:04d}.json"
+    filepath = log_dir / filename
 
-        # Prepare data for JSON
-        serializable_log = []
-        for state, action, policy, value in logged_history:
-            # Ensure state and action are serializable
-            serializable_log.append(
-                {
-                    "state": state,
-                    "action": action,
-                    "policy_target": policy.tolist(),  # Convert numpy array
-                    "value_target": value,
-                }
-            )
-
-        with open(filepath, "w") as f:
-            json.dump(serializable_log, f, indent=2, default=_default_serializer)
-
-    except Exception as e:
-        logger.error(
-            f"Error saving game log for iter {iteration}, game {game_index}: {e}"
+    serializable_log = []
+    for step in logged_history:
+        serializable_log.append(
+            {
+                "state": step.state,
+                "action_index": step.action_index,
+                "policy_target": step.policy.tolist(),  # Convert numpy array
+                "value_target": step.value,
+            }
         )
+
+    with open(filepath, "w") as f:
+        json.dump(serializable_log, f, indent=2, default=_default_serializer)

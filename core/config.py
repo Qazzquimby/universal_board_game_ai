@@ -24,7 +24,7 @@ class MCTSConfig(BaseModel):
 
 TRAINING_BATCH_SIZE = 128
 
-REPLAY_BUFFER_SIZE = 1_000_000
+REPLAY_BUFFER_SIZE = 500_000
 
 
 class SomethingZeroConfig(BaseModel):
@@ -76,7 +76,7 @@ class MuZeroConfig(SomethingZeroConfig):
             "embedding_dim": 64,
             "num_heads": 4,
             "num_encoder_layers": 2,
-            "dropout": 0,  # 0.1, # wasn't converging at 0.1
+            "dropout": 0.2,
         }
     )
 

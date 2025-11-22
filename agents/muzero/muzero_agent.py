@@ -600,10 +600,13 @@ class MuZeroAgent(BaseLearningAgent):
             # Progressive widening at the root.
             child_limit = _calculate_child_limit(self.root.num_visits)
             if len(self.root.child_samples) < child_limit:
+                state_tokens = self.network.tokenize_state(
+                    state=self.root.state_with_key.state
+                )
                 (
                     hidden_state_mu,
                     hidden_state_log_var,
-                ) = self.network.get_hidden_state_vae(self.root.state_with_key.state)
+                ) = self.network.get_hidden_state_vae(state_tokens=state_tokens)
                 hidden_state = vae_take_sample(hidden_state_mu, hidden_state_log_var)
                 new_sample_node = MuZeroNode(
                     player_idx=self.root.player_idx,
@@ -711,10 +714,10 @@ class MuZeroAgent(BaseLearningAgent):
         game_history: List[GameHistoryStep] = []
         value_targets: List[float] = []
         for step_data in game_data:
-            state_json = step_data.get("state")
-            action_index = step_data.get("action_index")
-            policy_target_list = step_data.get("policy_target")
-            value_target = step_data.get("value_target")
+            state_json = step_data["state"]
+            action_index = step_data["action_index"]
+            policy_target_list = step_data["policy_target"]
+            value_target = step_data["value_target"]
 
             if (
                 state_json is not None
@@ -868,7 +871,7 @@ class MuZeroAgent(BaseLearningAgent):
     ) -> MuZeroLossStatistics:
         """Calculates the MuZero loss over an unrolled trajectory."""
 
-        (policy_losses_per_step, total_policy_loss,) = self._compute_policy_loss(
+        (policy_losses_per_step, total_policy_loss) = self._compute_policy_loss(
             pred_policies=network_output.pred_policies, policy_targets=policy_targets
         )
 
@@ -909,6 +912,7 @@ class MuZeroAgent(BaseLearningAgent):
         policy_losses = self._calculate_policy_loss_per_step(
             pred_policies=pred_policies, policy_targets=policy_targets
         )
+        policy_losses *= 0.6
         scaled_policy_losses = scale_loss_by_step(policy_losses)
         total_policy_loss = torch.sum(scaled_policy_losses)
         return policy_losses, total_policy_loss
@@ -936,6 +940,7 @@ class MuZeroAgent(BaseLearningAgent):
             target_actions=network_output.candidate_action_tokens,
             target_actions_mask=network_output.candidate_action_tokens_mask,
         )
+        action_pred_losses *= 0.4
         scaled_action_pred_losses = scale_loss_by_step(action_pred_losses)
         total_action_pred_loss = torch.sum(scaled_action_pred_losses)
         return action_pred_losses, total_action_pred_loss
@@ -946,96 +951,91 @@ class MuZeroAgent(BaseLearningAgent):
         pred_actions_mask: torch.Tensor,
         target_actions: torch.Tensor,
         target_actions_mask: torch.Tensor,
+        cardinality_weight: float = 1.0,
     ) -> torch.Tensor:
-        loss_fn = SamplesLoss(loss="sinkhorn", p=2, blur=0.05)
+        """
+        Computes per-step loss for predicting legal actions from a latent state.
+
+        Loss = Sinkhorn transport cost (if both sides non-empty)
+             + cardinality_weight * |#predictions − #targets|
+        """
         device = self.network.get_device()
+        sinkhorn_loss = SamplesLoss(loss="sinkhorn", p=2, blur=0.05)
 
-        batch_size, num_unroll_steps, num_pred, embed_dim = pred_actions.shape
-        if num_unroll_steps == 0:
-            return torch.tensor([], device=device)
+        batch_size, num_steps, max_pred_actions, embed_dim = pred_actions.shape
+        _, _, max_target_actions, _ = target_actions.shape
 
-        _, _, num_target, _ = target_actions.shape
+        if batch_size == 0 or num_steps == 0:
+            return torch.zeros(num_steps, device=device)
 
-        # Flatten batch and unroll steps dimensions
-        flat_batch_size = batch_size * num_unroll_steps
-        if flat_batch_size == 0:
-            return torch.zeros(num_unroll_steps, device=device)
+        flat_count = batch_size * num_steps
 
-        pred_actions_flat = pred_actions.reshape(flat_batch_size, num_pred, embed_dim)
-        pred_mask_flat = pred_actions_mask.reshape(flat_batch_size, num_pred)
+        # Flatten batch × unroll_step into one dimension
+        pred_points = pred_actions.reshape(flat_count, max_pred_actions, embed_dim)
+        pred_mask = pred_actions_mask.reshape(flat_count, max_pred_actions)
 
-        target_actions_flat = target_actions.reshape(
-            flat_batch_size, num_target, embed_dim
+        target_points = target_actions.reshape(
+            flat_count, max_target_actions, embed_dim
         )
-        target_mask_flat = target_actions_mask.reshape(flat_batch_size, num_target)
+        target_mask = target_actions_mask.reshape(flat_count, max_target_actions)
 
-        pred_weights_flat = (~pred_mask_flat).float()
-        target_weights_flat = (~target_mask_flat).float()
+        # Binary weights for valid (unmasked) points
+        pred_valid_weights = (~pred_mask).float()
+        target_valid_weights = (~target_mask).float()
 
-        # Identify samples that have target actions
-        has_targets = target_weights_flat.sum(dim=1) > 0
-        indices_with_targets = torch.where(has_targets)[0]
+        # Count valid predictions/targets per sample
+        num_pred_points = pred_valid_weights.sum(dim=1)
+        num_target_points = target_valid_weights.sum(dim=1)
 
-        if indices_with_targets.numel() == 0:
-            return torch.zeros(num_unroll_steps, device=device)
+        # We only consider samples that have at least one pred OR one target
+        sample_is_relevant = (num_pred_points > 0) | (num_target_points > 0)
+        if sample_is_relevant.sum().item() == 0:
+            return torch.zeros(num_steps, device=device)
 
-        # Filter to only include samples with targets
-        pred_actions_f = pred_actions_flat[indices_with_targets]
-        pred_weights_f = pred_weights_flat[indices_with_targets]
-        target_actions_f = target_actions_flat[indices_with_targets]
-        target_weights_f = target_weights_flat[indices_with_targets]
+        transport_cost_per_sample = torch.zeros(flat_count, device=device)
 
-        has_preds_f = pred_weights_f.sum(dim=1) > 0
+        # Samples that have both predictions and targets → compute Sinkhorn
+        sample_has_both = (num_pred_points > 0) & (num_target_points > 0)
+        indices_both = torch.where(sample_has_both)[0]
 
-        indices_with_preds = torch.where(has_preds_f)[0]
-        indices_without_preds = torch.where(~has_preds_f)[0]
+        if indices_both.numel() > 0:
+            pts_pred = pred_points[indices_both]
+            weights_pred = pred_valid_weights[indices_both]
+            pts_target = target_points[indices_both]
+            weights_target = target_valid_weights[indices_both]
 
-        all_losses = torch.zeros(flat_batch_size, device=device)
-
-        # Case 1: has both predictions and targets
-        if indices_with_preds.numel() > 0:
-            pred_actions_1 = pred_actions_f[indices_with_preds]
-            pred_weights_1 = pred_weights_f[indices_with_preds]
-            target_actions_1 = target_actions_f[indices_with_preds]
-            target_weights_1 = target_weights_f[indices_with_preds]
-
-            losses1 = loss_fn(
-                pred_weights_1, pred_actions_1, target_weights_1, target_actions_1
-            )
-            all_losses.scatter_(0, indices_with_targets[indices_with_preds], losses1)
-
-        # Case 2: has targets but no predictions
-        if indices_without_preds.numel() > 0:
-            target_actions_2 = target_actions_f[indices_without_preds]
-            target_weights_2 = target_weights_f[indices_without_preds]
-
-            dummy_pred = torch.zeros(
-                indices_without_preds.numel(), 1, embed_dim, device=device
-            )
-            dummy_weights = torch.ones(
-                indices_without_preds.numel(), 1, device=device
+            eps = 1e-8
+            weights_pred = weights_pred / (weights_pred.sum(dim=1, keepdim=True) + eps)
+            weights_target = weights_target / (
+                weights_target.sum(dim=1, keepdim=True) + eps
             )
 
-            losses2 = loss_fn(
-                dummy_weights, dummy_pred, target_weights_2, target_actions_2
+            transport_values = sinkhorn_loss(
+                weights_pred, pts_pred, weights_target, pts_target
             )
-            all_losses.scatter_(
-                0, indices_with_targets[indices_without_preds], losses2
-            )
+            transport_cost_per_sample[indices_both] = transport_values.to(device)
 
-        all_losses_by_step = all_losses.reshape(batch_size, num_unroll_steps)
-        has_targets_by_step = has_targets.reshape(batch_size, num_unroll_steps)
+        # Cardinality penalty (applies to all "relevant" samples)
+        cardinality_error = torch.abs(num_pred_points - num_target_points).float()
+        cardinality_cost_per_sample = cardinality_weight * cardinality_error
 
-        step_losses = []
-        for i in range(num_unroll_steps):
-            mask = has_targets_by_step[:, i]
-            if mask.any():
-                step_loss = all_losses_by_step[:, i][mask].mean()
-                step_losses.append(step_loss)
-            else:
-                step_losses.append(torch.tensor(0.0, device=device))
+        # Combine transport + cardinality
+        total_loss_per_sample = transport_cost_per_sample + cardinality_cost_per_sample
 
-        return torch.stack(step_losses)
+        # Reshape back to [batch_size, num_steps]
+        total_loss_per_sample = total_loss_per_sample.reshape(batch_size, num_steps)
+        relevant_mask_by_step = sample_is_relevant.reshape(batch_size, num_steps)
+
+        # Average across batch for each step
+        step_losses = torch.zeros(num_steps, device=device)
+        for step_idx in range(num_steps):
+            step_mask = relevant_mask_by_step[:, step_idx]
+            if step_mask.any():
+                step_losses[step_idx] = total_loss_per_sample[:, step_idx][
+                    step_mask
+                ].mean()
+
+        return step_losses
 
     def _calculate_value_loss_per_step(
         self, pred_values, value_targets

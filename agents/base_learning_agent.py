@@ -2,7 +2,9 @@ import abc
 import copy
 import json
 import random
+import typing
 from collections import deque
+from datetime import datetime
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict, Any, Callable
 from dataclasses import dataclass
@@ -30,7 +32,10 @@ from core.config import (
     INFERENCE_DEVICE,
 )
 
-NUM_EPOCHS_PER_CHECKPOINT = 5
+if typing.TYPE_CHECKING:
+    from agents.muzero.muzero_net import MuZeroNet
+
+NUM_MINUTES_PER_CHECKPOINT = 20
 
 
 @dataclass
@@ -122,11 +127,19 @@ def get_tokenizing_collate_fn(network: nn.Module) -> callable:
 
 
 @dataclass
+class LoggedStep:
+    state: StateType
+    action_index: int
+    policy: np.ndarray
+    value: float
+
+
+@dataclass
 class EpisodeResult:
     """Holds the results of a finished self-play episode."""
 
     buffer_experiences: List[Any]
-    logged_history: List[Tuple[StateType, ActionType, np.ndarray, float]]
+    logged_history: List[LoggedStep]
 
 
 @dataclass
@@ -190,7 +203,7 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
             evaluation_strategy=evaluation_strategy,
             backpropagation_strategy=backpropagation_strategy,
         )
-        self.network = network
+        self.network: "MuZeroNet" = network
         self.optimizer = optimizer
         self.env = env
         self.device = INFERENCE_DEVICE
@@ -220,7 +233,7 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
             print("WARN: Network weights not loaded")
             self.printed_not_loaded_warning = True
 
-    def act(self, env: BaseEnvironment, train: bool = False) -> ActionType:
+    def act(self, env: BaseEnvironment, train: bool = False) -> int:
         self.print_not_loaded_warning()
         self.search(env=env, train=train)
 
@@ -250,11 +263,11 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
         logged_history = []
         for i, game_history_step in enumerate(game_history):
             logged_history.append(
-                (
-                    game_history_step.state,
-                    game_history_step.action_index,
-                    game_history_step.policy,
-                    value_targets[i],
+                LoggedStep(
+                    state=game_history_step.state,
+                    action_index=game_history_step.action_index,
+                    policy=game_history_step.policy,
+                    value=value_targets[i],
                 )
             )
 
@@ -499,6 +512,7 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
         best_model_state = None
         best_optimizer_state = None
         best_metrics = None
+        last_checkpoint_time = datetime.now()
 
         self._set_device_and_mode(training=True)
         for epoch in range(max_epochs):
@@ -533,11 +547,15 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
                     logger.info(f"Early stopping after {epoch + 1} epochs.")
                     break
 
+            minutes_since_last_checkpoint = (
+                datetime.now() - last_checkpoint_time
+            ).seconds / 60
             if (
                 save_checkpoints
                 and best_model_state
-                and (epoch + 1) % NUM_EPOCHS_PER_CHECKPOINT == 0
+                and minutes_since_last_checkpoint >= NUM_MINUTES_PER_CHECKPOINT
             ):
+                last_checkpoint_time = datetime.now()
                 self._save_checkpoint(
                     iteration=iteration,
                     epoch=epoch,
