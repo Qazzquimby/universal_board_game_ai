@@ -5,7 +5,7 @@ from loguru import logger
 
 from core.config import AppConfig
 from factories import get_environment
-from agents.alphazero.alphazero_agent import make_pure_az
+from agents.muzero.muzero_agent import make_pure_muzero
 
 
 def force_overfit(num_experiences: int = 1):
@@ -15,14 +15,14 @@ def force_overfit(num_experiences: int = 1):
     """
     config = AppConfig()
     # Use a small batch size for overfitting
-    config.alphazero.training_batch_size = min(num_experiences, 4)
+    config.muzero.training_batch_size = min(num_experiences, 4)
 
     logger.remove()
     logger.add(sys.stderr, level="INFO")
     logger.info("--- Starting Overfitting Experiment ---")
     env = get_environment(config.env)
-    agent = make_pure_az(
-        env=env, config=config.alphazero, training_config=config.training
+    agent = make_pure_muzero(
+        env=env, config=config.muzero, training_config=config.training
     )
 
     # Load existing game data
@@ -51,13 +51,7 @@ def force_overfit(num_experiences: int = 1):
 
     metrics = agent.train_network(iteration=-1, save_checkpoints=False)
     if metrics:
-        train_metrics = metrics.train
-        logger.info(
-            f"Loss: {train_metrics.loss:.4f}, "
-            f"Value Loss: {train_metrics.value_loss:.4f}, "
-            f"Policy Loss: {train_metrics.policy_loss:.4f}, "
-            f"Policy Acc: {train_metrics.acc:.2%}"
-        )
+        logger.info(metrics.train)
 
     logger.info("--- Overfitting Experiment Finished ---")
 

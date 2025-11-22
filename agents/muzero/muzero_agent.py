@@ -58,6 +58,24 @@ from environments.base import (
 from core.config import MuZeroConfig, TrainingConfig
 
 
+def _entropy_adjusted_cross_entropy_loss(
+    logits: torch.Tensor, targets: torch.Tensor
+) -> torch.Tensor:
+    """Calculates cross-entropy loss and subtracts target entropy."""
+    log_probs = F.log_softmax(logits, dim=1)
+    cross_entropy_term = targets * log_probs
+    cross_entropy_term = torch.nan_to_num(cross_entropy_term, nan=0.0)
+    cross_entropy = -torch.sum(cross_entropy_term, dim=1).mean()
+
+    eps = 1e-9
+    with torch.no_grad():
+        target_entropy_term = targets * torch.log(targets + eps)
+        target_entropy_term = torch.nan_to_num(target_entropy_term, nan=0.0)
+        target_entropy = -torch.sum(target_entropy_term, dim=1).mean()
+
+    return cross_entropy - target_entropy
+
+
 @dataclass
 class MuZeroUnrollStep:
     """
@@ -1066,10 +1084,9 @@ class MuZeroAgent(BaseLearningAgent):
             # Policy loss (Cross-Entropy)
             step_policy_logits = pred_policies[:, i, :]
             step_policy_targets = policy_targets[:, i, :]
-            log_probs = F.log_softmax(step_policy_logits, dim=1)
-            difference = step_policy_targets * log_probs
-            difference = torch.nan_to_num(difference, nan=0.0)
-            policy_loss = -torch.sum(difference, dim=1).mean()
+            policy_loss = _entropy_adjusted_cross_entropy_loss(
+                logits=step_policy_logits, targets=step_policy_targets
+            )
             policy_losses_per_step.append(policy_loss)
         policy_losses_tensor = torch.stack(policy_losses_per_step)
         return policy_losses_tensor

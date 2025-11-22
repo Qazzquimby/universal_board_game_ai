@@ -34,6 +34,22 @@ from core.config import (
 )
 
 
+def _entropy_adjusted_cross_entropy_loss(
+    logits: torch.Tensor, targets: torch.Tensor
+) -> torch.Tensor:
+    """Calculates cross-entropy loss and subtracts target entropy."""
+    log_probs = F.log_softmax(logits, dim=1)
+    safe_log_probs = torch.where(log_probs == -torch.inf, 0.0, log_probs)
+    cross_entropy = -(targets * safe_log_probs).sum(dim=1).mean()
+
+    eps = 1e-9
+    with torch.no_grad():
+        target_entropy = (
+            -(targets * (targets + eps).log()).sum(dim=1).mean()
+        )
+    return cross_entropy - target_entropy
+
+
 class AlphaZeroEvaluation(EvaluationStrategy):
     def __init__(self, network: nn.Module):
         self.network = network
@@ -178,19 +194,9 @@ class AlphaZeroAgent(BaseLearningAgent):
         value_mse = value_loss.item()
 
         # Policy
-        log_probs = F.log_softmax(policy_logits, dim=1)
-        safe_log_probs = torch.where(log_probs == -torch.inf, 0.0, log_probs)
-
-        cross_entropy = -(policy_targets * safe_log_probs).sum(dim=1).mean()
-
-        eps = 1e-9
-        with torch.no_grad():
-            target_entropy = (
-                -(policy_targets * (policy_targets + eps).log()).sum(dim=1).mean()
-            )
-
-        # Drop policy loss based on entropy
-        policy_loss = cross_entropy - target_entropy
+        policy_loss = _entropy_adjusted_cross_entropy_loss(
+            logits=policy_logits, targets=policy_targets
+        )
 
         total_loss = self.config.value_loss_weight * value_loss + policy_loss
 
