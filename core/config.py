@@ -24,7 +24,7 @@ class MCTSConfig(BaseModel):
 
 TRAINING_BATCH_SIZE = 256
 
-REPLAY_BUFFER_SIZE = 10_000  # 1_000_000
+REPLAY_BUFFER_SIZE = 100_000
 
 
 class SomethingZeroConfig(BaseModel):
@@ -76,7 +76,7 @@ class MuZeroConfig(SomethingZeroConfig):
             "embedding_dim": 64,
             "num_heads": 4,
             "num_encoder_layers": 2,
-            "dropout": 0,  # 0.1, # wasn't converging at 0.1
+            "dropout": 0.2,
         }
     )
 
@@ -94,7 +94,7 @@ class TrainingConfig(BaseModel):
     save_checkpoint_frequency: int = 2
     # MCTS Profiling configuration
     enable_mcts_profiling: bool = True
-    learning_rate: float = 0.001
+    learning_rate: float = 0.01  # 0.001
 
 
 # --- WandB Configuration ---

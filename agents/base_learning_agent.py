@@ -4,6 +4,7 @@ import json
 import random
 import typing
 from collections import deque
+from datetime import datetime
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict, Any, Callable
 from dataclasses import dataclass
@@ -34,7 +35,7 @@ from core.config import (
 if typing.TYPE_CHECKING:
     from agents.muzero.muzero_net import MuZeroNet
 
-NUM_EPOCHS_PER_CHECKPOINT = 5
+NUM_MINUTES_PER_CHECKPOINT = 20
 
 
 @dataclass
@@ -507,6 +508,7 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
         best_model_state = None
         best_optimizer_state = None
         best_metrics = None
+        last_checkpoint_time = datetime.now()
 
         self._set_device_and_mode(training=True)
         for epoch in range(max_epochs):
@@ -541,7 +543,14 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
                     logger.info(f"Early stopping after {epoch + 1} epochs.")
                     break
 
-            if best_model_state and (epoch + 1) % NUM_EPOCHS_PER_CHECKPOINT == 0:
+            minutes_since_last_checkpoint = (
+                datetime.now() - last_checkpoint_time
+            ).seconds / 60
+            if (
+                best_model_state
+                and minutes_since_last_checkpoint >= NUM_MINUTES_PER_CHECKPOINT
+            ):
+                last_checkpoint_time = datetime.now()
                 self._save_checkpoint(
                     iteration=iteration,
                     epoch=epoch,

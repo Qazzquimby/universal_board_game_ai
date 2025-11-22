@@ -871,7 +871,7 @@ class MuZeroAgent(BaseLearningAgent):
     ) -> MuZeroLossStatistics:
         """Calculates the MuZero loss over an unrolled trajectory."""
 
-        (policy_losses_per_step, total_policy_loss,) = self._compute_policy_loss(
+        (policy_losses_per_step, total_policy_loss) = self._compute_policy_loss(
             pred_policies=network_output.pred_policies, policy_targets=policy_targets
         )
 
@@ -891,9 +891,9 @@ class MuZeroAgent(BaseLearningAgent):
 
         total_loss = (
             total_value_loss
-            + total_policy_loss * 0.6
+            + total_policy_loss
             + total_hidden_state_loss
-            + total_action_pred_loss * 0.4
+            + total_action_pred_loss
         )
 
         return MuZeroLossStatistics(
@@ -912,6 +912,7 @@ class MuZeroAgent(BaseLearningAgent):
         policy_losses = self._calculate_policy_loss_per_step(
             pred_policies=pred_policies, policy_targets=policy_targets
         )
+        policy_losses *= 0.6
         scaled_policy_losses = scale_loss_by_step(policy_losses)
         total_policy_loss = torch.sum(scaled_policy_losses)
         return policy_losses, total_policy_loss
@@ -939,6 +940,7 @@ class MuZeroAgent(BaseLearningAgent):
             target_actions=network_output.candidate_action_tokens,
             target_actions_mask=network_output.candidate_action_tokens_mask,
         )
+        action_pred_losses *= 0.4
         scaled_action_pred_losses = scale_loss_by_step(action_pred_losses)
         total_action_pred_loss = torch.sum(scaled_action_pred_losses)
         return action_pred_losses, total_action_pred_loss
