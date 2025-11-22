@@ -171,27 +171,33 @@ class AlphaZeroAgent(BaseLearningAgent):
                 node.edges[action].prior * (1 - eps) + noise[i] * eps
             )
 
-    # todo determine how much this can be shared with muzero agent
     def _calculate_loss(
         self, policy_logits, value_preds, policy_targets, value_targets
     ):
         value_loss = F.mse_loss(value_preds, value_targets.squeeze(-1))
-
-        # Policy loss for padded sequences
-        log_probs = F.log_softmax(policy_logits, dim=1)
-        safe_log_probs = torch.where(log_probs == -torch.inf, 0.0, log_probs)
-        policy_loss_per_item = -torch.sum(policy_targets * safe_log_probs, dim=1)
-        policy_loss = policy_loss_per_item.mean()
-
-        total_loss = (self.config.value_loss_weight * value_loss) + policy_loss
-
         value_mse = value_loss.item()
 
-        # Accuracy calculation for padded sequences
+        # Policy
+        log_probs = F.log_softmax(policy_logits, dim=1)
+        safe_log_probs = torch.where(log_probs == -torch.inf, 0.0, log_probs)
+
+        cross_entropy = -(policy_targets * safe_log_probs).sum(dim=1).mean()
+
+        eps = 1e-9
+        with torch.no_grad():
+            target_entropy = (
+                -(policy_targets * (policy_targets + eps).log()).sum(dim=1).mean()
+            )
+
+        # Drop policy loss based on entropy
+        policy_loss = cross_entropy - target_entropy
+
+        total_loss = self.config.value_loss_weight * value_loss + policy_loss
+
+        # ----- Accuracy (only for legal actions) -----
         predicted_indices = torch.argmax(policy_logits, dim=1)
         target_indices = torch.argmax(policy_targets, dim=1)
 
-        # Only calculate accuracy for samples that have legal actions
         has_legal_actions = torch.any(policy_logits != -torch.inf, dim=1)
         num_valid_samples = has_legal_actions.sum().item()
 
