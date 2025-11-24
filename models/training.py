@@ -86,6 +86,7 @@ def run_training_loop(
                     iteration=iteration,
                 )
 
+        # Training
         logger.info("Running learning step...")
         metrics = current_agent.train_network(iteration=iteration)
         if metrics:
@@ -93,6 +94,7 @@ def run_training_loop(
 
         current_agent.save(iteration=iteration)
         logger.info(f"Saved checkpoint for iteration {iteration}")
+        ###
 
         if isinstance(self_play_agent, MCTSAgent):
             eval_results = check_if_agent_outperforms_mcts(

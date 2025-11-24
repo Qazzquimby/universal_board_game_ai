@@ -30,8 +30,8 @@ REPLAY_BUFFER_SIZE = 500_000
 class SomethingZeroConfig(BaseModel):
     num_simulations: int = MCTS_SIMULATIONS  # MCTS simulations per move
     cpuct: float = 1.0  # Exploration constant in PUCT formula
-    learning_rate: float = 0.001
-    weight_decay: float = 0.0001
+    learning_rate: float = 0.0001
+    weight_decay: float = 0.00001
 
     value_loss_weight: float = 0.5
 
