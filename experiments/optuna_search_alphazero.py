@@ -95,7 +95,7 @@ if __name__ == "__main__":
     logger.remove()
     logger.add(sys.stderr, level="INFO")
 
-    journal_path = "./optuna_journal_storage.log"
+    journal_path = "./optuna_alphazero_journal_storage.log"
     study = optuna.create_study(
         study_name=f"alphazero_tuning_{config.env.name}",
         direction="minimize",
