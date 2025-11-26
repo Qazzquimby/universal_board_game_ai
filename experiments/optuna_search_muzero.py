@@ -1,0 +1,133 @@
+import random
+import sys
+
+import optuna
+from loguru import logger
+
+from agents.muzero.muzero_agent import make_pure_muzero
+from agents.muzero.muzero_net import MuZeroNet
+from core.config import AppConfig
+from factories import get_environment
+
+
+def objective(trial: optuna.Trial):
+    """
+    Objective function for Optuna to minimize.
+    Trains a MuZero agent with a given set of hyperparameters and returns the final loss.
+    """
+    config = AppConfig()
+    config.wandb.enabled = False  # Disable wandb for hyperparameter search
+
+    # --- Hyperparameters to Tune ---
+    config.muzero.learning_rate = trial.suggest_loguniform("learning_rate", 1e-5, 1e-2)
+    config.muzero.weight_decay = trial.suggest_loguniform("weight_decay", 1e-6, 1e-2)
+    config.muzero.value_loss_weight = trial.suggest_uniform(
+        "value_loss_weight", 0.1, 1.0
+    )
+    config.muzero.policy_loss_weight = trial.suggest_uniform(
+        "policy_loss_weight", 0.5, 1.5
+    )
+    config.muzero.num_unroll_steps = trial.suggest_int("num_unroll_steps", 1, 8)
+    config.muzero.td_steps = trial.suggest_int("td_steps", 5, 20)
+    config.muzero.discount_factor = trial.suggest_uniform(
+        "discount_factor", 0.95, 0.999
+    )
+
+    # --- State Model Hyperparameters ---
+    embedding_dim = trial.suggest_categorical("embedding_dim", [32, 64, 128, 256])
+    num_heads = trial.suggest_categorical("num_heads", [2, 4, 8])
+    if embedding_dim % num_heads != 0:
+        # Prune trial if num_heads is not a divisor of embedding_dim
+        raise optuna.exceptions.TrialPruned()
+
+    config.muzero.state_model_params["embedding_dim"] = embedding_dim
+    config.muzero.state_model_params["num_heads"] = num_heads
+    config.muzero.state_model_params["num_encoder_layers"] = trial.suggest_int(
+        "num_encoder_layers", 1, 6
+    )
+    config.muzero.state_model_params["dropout"] = trial.suggest_uniform(
+        "dropout", 0.0, 0.5
+    )
+
+    env = get_environment(config.env)
+
+    # --- Create Agent with Tuned Hyperparameters ---
+    network = MuZeroNet(
+        env=env,
+        embedding_dim=config.muzero.state_model_params["embedding_dim"],
+        num_heads=config.muzero.state_model_params["num_heads"],
+        num_encoder_layers=config.muzero.state_model_params["num_encoder_layers"],
+        dropout=config.muzero.state_model_params["dropout"],
+    )
+
+    agent = make_pure_muzero(
+        env=env, config=config.muzero, training_config=config.training, network=network
+    )
+
+    random.seed(0)
+    agent.load_game_logs(config.env.name, agent.config.replay_buffer_size)
+
+    # --- Training ---
+    logger.info(f"Starting trial {trial.number} with params: {trial.params}")
+
+    def optuna_callback(epoch: int, val_loss: float):
+        """Callback to report progress to Optuna."""
+        trial.report(val_loss, epoch)
+        if trial.should_prune():
+            raise optuna.exceptions.TrialPruned()
+
+    try:
+        metrics = agent.train_network(
+            iteration=-1, save_checkpoints=False, epoch_callback=optuna_callback
+        )
+        if not metrics:
+            logger.warning(
+                f"Trial {trial.number}: training did not produce metrics, returning inf."
+            )
+            return float("inf")
+
+        final_loss = metrics.val.loss
+        logger.info(f"Trial {trial.number} finished with loss: {final_loss:.4f}")
+        return final_loss
+    except optuna.exceptions.TrialPruned:
+        logger.info(f"Trial {trial.number} pruned.")
+        raise
+
+
+if __name__ == "__main__":
+    config = AppConfig()
+
+    logger.remove()
+    logger.add(sys.stderr, level="INFO")
+
+    journal_path = "./optuna_muzero_journal_storage.log"
+    study = optuna.create_study(
+        study_name=f"muzero_tuning_{config.env.name}",
+        direction="minimize",
+        pruner=optuna.pruners.MedianPruner(),
+        # storage=f"sqlite:///data/{config.env.name}/optuna_study.db",
+        storage=optuna.storages.JournalStorage(
+            optuna.storages.journal.JournalFileBackend(
+                journal_path,
+                lock_obj=optuna.storages.journal.JournalFileOpenLock(journal_path),
+            )
+        ),
+        load_if_exists=True,
+    )
+    study.optimize(objective, n_trials=100)
+
+    logger.info(f"Study statistics: ")
+    logger.info(f"  Number of finished trials: {len(study.trials)}")
+    logger.info(
+        f"  Number of pruned trials: {len(study.get_trials(deepcopy=False, states=[optuna.trial.TrialState.PRUNED]))}"
+    )
+    logger.info(
+        f"  Number of complete trials: {len(study.get_trials(deepcopy=False, states=[optuna.trial.TrialState.COMPLETE]))}"
+    )
+
+    logger.info("Best trial:")
+    trial = study.best_trial
+    logger.info(f"  Value: {trial.value}")
+    logger.info("  Params: ")
+    for key, value in trial.params.items():
+        logger.info(f"    {key}: {value}")

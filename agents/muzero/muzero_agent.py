@@ -1111,15 +1111,17 @@ def make_pure_muzero(
     env: BaseEnvironment,
     config: MuZeroConfig,
     training_config: TrainingConfig,
+    network: Optional[MuZeroNet] = None,
 ):
     params = config.state_model_params
-    network = MuZeroNet(
-        env=env,
-        embedding_dim=params.get("embedding_dim", 64),
-        num_heads=params.get("num_heads", 4),
-        num_encoder_layers=params.get("num_encoder_layers", 2),
-        dropout=params.get("dropout", 0.1),
-    )
+    if network is None:
+        network = MuZeroNet(
+            env=env,
+            embedding_dim=params.get("embedding_dim", 64),
+            num_heads=params.get("num_heads", 4),
+            num_encoder_layers=params.get("num_encoder_layers", 2),
+            dropout=params.get("dropout", 0.1),
+        )
     optimizer = optim.AdamW(network.parameters(), lr=training_config.learning_rate)
 
     return MuZeroAgent(

@@ -74,7 +74,9 @@ def objective(trial: optuna.Trial):
             raise optuna.exceptions.TrialPruned()
 
     try:
-        metrics = agent.train_network(epoch_callback=optuna_callback)
+        metrics = agent.train_network(
+            iteration=-1, save_checkpoints=False, epoch_callback=optuna_callback
+        )
         if not metrics:
             logger.warning(
                 f"Trial {trial.number}: training did not produce metrics, returning inf."
