@@ -10,13 +10,13 @@
 #
 # Note that the root node also needs to use Vae and sampling for hidden info,
 # but the root node has a known set of legal actions
+# There is no finite set of legal actions. Root uses action token inputs. Latent nodes simply generate possible successors from a vae with progressive widening.
 import math
 import random
-from typing import Optional, List, Dict, Union
+from typing import Optional, List, Dict, Union, Tuple
 from collections import defaultdict, deque
 from dataclasses import dataclass
 
-from geomloss import SamplesLoss
 import torch
 from torch import nn, optim
 import torch.nn.functional as F
@@ -33,7 +33,6 @@ from agents.loss_functions import entropy_adjusted_cross_entropy_loss
 from agents.muzero.muzero_net import (
     MuZeroNet,
     MuZeroNetworkOutput,
-    pad_action_sets,
     vae_take_sample,
 )
 from algorithms.mcts import (
@@ -152,6 +151,48 @@ def _extract_sequences_from_batch(batch: List[MuZeroExperience]):
         candidate_actions_seqs,
         action_index_seqs,
     )
+
+
+def pad_action_sets(
+    action_sets: List[List[List[torch.Tensor]]], embedding_dim: int, device
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    # actions are batch, step, action, dim
+    if not action_sets:
+        return torch.empty(0, 0, 0, 0, device=device), torch.empty(
+            0, 0, 0, dtype=torch.bool, device=device
+        )
+
+    batch_size = len(action_sets)
+    if batch_size == 0:
+        return torch.empty(0, 0, 0, embedding_dim, device=device), torch.empty(
+            0, 0, 0, dtype=torch.bool, device=device
+        )
+
+    max_steps = 0
+    max_actions = 0
+    for batch in action_sets:
+        if len(batch) > max_steps:
+            max_steps = len(batch)
+        for step in batch:
+            if len(step) > max_actions:
+                max_actions = len(step)
+
+    padded_tensor = torch.zeros(
+        batch_size, max_steps, max_actions, embedding_dim, device=device
+    )
+    mask = torch.zeros(
+        batch_size, max_steps, max_actions, dtype=torch.bool, device=device
+    )
+
+    for batch_index, batch in enumerate(action_sets):
+        for step_index, actions in enumerate(batch):
+            if actions:
+                num_actions = len(actions)
+                action_tensor = torch.cat(actions, dim=0)
+                padded_tensor[batch_index, step_index, :num_actions] = action_tensor
+                mask[batch_index, step_index, :num_actions] = True
+
+    return padded_tensor, mask
 
 
 def _tokenize_and_pad_states(states_seqs, network, batch_size):
@@ -376,11 +417,25 @@ class MuZeroExpansion(ExpansionStrategy):
             legal_actions = env.get_legal_actions()
             node.action_tokens = self.network.tokenize_actions(legal_actions)
         else:
-            # generate actions from hidden state
-            action_tokens_batch = self.network.get_actions_for_hidden_state(
-                node.hidden_state.unsqueeze(0)
-            )
-            node.action_tokens = action_tokens_batch[0]
+            # For inner nodes, we generate successor states by sampling actions.
+            num_successors = _calculate_child_limit(node.num_visits)
+            if num_successors == 0:
+                node.is_expanded = True
+                return
+
+            # TODO, no. Inner actions are just dummies, not vectors. Not used to generate next state.
+            # Sample random action tokens
+            action_tokens = [
+                torch.randn(
+                    self.network.embedding_dim, device=self.network.get_device()
+                )
+                for _ in range(num_successors)
+            ]
+            if not action_tokens:
+                node.is_expanded = True
+                return
+
+            node.action_tokens = torch.stack(action_tokens)
 
         assert node.action_tokens.dim() == 2
 
@@ -486,8 +541,11 @@ class MuZeroSelection(UCB1Selection):
             next_hidden_state_mu,
             next_hidden_state_log_var,
         ) = self.network.get_next_hidden_state_vae(
-            current_node.hidden_state, action_token.unsqueeze(0)
+            # TODO Right here, if it's hidden->hidden the actions aren't meaningful. It shouldn't take an action token. Should sample from a vae that doesn't use actions.
+            current_node.hidden_state,
+            action_token.unsqueeze(0),
         )
+        # todo right now every time we get the next_hidden_state_vae it's always sampled only once..?
         next_hidden_state = vae_take_sample(
             next_hidden_state_mu, next_hidden_state_log_var
         )
@@ -532,9 +590,6 @@ class MuZeroLossStatistics:
     total_hidden_state_loss: torch.Tensor
     hidden_state_losses_per_step: torch.Tensor
 
-    total_action_pred_loss: torch.Tensor
-    action_pred_losses_per_step: torch.Tensor
-
 
 @dataclass
 class MuZeroEpochMetrics:
@@ -542,11 +597,9 @@ class MuZeroEpochMetrics:
     policy_loss: float
     value_loss: float
     hidden_state_loss: float
-    action_pred_loss: float
     policy_loss_by_step: List[float]
     value_loss_by_step: List[float]
     hidden_state_loss_by_step: List[float]
-    action_pred_loss_by_step: List[float]
 
     def __str__(self):
         return (
@@ -554,7 +607,6 @@ class MuZeroEpochMetrics:
             f"- Policy: {self.policy_loss:.3f} "
             f"- Value: {self.value_loss:.3f} "
             f"- State: {self.hidden_state_loss:.3f} "
-            f"- Action: {self.action_pred_loss:.3f} "
         )
 
 
@@ -803,11 +855,10 @@ class MuZeroAgent(BaseLearningAgent):
     ) -> Optional[MuZeroEpochMetrics]:
         """Runs a single epoch of training or validation for MuZero."""
         total_loss, total_policy_loss, total_value_loss = 0.0, 0.0, 0.0
-        total_hidden_state_loss, total_action_pred_loss = 0.0, 0.0
+        total_hidden_state_loss = 0.0
         policy_loss_by_step = defaultdict(float)
         value_loss_by_step = defaultdict(float)
         hidden_state_loss_by_step = defaultdict(float)
-        action_pred_loss_by_step = defaultdict(float)
         num_batches = 0
 
         iterator = loader
@@ -826,15 +877,12 @@ class MuZeroAgent(BaseLearningAgent):
                 total_hidden_state_loss += (
                     loss_statistics.total_hidden_state_loss.item()
                 )
-                total_action_pred_loss += loss_statistics.total_action_pred_loss.item()
                 for i, v in enumerate(loss_statistics.policy_losses_per_step):
                     policy_loss_by_step[i] += v.item()
                 for i, v in enumerate(loss_statistics.value_losses_per_step):
                     value_loss_by_step[i] += v.item()
                 for i, v in enumerate(loss_statistics.hidden_state_losses_per_step):
                     hidden_state_loss_by_step[i] += v.item()
-                for i, v in enumerate(loss_statistics.action_pred_losses_per_step):
-                    action_pred_loss_by_step[i] += v.item()
                 num_batches += 1
 
         if num_batches == 0:
@@ -849,19 +897,14 @@ class MuZeroAgent(BaseLearningAgent):
         hidden_state_loss_list = [
             v / num_batches for _, v in sorted(hidden_state_loss_by_step.items())
         ]
-        action_pred_loss_list = [
-            v / num_batches for _, v in sorted(action_pred_loss_by_step.items())
-        ]
         return MuZeroEpochMetrics(
             loss=total_loss / num_batches,
             policy_loss=total_policy_loss / num_batches,
             value_loss=total_value_loss / num_batches,
             hidden_state_loss=total_hidden_state_loss / num_batches,
-            action_pred_loss=total_action_pred_loss / num_batches,
             policy_loss_by_step=policy_loss_list,
             value_loss_by_step=value_loss_list,
             hidden_state_loss_by_step=hidden_state_loss_list,
-            action_pred_loss_by_step=action_pred_loss_list,
         )
 
     def _calculate_loss(
@@ -885,17 +928,7 @@ class MuZeroAgent(BaseLearningAgent):
             total_hidden_state_loss,
         ) = self._compute_hidden_state_consistency_loss(network_output=network_output)
 
-        (
-            action_pred_losses_per_step,
-            total_action_pred_loss,
-        ) = self._compute_action_prediction_loss(network_output=network_output)
-
-        total_loss = (
-            total_value_loss
-            + total_policy_loss
-            + total_hidden_state_loss
-            + total_action_pred_loss
-        )
+        total_loss = total_value_loss + total_policy_loss + total_hidden_state_loss
 
         return MuZeroLossStatistics(
             batch_loss=total_loss,
@@ -905,8 +938,6 @@ class MuZeroAgent(BaseLearningAgent):
             policy_losses_per_step=policy_losses_per_step,
             total_hidden_state_loss=total_hidden_state_loss,
             hidden_state_losses_per_step=hidden_state_losses_per_step,
-            total_action_pred_loss=total_action_pred_loss,
-            action_pred_losses_per_step=action_pred_losses_per_step,
         )
 
     def _compute_policy_loss(self, pred_policies, policy_targets):
@@ -933,110 +964,6 @@ class MuZeroAgent(BaseLearningAgent):
         scaled_hidden_state_losses = scale_loss_by_step(hidden_state_losses)
         total_hidden_state_loss = torch.sum(scaled_hidden_state_losses)
         return hidden_state_losses, total_hidden_state_loss
-
-    def _compute_action_prediction_loss(self, network_output):
-        action_pred_losses = self._calculate_action_prediction_loss_per_step(
-            pred_actions=network_output.pred_actions,
-            pred_actions_mask=network_output.pred_actions_mask,
-            target_actions=network_output.candidate_action_tokens,
-            target_actions_mask=network_output.candidate_action_tokens_mask,
-        )
-        action_pred_losses *= 0.4
-        scaled_action_pred_losses = scale_loss_by_step(action_pred_losses)
-        total_action_pred_loss = torch.sum(scaled_action_pred_losses)
-        return action_pred_losses, total_action_pred_loss
-
-    def _calculate_action_prediction_loss_per_step(
-        self,
-        pred_actions: torch.Tensor,
-        pred_actions_mask: torch.Tensor,
-        target_actions: torch.Tensor,
-        target_actions_mask: torch.Tensor,
-        cardinality_weight: float = 1.0,
-    ) -> torch.Tensor:
-        """
-        Computes per-step loss for predicting legal actions from a latent state.
-
-        Loss = Sinkhorn transport cost (if both sides non-empty)
-             + cardinality_weight * |#predictions − #targets|
-        """
-        device = self.network.get_device()
-        sinkhorn_loss = SamplesLoss(loss="sinkhorn", p=2, blur=0.05)
-
-        batch_size, num_steps, max_pred_actions, embed_dim = pred_actions.shape
-        _, _, max_target_actions, _ = target_actions.shape
-
-        if batch_size == 0 or num_steps == 0:
-            return torch.zeros(num_steps, device=device)
-
-        flat_count = batch_size * num_steps
-
-        # Flatten batch × unroll_step into one dimension
-        pred_points = pred_actions.reshape(flat_count, max_pred_actions, embed_dim)
-        pred_mask = pred_actions_mask.reshape(flat_count, max_pred_actions)
-
-        target_points = target_actions.reshape(
-            flat_count, max_target_actions, embed_dim
-        )
-        target_mask = target_actions_mask.reshape(flat_count, max_target_actions)
-
-        # Binary weights for valid (unmasked) points
-        pred_valid_weights = (~pred_mask).float()
-        target_valid_weights = (~target_mask).float()
-
-        # Count valid predictions/targets per sample
-        num_pred_points = pred_valid_weights.sum(dim=1)
-        num_target_points = target_valid_weights.sum(dim=1)
-
-        # We only consider samples that have at least one pred OR one target
-        sample_is_relevant = (num_pred_points > 0) | (num_target_points > 0)
-        if sample_is_relevant.sum().item() == 0:
-            return torch.zeros(num_steps, device=device)
-
-        transport_cost_per_sample = torch.zeros(flat_count, device=device)
-
-        # Samples that have both predictions and targets → compute Sinkhorn
-        sample_has_both = (num_pred_points > 0) & (num_target_points > 0)
-        indices_both = torch.where(sample_has_both)[0]
-
-        if indices_both.numel() > 0:
-            pts_pred = pred_points[indices_both]
-            weights_pred = pred_valid_weights[indices_both]
-            pts_target = target_points[indices_both]
-            weights_target = target_valid_weights[indices_both]
-
-            eps = 1e-8
-            weights_pred = weights_pred / (weights_pred.sum(dim=1, keepdim=True) + eps)
-            weights_target = weights_target / (
-                weights_target.sum(dim=1, keepdim=True) + eps
-            )
-
-            transport_values = sinkhorn_loss(
-                weights_pred, pts_pred, weights_target, pts_target
-            )
-            transport_cost_per_sample[indices_both] = transport_values.to(device)
-
-        # Cardinality penalty (applies to all "relevant" samples)
-        cardinality_error = torch.abs(num_pred_points - num_target_points).float()
-        cardinality_cost_per_sample = cardinality_weight * cardinality_error
-
-        # Combine transport + cardinality
-        total_loss_per_sample = transport_cost_per_sample + cardinality_cost_per_sample
-
-        # Reshape back to [batch_size, num_steps]
-        total_loss_per_sample = total_loss_per_sample.reshape(batch_size, num_steps)
-        relevant_mask_by_step = sample_is_relevant.reshape(batch_size, num_steps)
-
-        # Average across batch for each step
-        step_losses = torch.zeros(num_steps, device=device)
-        for step_idx in range(num_steps):
-            step_mask = relevant_mask_by_step[:, step_idx]
-            if step_mask.any():
-                step_losses[step_idx] = total_loss_per_sample[:, step_idx][
-                    step_mask
-                ].mean()
-
-        return step_losses
 
     def _calculate_value_loss_per_step(
         self, pred_values, value_targets
