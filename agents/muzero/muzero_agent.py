@@ -672,7 +672,9 @@ class MuZeroAgent(BaseLearningAgent):
                 (
                     hidden_state_mu,
                     hidden_state_log_var,
-                ) = self.network.get_hidden_state_vae(state_tokens=state_tokens)
+                ) = self.network.state_to_root_node_hidden_info_sampler(
+                    state_tokens=state_tokens
+                )
                 hidden_state = take_sample(hidden_state_mu, hidden_state_log_var)
                 new_sample_node = MuZeroNode(
                     player_idx=self.root.player_idx,

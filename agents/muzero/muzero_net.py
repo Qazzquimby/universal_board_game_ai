@@ -103,12 +103,12 @@ class MuZeroNet(BaseTokenizingNet):
             encoder_layer, num_layers=num_encoder_layers
         )
         self.game_token = nn.Parameter(torch.randn(1, 1, embedding_dim))
-        self.enc_to_hidden_state_sampler_mu = nn.Linear(embedding_dim, embedding_dim)
-        self.enc_to_hidden_state_sampler_log_var = nn.Linear(
+        self.enc_to_hidden_info_sampler_mu = nn.Linear(embedding_dim, embedding_dim)
+        self.enc_to_hidden_info_sampler_log_var = nn.Linear(
             embedding_dim, embedding_dim
         )
 
-        # sampled_root_latent_node_to_successor_enc (dynamics, g)
+        # sampled_root_enc_state_node_to_successor_enc (dynamics, g)
         # It takes latent_state + action_embedding -> successor_enc
         action_embedding_dim = embedding_dim
         dynamics_hidden_dim = embedding_dim * 2
@@ -117,12 +117,12 @@ class MuZeroNet(BaseTokenizingNet):
             nn.ReLU(),
         )
 
-        # inner_latent_to_successor_sampler (more dynamics, g)
+        # inner_enc_to_successor_sampler (more dynamics, g)
         # Takes inner latent state
-        self.inner_state_to_successor_sampler_mu = nn.Linear(
+        self.inner_enc_state_to_successor_sampler_mu = nn.Linear(
             embedding_dim, embedding_dim
         )
-        self.inner_state_to_successor_sampler_log_var = nn.Linear(
+        self.inner_enc_state_to_successor_sampler_log_var = nn.Linear(
             embedding_dim, embedding_dim
         )
 
@@ -140,7 +140,7 @@ class MuZeroNet(BaseTokenizingNet):
             nn.Linear(policy_input_dim, 64), nn.ReLU(), nn.Linear(64, 1)
         )
 
-    def get_hidden_state_vae(
+    def state_to_root_node_hidden_info_sampler(
         self,
         state_tokens: torch.Tensor,
         state_padding_mask: Optional[torch.Tensor] = None,
@@ -169,22 +169,29 @@ class MuZeroNet(BaseTokenizingNet):
         )
         game_token_output = transformer_output[:, 0, :]  # (batch_size, dim)
 
-        mu = self.enc_to_hidden_state_sampler_mu(game_token_output)
-        log_var = self.enc_to_hidden_state_sampler_log_var(game_token_output)
+        mu = self.enc_to_hidden_info_sampler_mu(game_token_output)
+        log_var = self.enc_to_hidden_info_sampler_log_var(game_token_output)
         return mu, log_var
 
-    def get_next_hidden_state_vae(
-        self, hidden_state: torch.Tensor, action_token: torch.Tensor
+    def sampled_root_enc_state_to_successor_enc(
+        self, enc_state: torch.Tensor, action_token: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Dynamics function (g): Predicts the distribution of the next hidden state
         given a current hidden state and an encoded action token.
         """
-        dynamics_input = torch.cat([hidden_state, action_token], dim=1)
+        dynamics_input = torch.cat([enc_state, action_token], dim=1)
         base_output = self.sampled_root_latent_node_to_successor_enc(dynamics_input)
 
         mu = self.enc_root_and_action_to_successor_sampler_mu(base_output)
         log_var = self.enc_root_and_action_to_successor_sampler_log_var(base_output)
+        return mu, log_var
+
+    def inner_enc_to_successor_sampler(
+        self, enc_state: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        mu = self.inner_enc_state_to_successor_sampler_mu(enc_state)
+        log_var = self.inner_enc_state_to_successor_sampler_log_var(enc_state)
         return mu, log_var
 
     def _get_policy_scores(
@@ -331,7 +338,7 @@ class MuZeroNet(BaseTokenizingNet):
             (
                 target_representation_mu,
                 target_representation_log_var,
-            ) = self.get_hidden_state_vae(
+            ) = self.state_to_root_node_hidden_info_sampler(
                 unrolled_states_tokens[:, i], unrolled_states_padding_mask[:, i]
             )
 
@@ -340,7 +347,9 @@ class MuZeroNet(BaseTokenizingNet):
             (
                 pred_dynamics_mu,
                 pred_dynamics_log_var,
-            ) = self.get_next_hidden_state_vae(current_hidden_state, action_tokens)
+            ) = self.sampled_root_enc_state_to_successor_enc(
+                current_hidden_state, action_tokens
+            )
 
             next_hidden_state = take_sample(pred_dynamics_mu, pred_dynamics_log_var)
 
@@ -436,7 +445,10 @@ class MuZeroNet(BaseTokenizingNet):
         unrolled_target_representation_mu = []
         unrolled_target_representation_log_var = []
 
-        hidden_state_mu, hidden_state_log_var = self.get_hidden_state_vae(
+        (
+            hidden_state_mu,
+            hidden_state_log_var,
+        ) = self.state_to_root_node_hidden_info_sampler(
             initial_state_tokens, initial_state_padding_mask
         )
         current_hidden_state = take_sample(hidden_state_mu, hidden_state_log_var)
