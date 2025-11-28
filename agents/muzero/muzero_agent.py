@@ -33,6 +33,7 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 
 import torch
+from einops import einops
 from torch import nn, optim
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
@@ -372,16 +373,6 @@ def get_muzero_tokenizing_collate_fn(network: nn.Module) -> callable:
     return collate_fn
 
 
-def _calculate_child_limit(num_visits: int) -> int:
-    """A simple formula for progressive widening. More visits allow more children."""
-    return 1
-    # todo disable later
-
-    if num_visits <= 10:
-        return 1
-    return math.floor(math.log2(num_visits / 10)) + 2
-
-
 class MuZeroEdge(Edge):
     def __init__(self, prior: float):
         super().__init__(prior)
@@ -623,6 +614,59 @@ class MuZeroEpochMetrics:
         )
 
 
+class ProgWidener:
+    def __init__(self, mu, log_var):
+        self.mu = mu
+        self.log_var = log_var
+
+        self.num_widens = 0
+        self.num_accesses = 0
+
+    def count_access(self):
+        self.num_accesses += 1
+
+    def widen_if_needed(
+        self, existing_children: torch.Tensor
+    ) -> Optional[torch.Tensor]:
+        needed_widens = self._get_needed_widens()
+        if needed_widens > self.num_widens:
+            return self._widen(
+                existing_children=existing_children,
+            )
+        return None
+
+    def _get_needed_widens(self):
+        if self.num_accesses <= 10:
+            return 1
+
+        return math.floor(math.log2(self.num_accesses / 10)) + 2
+
+    def _widen(self, existing_children: torch.Tensor) -> Optional[torch.Tensor]:
+        self.num_widens += 1
+
+        sample = take_sample(mu=self.mu, log_var=self.log_var)
+        distances = self._get_sample_distances(
+            existing_children=existing_children, sample=sample
+        )
+        min_distance = torch.min(distances)
+        if min_distance >= 2:  # todo config
+            return sample
+        else:
+            return None
+
+    def _get_sample_distances(
+        self, existing_children: torch.Tensor, sample: torch.Tensor
+    ):
+        stacked_sample = einops.repeat(
+            sample, "emb -> h emb", h=existing_children.shape[0]
+        )
+        var = torch.exp(self.log_var)
+        distances = torch.sqrt(
+            torch.sum(((existing_children - stacked_sample) ** 2) / var)
+        )
+        return distances
+
+
 class MuZeroAgent(BaseLearningAgent):
     """Agent implementing the MuZero algorithm."""
 
@@ -661,9 +705,9 @@ class MuZeroAgent(BaseLearningAgent):
         self.root = MuZeroRootNodeHiddenInfoSampler(
             player_idx=env.get_current_player(), state_with_key=env.get_state_with_key()
         )
-
+        # todo update
         for i in range(self.num_simulations):
-            # Progressive widening at the root.
+            # Progressive widening at the root. Make a prog widen helper that skipsif new is too similar to an existing
             child_limit = _calculate_child_limit(self.root.num_visits)
             if len(self.root.root_samples) < child_limit:
                 state_tokens = self.network.tokenize_state(
@@ -673,7 +717,7 @@ class MuZeroAgent(BaseLearningAgent):
                     hidden_state_mu,
                     hidden_state_log_var,
                 ) = self.network.state_to_root_node_hidden_info_sampler(
-                    state_tokens=state_tokens
+                    state_tokens=state_tokens  # todo update
                 )
                 hidden_state = take_sample(hidden_state_mu, hidden_state_log_var)
                 new_sample_node = MuZeroNode(

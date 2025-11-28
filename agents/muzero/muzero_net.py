@@ -187,6 +187,7 @@ class MuZeroNet(BaseTokenizingNet):
         log_var = self.enc_root_and_action_to_successor_sampler_log_var(base_output)
         return mu, log_var
 
+    # todo update user where appropriate
     def inner_enc_to_successor_sampler(
         self, enc_state: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -338,16 +339,16 @@ class MuZeroNet(BaseTokenizingNet):
             (
                 target_representation_mu,
                 target_representation_log_var,
-            ) = self.state_to_root_node_hidden_info_sampler(
+            ) = self.state_to_root_node_hidden_info_sampler(  # todo update
                 unrolled_states_tokens[:, i], unrolled_states_padding_mask[:, i]
             )
 
-            # DYNAMICS
+            # DYNAMICS # todo update
             action_tokens = action_tokens_history[:, i]
             (
                 pred_dynamics_mu,
                 pred_dynamics_log_var,
-            ) = self.sampled_root_enc_state_to_successor_enc(
+            ) = self.sampled_root_enc_state_to_successor_enc(  # todo update
                 current_hidden_state, action_tokens
             )
 
@@ -434,6 +435,7 @@ class MuZeroNet(BaseTokenizingNet):
         unrolled_states_tokens: torch.Tensor,
         unrolled_states_padding_mask: torch.Tensor,
     ) -> MuZeroNetworkOutput:
+        # Todo update
         # All data variables are batches
         batch_size = action_tokens_history.shape[0]
         num_unroll_steps = action_tokens_history.shape[1]
@@ -448,13 +450,13 @@ class MuZeroNet(BaseTokenizingNet):
         (
             hidden_state_mu,
             hidden_state_log_var,
-        ) = self.state_to_root_node_hidden_info_sampler(
+        ) = self.state_to_root_node_hidden_info_sampler(  # todo update
             initial_state_tokens, initial_state_padding_mask
         )
         current_hidden_state = take_sample(hidden_state_mu, hidden_state_log_var)
 
         for i in range(num_unroll_steps + 1):
-            step_output = self._unroll_step(
+            step_output = self._unroll_step(  # todo update
                 i,
                 num_unroll_steps,
                 current_hidden_state,
