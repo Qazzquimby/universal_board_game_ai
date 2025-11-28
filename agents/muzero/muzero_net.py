@@ -77,11 +77,10 @@ def pad_action_sets(
     return padded_tensor, mask
 
 
-def vae_take_sample(mu: torch.Tensor, log_var: torch.Tensor) -> torch.Tensor:
-    # std = torch.exp(0.5 * log_var)
-    # eps = torch.randn_like(std)
-    # return mu + eps * std
-    return mu  # todo temp, since current game is not stochastic
+def take_sample(mu: torch.Tensor, log_var: torch.Tensor) -> torch.Tensor:
+    std = torch.exp(0.5 * log_var)
+    eps = torch.randn_like(std)
+    return mu + eps * std
 
 
 class MuZeroNet(BaseTokenizingNet):
@@ -96,33 +95,44 @@ class MuZeroNet(BaseTokenizingNet):
         super().__init__(env=env, embedding_dim=embedding_dim)
         self.embedding_dim = embedding_dim
 
-        # get_hidden_state (representation, h)
+        # state_to_root_node_hidden_info_sampler (representation, h)
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=embedding_dim, nhead=num_heads, dropout=dropout, batch_first=True
         )
-        self.transformer_encoder = nn.TransformerEncoder(
+        self.state_transformer_encoder = nn.TransformerEncoder(
             encoder_layer, num_layers=num_encoder_layers
         )
         self.game_token = nn.Parameter(torch.randn(1, 1, embedding_dim))
-        self.fc_hidden_state_mu = nn.Linear(embedding_dim, embedding_dim)
-        self.fc_hidden_state_log_var = nn.Linear(embedding_dim, embedding_dim)
+        self.enc_to_hidden_state_sampler_mu = nn.Linear(embedding_dim, embedding_dim)
+        self.enc_to_hidden_state_sampler_log_var = nn.Linear(
+            embedding_dim, embedding_dim
+        )
 
-        # get_next_hidden_state (dynamics, g)
-        # It takes hidden_state + action_embedding -> next_hidden_state_vae
-        # May need a more powerful model.
+        # sampled_root_latent_node_to_successor_enc (dynamics, g)
+        # It takes latent_state + action_embedding -> successor_enc
         action_embedding_dim = embedding_dim
         dynamics_hidden_dim = embedding_dim * 2
-        self.dynamics_network_base = nn.Sequential(
+        self.sampled_root_latent_node_to_successor_enc = nn.Sequential(
             nn.Linear(embedding_dim + action_embedding_dim, dynamics_hidden_dim),
             nn.ReLU(),
         )
-        self.fc_next_hidden_state_mu = nn.Linear(dynamics_hidden_dim, embedding_dim)
-        self.fc_next_hidden_state_log_var = nn.Linear(
-            dynamics_hidden_dim, embedding_dim
+
+        # inner_latent_to_successor_sampler (more dynamics, g)
+        # Takes inner latent state
+        self.inner_state_to_successor_sampler_mu = nn.Linear(
+            embedding_dim, embedding_dim
+        )
+        self.inner_state_to_successor_sampler_log_var = nn.Linear(
+            embedding_dim, embedding_dim
         )
 
         # get_policy_and_value (prediction, f)
-        self.value_head = nn.Sequential(nn.Linear(embedding_dim, 1), nn.Tanh())
+        self.latent_to_value_head = nn.Sequential(
+            nn.Linear(embedding_dim, embedding_dim),
+            nn.ReLU(),
+            nn.Linear(embedding_dim, 1),
+            nn.Tanh(),
+        )
 
         # The policy head scores (hidden_state, action) pairs.
         policy_input_dim = embedding_dim + embedding_dim
@@ -130,8 +140,6 @@ class MuZeroNet(BaseTokenizingNet):
             nn.Linear(policy_input_dim, 64), nn.ReLU(), nn.Linear(64, 1)
         )
 
-    # Todo uh, the first state should be a hidden state vae to sample state vectors from representing actual state from hidden info.
-    #  Following states should be a vae for *predicting following states* without using an action input. So rather than state+action its just sample from the vae.
     def get_hidden_state_vae(
         self,
         state_tokens: torch.Tensor,
@@ -156,13 +164,13 @@ class MuZeroNet(BaseTokenizingNet):
         else:
             padding_mask = None
 
-        transformer_output = self.transformer_encoder(
+        transformer_output = self.state_transformer_encoder(
             sequence, src_key_padding_mask=padding_mask
         )
         game_token_output = transformer_output[:, 0, :]  # (batch_size, dim)
 
-        mu = self.fc_hidden_state_mu(game_token_output)
-        log_var = self.fc_hidden_state_log_var(game_token_output)
+        mu = self.enc_to_hidden_state_sampler_mu(game_token_output)
+        log_var = self.enc_to_hidden_state_sampler_log_var(game_token_output)
         return mu, log_var
 
     def get_next_hidden_state_vae(
@@ -173,10 +181,10 @@ class MuZeroNet(BaseTokenizingNet):
         given a current hidden state and an encoded action token.
         """
         dynamics_input = torch.cat([hidden_state, action_token], dim=1)
-        base_output = self.dynamics_network_base(dynamics_input)
+        base_output = self.sampled_root_latent_node_to_successor_enc(dynamics_input)
 
-        mu = self.fc_next_hidden_state_mu(base_output)
-        log_var = self.fc_next_hidden_state_log_var(base_output)
+        mu = self.enc_root_and_action_to_successor_sampler_mu(base_output)
+        log_var = self.enc_root_and_action_to_successor_sampler_log_var(base_output)
         return mu, log_var
 
     def _get_policy_scores(
@@ -193,7 +201,7 @@ class MuZeroNet(BaseTokenizingNet):
         self,
         hidden_state_batch: torch.Tensor,
     ):
-        value_preds = self.value_head(hidden_state_batch).squeeze(-1)
+        value_preds = self.latent_to_value_head(hidden_state_batch).squeeze(-1)
         return value_preds
 
     def get_policy_batched(
@@ -334,7 +342,7 @@ class MuZeroNet(BaseTokenizingNet):
                 pred_dynamics_log_var,
             ) = self.get_next_hidden_state_vae(current_hidden_state, action_tokens)
 
-            next_hidden_state = vae_take_sample(pred_dynamics_mu, pred_dynamics_log_var)
+            next_hidden_state = take_sample(pred_dynamics_mu, pred_dynamics_log_var)
 
         return UnrollStepOutput(
             pred_policy=pred_policy,
@@ -431,7 +439,7 @@ class MuZeroNet(BaseTokenizingNet):
         hidden_state_mu, hidden_state_log_var = self.get_hidden_state_vae(
             initial_state_tokens, initial_state_padding_mask
         )
-        current_hidden_state = vae_take_sample(hidden_state_mu, hidden_state_log_var)
+        current_hidden_state = take_sample(hidden_state_mu, hidden_state_log_var)
 
         for i in range(num_unroll_steps + 1):
             step_output = self._unroll_step(
@@ -491,7 +499,7 @@ class MuZeroNet(BaseTokenizingNet):
     def init_zero(self):
         # todo Initialize all weights to 0. Update as needed
         # Stop deleting my comments and replacing them with docstrings with different meanings.
-        nn.init.constant_(self.value_head[0].weight, 0)
-        nn.init.constant_(self.value_head[0].bias, 0)
+        nn.init.constant_(self.latent_to_value_head[0].weight, 0)
+        nn.init.constant_(self.latent_to_value_head[0].bias, 0)
         nn.init.constant_(self.policy_head[-1].weight, 0)
         nn.init.constant_(self.policy_head[-1].bias, 0)

@@ -1,15 +1,30 @@
 # don't delete.
 # Does not use Reward, only Policy and Value
-# Hidden state is a Vae that can be sampled from. Need progressive widening.
-# Legal actions for hidden states come from a network prediction. Variable length list of encoded action tokens.
+
+# I have a muzero variant designed for games with unknown action spaces, hidden info, and stochasticity. Please review
 #
-# In muzero the root node and inner nodes are handled differently.
-# The root node uses the actual state and legal actions
-# The inner nodes derive both the hidden state and the encoded action tokens.
-# Transitioning from a hidden state tensor to the next hidden state vae is done with the encoded action, not the ActionType action.
 #
-# Note that the root node also needs to use Vae and sampling for hidden info,
-# but the root node has a known set of legal actions
+# Create a RootNodeHiddenInfoSampler node
+# Represents the full distribution of possible states given the ObservedState
+# - ObservedState from player's perspective, input param
+# - hidden info sampler mu and logvar, from representation model
+# - sampledRootNodes, generated as needed with prog widening
+#
+# SampledRootNode has
+# Represents a full-information state corresponding to the ObservedState
+# - latent, input param
+# - actionEdges, using the real actions vectors, an input param
+# - getSuccessor, using dynamics model along an action edge, get an InnerNode
+# - getValue, model using latent
+#
+# InnerNode has
+# Represents any non-root full-information state
+# - latent, input param
+# - successor sampler mu and log var, from model off of latent
+# - innerEdges, holding no information, unlike the concrete actionEdges above. Created as needed for progressive widening getSuccessor. Each innerEdge leads to a single InnerNode (not a distribution. The sampling handles both stochastiticy and hidden info). These are generating likely next states given historic play. The MCTS aspect then derives the best paths among those plays.
+# - getSuccessor, generating a new child state InnerNode latent from the mu and log var.
+# - getValue, model using latent
+
 # There is no finite set of legal actions. Root uses action token inputs. Latent nodes simply generate possible successors from a vae with progressive widening.
 import math
 import random
@@ -33,7 +48,7 @@ from agents.loss_functions import entropy_adjusted_cross_entropy_loss
 from agents.muzero.muzero_net import (
     MuZeroNet,
     MuZeroNetworkOutput,
-    vae_take_sample,
+    take_sample,
 )
 from algorithms.mcts import (
     SelectionStrategy,
@@ -377,29 +392,29 @@ class MuZeroEdge(Edge):
 class MuZeroNode(MCTSNode):
     """Represents a node in the MCTS tree for MuZero."""
 
-    edges: Dict[Union[ActionType, int], MuZeroEdge]
+    edges: Dict[Union[ActionType, int], MuZeroEdge]  # just for type hint
 
     def __init__(
         self,
         player_idx: int,
-        hidden_state: torch.Tensor,
+        latent: torch.Tensor,
         state_with_key: Optional[StateWithKey] = None,
     ):
         # state_with_key is only present for the root samples
         super().__init__(state_with_key=state_with_key)
-        self.hidden_state = hidden_state
+        self.latent = latent
         self.player_idx = player_idx
         self.action_tokens: Optional[List[torch.Tensor]] = None
 
 
-class MuZeroRootNode(MCTSNode):
-    """A special root node for MuZero that holds samples of hidden states."""
+class MuZeroRootNodeHiddenInfoSampler(MCTSNode):
+    """A special root node for MuZero that holds samples of possible states."""
 
     def __init__(self, player_idx: int, state_with_key: StateWithKey):
         super().__init__(state_with_key)
         self.edges: Dict[Union[ActionType, int], MuZeroEdge]
         self.player_idx = player_idx
-        self.child_samples: List[MuZeroNode] = []
+        self.root_samples: List[MuZeroNode] = []
 
 
 class MuZeroExpansion(ExpansionStrategy):
@@ -444,7 +459,7 @@ class MuZeroExpansion(ExpansionStrategy):
             return
 
         policy_dict = self.network.get_policy(
-            hidden_state=node.hidden_state, legal_action_tokens=node.action_tokens
+            hidden_state=node.latent, legal_action_tokens=node.action_tokens
         )
 
         for action_index, prior in policy_dict.items():
@@ -457,12 +472,12 @@ class MuZeroEvaluation(EvaluationStrategy):
         self.network = network
 
     def evaluate(self, node: "MuZeroNode", env: BaseEnvironment) -> float:
-        if node.hidden_state is None:
+        if node.latent is None:
             if env.is_done:
                 return env.get_reward_for_player(player=env.get_current_player())
             return 0.0
 
-        value = self.network.get_value(hidden_state=node.hidden_state)
+        value = self.network.get_value(hidden_state=node.latent)
         return float(value)
 
 
@@ -542,18 +557,16 @@ class MuZeroSelection(UCB1Selection):
             next_hidden_state_log_var,
         ) = self.network.get_next_hidden_state_vae(
             # TODO Right here, if it's hidden->hidden the actions aren't meaningful. It shouldn't take an action token. Should sample from a vae that doesn't use actions.
-            current_node.hidden_state,
+            current_node.latent,
             action_token.unsqueeze(0),
         )
         # todo right now every time we get the next_hidden_state_vae it's always sampled only once..?
-        next_hidden_state = vae_take_sample(
-            next_hidden_state_mu, next_hidden_state_log_var
-        )
+        next_hidden_state = take_sample(next_hidden_state_mu, next_hidden_state_log_var)
 
         next_player_idx = 1 - current_node.player_idx
         next_node = MuZeroNode(
             player_idx=next_player_idx,
-            hidden_state=next_hidden_state,
+            latent=next_hidden_state,
         )
         edge.child_nodes.append(next_node)
         return next_node  # new, unexpanded
@@ -641,18 +654,18 @@ class MuZeroAgent(BaseLearningAgent):
             training_config=training_config,
             model_name=model_name,
         )
-        self.root: Optional["MuZeroRootNode"] = None
+        self.root: Optional["MuZeroRootNodeHiddenInfoSampler"] = None
 
     def search(self, env: BaseEnvironment, train: bool = False):
         # Skip cache when setting root since muzero will never get cache hits
-        self.root = MuZeroRootNode(
+        self.root = MuZeroRootNodeHiddenInfoSampler(
             player_idx=env.get_current_player(), state_with_key=env.get_state_with_key()
         )
 
         for i in range(self.num_simulations):
             # Progressive widening at the root.
             child_limit = _calculate_child_limit(self.root.num_visits)
-            if len(self.root.child_samples) < child_limit:
+            if len(self.root.root_samples) < child_limit:
                 state_tokens = self.network.tokenize_state(
                     state=self.root.state_with_key.state
                 )
@@ -660,15 +673,15 @@ class MuZeroAgent(BaseLearningAgent):
                     hidden_state_mu,
                     hidden_state_log_var,
                 ) = self.network.get_hidden_state_vae(state_tokens=state_tokens)
-                hidden_state = vae_take_sample(hidden_state_mu, hidden_state_log_var)
+                hidden_state = take_sample(hidden_state_mu, hidden_state_log_var)
                 new_sample_node = MuZeroNode(
                     player_idx=self.root.player_idx,
-                    hidden_state=hidden_state,
+                    latent=hidden_state,
                     state_with_key=self.root.state_with_key,
                 )
-                self.root.child_samples.append(new_sample_node)
+                self.root.root_samples.append(new_sample_node)
 
-            root_sample = random.choice(self.root.child_samples)
+            root_sample = random.choice(self.root.root_samples)
 
             sim_env = env.copy()
             selection_result = self.selection_strategy.select(
@@ -698,7 +711,7 @@ class MuZeroAgent(BaseLearningAgent):
         self.root.edges = {}
         aggregated_edges = defaultdict(lambda: MuZeroEdge(prior=0.0))
 
-        for sample_node in self.root.child_samples:
+        for sample_node in self.root.root_samples:
             for action, edge in sample_node.edges.items():
                 aggregated_edges[action].num_visits += edge.num_visits
                 aggregated_edges[action].total_value += edge.total_value
