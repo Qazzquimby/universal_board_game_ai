@@ -110,6 +110,7 @@ class MuZeroNet(BaseTokenizingNet):
 
         # sampled_root_enc_state_node_to_successor_enc (dynamics, g)
         # It takes latent_state + action_embedding -> successor_enc
+        # todo does this need to be a sampler to handle stochasticity?
         action_embedding_dim = embedding_dim
         dynamics_hidden_dim = embedding_dim * 2
         self.sampled_root_latent_node_to_successor_enc = nn.Sequential(

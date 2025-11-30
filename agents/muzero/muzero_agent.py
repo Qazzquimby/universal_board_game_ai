@@ -60,7 +60,6 @@ from algorithms.mcts import (
     StandardBackpropagation,
     MCTSNode,
     SearchPath,
-    SelectionResult,
     Edge,
     MCTSNodeCache,
 )
@@ -105,25 +104,6 @@ class MuZeroDataset(Dataset):
     def __getitem__(self, idx) -> MuZeroExperience:
         exp = self.buffer[idx]
         return exp
-
-    #     states = [step.state for step in exp.steps]
-    #     action_indices = [
-    #         step.action_index for step in exp.steps if step.action_index is not None
-    #     ]
-    #     policy_targets = [
-    #         torch.tensor(step.policy_target, dtype=torch.float32) for step in exp.steps
-    #     ]
-    #     value_targets = torch.tensor(
-    #         [step.value_target for step in exp.steps], dtype=torch.float32
-    #     )
-    #     legal_actions_per_step = [step.legal_actions for step in exp.steps]
-    #     return MuzeroDatasetItem(
-    #         states=states,
-    #         action_indices=action_indices,
-    #         policy_targets=policy_targets,
-    #         value_targets=value_targets,
-    #         legal_actions_per_step=legal_actions_per_step,
-    #     )
 
 
 @dataclass
@@ -401,11 +381,19 @@ class MuZeroNode(MCTSNode):
 class MuZeroRootNodeHiddenInfoSampler(MCTSNode):
     """A special root node for MuZero that holds samples of possible states."""
 
-    def __init__(self, player_idx: int, state_with_key: StateWithKey):
+    def __init__(
+        self,
+        player_idx: int,
+        state_with_key: StateWithKey,
+        mu: torch.Tensor,
+        log_var: torch.Tensor,
+    ):
         super().__init__(state_with_key)
         self.edges: Dict[Union[ActionType, int], MuZeroEdge]
         self.player_idx = player_idx
         self.root_samples: List[MuZeroNode] = []
+
+        self.prog_widener = ProgWidener(mu=mu, log_var=log_var)
 
 
 class MuZeroExpansion(ExpansionStrategy):
@@ -472,6 +460,15 @@ class MuZeroEvaluation(EvaluationStrategy):
         return float(value)
 
 
+@dataclass
+class MuZeroSelectionResult:
+    path: SearchPath
+
+    @property
+    def leaf_node(self):
+        return self.path.last_node
+
+
 class MuZeroSelection(UCB1Selection):
     def __init__(self, exploration_constant: float, network: nn.Module):
         super().__init__(exploration_constant)
@@ -480,17 +477,16 @@ class MuZeroSelection(UCB1Selection):
     def select(
         self,
         node: MuZeroNode,
-        sim_env: BaseEnvironment,
         cache: MCTSNodeCache,
         remaining_sims: int,
         contender_actions: Optional[set],
-    ) -> SelectionResult:
+        sim_env: Optional[BaseEnvironment] = None,  # unused for muzero
+    ) -> MuZeroSelectionResult:
         path = SearchPath(initial_node=node)
         current_node: MuZeroNode = node
-        # todo It's a little silly to be passing around the simenv in muzero since it's not used?
         while current_node.edges:
             if not current_node.is_expanded:
-                return SelectionResult(path=path, leaf_env=sim_env)
+                return MuZeroSelectionResult(path=path)
 
             best_action_index = self._select_action_index_from_edges(
                 current_node=current_node,
@@ -504,7 +500,7 @@ class MuZeroSelection(UCB1Selection):
 
             current_node = next_node
             path.add(current_node, best_action_index)
-        return SelectionResult(path=path, leaf_env=sim_env)
+        return MuZeroSelectionResult(path=path)
 
     def _traverse_or_expand_edge(
         self,
@@ -525,6 +521,20 @@ class MuZeroSelection(UCB1Selection):
               new node was created).
         """
         edge: MuZeroEdge = current_node.edges[action_index]
+
+        # todo when does widening happen?
+        # root node hidden info sampling
+        # inner node successor sampling
+        # handle both here?
+        # do they use different edge types?
+
+        # Root Node sampler -> root node, is not an edge type
+        # Root node -> inner node uses an edge type with meaningful action edges
+        #  (doesn't need sampling)
+        # Inner node -> inner node uses an edge with no action
+        # each edge doesnt need sampling, but it samples making more edges
+        # so sounds like every edge only has one child here..?
+        # unless root node -> inner node samples to handle stochasticity. That sounds reasonable.
 
         child_limit = _calculate_child_limit(edge.num_visits)
         if len(edge.child_nodes) < child_limit:
@@ -702,33 +712,40 @@ class MuZeroAgent(BaseLearningAgent):
 
     def search(self, env: BaseEnvironment, train: bool = False):
         # Skip cache when setting root since muzero will never get cache hits
-        self.root = MuZeroRootNodeHiddenInfoSampler(
-            player_idx=env.get_current_player(), state_with_key=env.get_state_with_key()
+        state_tokens = self.network.tokenize_state(state=self.root.state_with_key.state)
+        (
+            root_node_hidden_info_sampler_mu,
+            root_node_hidden_info_sampler_log_var,
+        ) = self.network.state_to_root_node_hidden_info_sampler(
+            state_tokens=state_tokens
         )
-        # todo update
+
+        self.root = MuZeroRootNodeHiddenInfoSampler(
+            player_idx=env.get_current_player(),
+            state_with_key=env.get_state_with_key(),
+            mu=root_node_hidden_info_sampler_mu,
+            log_var=root_node_hidden_info_sampler_log_var,
+        )
+
         for i in range(self.num_simulations):
-            # Progressive widening at the root. Make a prog widen helper that skipsif new is too similar to an existing
-            child_limit = _calculate_child_limit(self.root.num_visits)
-            if len(self.root.root_samples) < child_limit:
-                state_tokens = self.network.tokenize_state(
-                    state=self.root.state_with_key.state
-                )
-                (
-                    hidden_state_mu,
-                    hidden_state_log_var,
-                ) = self.network.state_to_root_node_hidden_info_sampler(
-                    state_tokens=state_tokens  # todo update
-                )
-                hidden_state = take_sample(hidden_state_mu, hidden_state_log_var)
+            self.root.prog_widener.num_accesses = self.root.num_visits
+            child_latents = torch.stack(
+                [sample_node.latent for sample_node in self.root.root_samples]
+            )
+            new_sample_latent = self.root.prog_widener.widen_if_needed(
+                existing_children=child_latents
+            )
+            if new_sample_latent:
                 new_sample_node = MuZeroNode(
                     player_idx=self.root.player_idx,
-                    latent=hidden_state,
+                    latent=new_sample_latent,
                     state_with_key=self.root.state_with_key,
                 )
                 self.root.root_samples.append(new_sample_node)
 
             root_sample = random.choice(self.root.root_samples)
 
+            ###
             sim_env = env.copy()
             selection_result = self.selection_strategy.select(
                 root_sample,
