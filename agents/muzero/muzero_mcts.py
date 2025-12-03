@@ -1,5 +1,5 @@
 import random
-from typing import List, Dict
+from typing import List
 
 import torch
 
@@ -20,6 +20,7 @@ class MuZeroObservedRootNode(MCTSNodeWithState):
         network: "MuZeroNet",
     ):
         super().__init__(state_with_key=state_with_key)
+        self.network = network
         self.action_tokens = network.tokenize_actions(actions)
         self.player_idx = player_idx
         self.revelations = []
@@ -37,6 +38,7 @@ class MuZeroObservedRootNode(MCTSNodeWithState):
         )
         if new_revelation is not None:
             new_revelation_node = MuZeroRevealedRootNode(
+                network=self.network,
                 observed_root=self,
                 latent=new_revelation,
                 action_tokens=self.action_tokens,
@@ -75,6 +77,7 @@ class MuZeroRevealedRootNode(MCTSNode):
                 state_latent=self.latent, action_token=action_token
             )
             edge = MuZeroEdge(
+                network=network,
                 prior=prior,
                 successor_sampler_mu=successor_sampler_mu,
                 successor_sampler_log_var=successor_sampler_log_var,
@@ -105,6 +108,7 @@ class MuZeroInnerNode:
                 state_latent=self.latent, action_token=action_token
             )
             edge = MuZeroEdge(
+                network=network,
                 prior=prior,
                 successor_sampler_mu=successor_sampler_mu,
                 successor_sampler_log_var=successor_sampler_log_var,
@@ -117,10 +121,12 @@ class MuZeroEdge(Edge):
     def __init__(
         self,
         prior: float,
+        network: "MuZeroNet",
         successor_sampler_mu: torch.Tensor,
         successor_sampler_log_var: torch.Tensor,
     ):
         super().__init__(prior=prior)
+        self.network = network
         self.child_nodes: List["MuZeroInnerNode"] = []
 
         self.widener = ProgWidener(
@@ -134,6 +140,7 @@ class MuZeroEdge(Edge):
         if new_successor_latent is not None:
             new_child_node = MuZeroInnerNode(
                 latent=new_successor_latent,
+                network=self.network,
             )
             self.child_nodes.append(new_child_node)
             return new_child_node
