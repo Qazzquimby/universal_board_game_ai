@@ -1,4 +1,6 @@
 .aider*
-
+.idea
 *_key
 *_key.txt
+data
+__pycache__

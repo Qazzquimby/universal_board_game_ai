@@ -23,12 +23,12 @@ class MuZeroObservedRootNode(MCTSNodeWithState):
         self,
         state_with_key: StateWithKey,
         player_idx: int,
-        mu: torch.Tensor,
-        log_var: torch.Tensor,
+        network: "MuZeroNet",
     ):
         super().__init__(state_with_key=state_with_key)
         self.player_idx = player_idx
         self.revelations = []
+        mu, log_var = network.get_representation_params(state=state_with_key.state)
         self.widener = ProgWidener(mu=mu, log_var=log_var)
 
     def get_revelation(self):
@@ -45,9 +45,6 @@ class MuZeroObservedRootNode(MCTSNodeWithState):
         else:
             return random.choice(self.revelations)
 
-    @classmethod
-    def get_sampler_params(cls):
-        pass  # todo? Better way of handling this?
 
 
 class MuZeroRevealedRootNode:

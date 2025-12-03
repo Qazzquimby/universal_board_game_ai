@@ -213,6 +213,19 @@ class MuZeroNet(BaseTokenizingNet):
             embedding_dim=self.embedding_dim
         )
 
+    def get_representation_params(
+        self, state: StateType
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        state_tokens = self.tokenize_state(state)
+        state_tokens_batch = state_tokens.unsqueeze(0)
+        (
+            mu,
+            log_var,
+        ) = self.root_state_observation_to_revealed_latent_sampler(
+            state_tokens_batch
+        )
+        return mu.squeeze(0), log_var.squeeze(0)
+
     def _get_policy_scores(
         self, hidden_states: torch.Tensor, action_tokens: torch.Tensor
     ) -> torch.Tensor:
