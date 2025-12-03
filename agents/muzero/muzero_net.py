@@ -30,48 +30,6 @@ class MuZeroNetworkOutput:
     target_representation_log_var: torch.Tensor
 
 
-def pad_action_sets(
-    action_sets: List[List[List[torch.Tensor]]], embedding_dim: int, device
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    # actions are batch, step, action, dim
-    if not action_sets:
-        return torch.empty(0, 0, 0, 0, device=device), torch.empty(
-            0, 0, 0, dtype=torch.bool, device=device
-        )
-
-    batch_size = len(action_sets)
-    if batch_size == 0:
-        return torch.empty(0, 0, 0, embedding_dim, device=device), torch.empty(
-            0, 0, 0, dtype=torch.bool, device=device
-        )
-
-    max_steps = 0
-    max_actions = 0
-    for batch in action_sets:
-        if len(batch) > max_steps:
-            max_steps = len(batch)
-        for step in batch:
-            if len(step) > max_actions:
-                max_actions = len(step)
-
-    padded_tensor = torch.zeros(
-        batch_size, max_steps, max_actions, embedding_dim, device=device
-    )
-    mask = torch.zeros(
-        batch_size, max_steps, max_actions, dtype=torch.bool, device=device
-    )
-
-    for batch_index, batch in enumerate(action_sets):
-        for step_index, actions in enumerate(batch):
-            if actions:
-                num_actions = len(actions)
-                action_tensor = torch.cat(actions, dim=0)
-                padded_tensor[batch_index, step_index, :num_actions] = action_tensor
-                mask[batch_index, step_index, :num_actions] = True
-
-    return padded_tensor, mask
-
-
 def take_sample(mu: torch.Tensor, log_var: torch.Tensor) -> torch.Tensor:
     std = torch.exp(0.5 * log_var)
     eps = torch.randn_like(std)
