@@ -3,7 +3,6 @@ from typing import List, Union
 
 import torch
 
-from agents.muzero.muzero_agent import ProgWidener
 from agents.muzero.muzero_net import MuZeroNet
 from algorithms.mcts import Edge, MCTSNodeWithState, MCTSNode
 from environments.base import StateWithKey, ActionType

@@ -1,11 +1,11 @@
 from dataclasses import dataclass
-from typing import Tuple, Dict, List, Optional
+from typing import Tuple, Optional
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from environments.base import BaseEnvironment, StateType, ActionType
+from environments.base import BaseEnvironment, StateType
 from models.networks import BaseTokenizingNet
 
 
@@ -28,12 +28,6 @@ class MuZeroNetworkOutput:
     pred_dynamics_log_var: torch.Tensor
     target_representation_mu: torch.Tensor
     target_representation_log_var: torch.Tensor
-
-
-def take_sample(mu: torch.Tensor, log_var: torch.Tensor) -> torch.Tensor:
-    std = torch.exp(0.5 * log_var)
-    eps = torch.randn_like(std)
-    return mu + eps * std
 
 
 class RootStateObservationToRevealedLatentSampler(nn.Module):

@@ -1,4 +1,4 @@
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 
 import numpy as np
 
@@ -14,7 +14,6 @@ from algorithms.mcts import (
     MCTSNodeWithState,
     PolicyResult,
     MCTSNodeCache,
-    EARLY_STOP_IF_CHANGE_IMPOSSIBLE_CHECK_FREQUENCY,
 )
 from core.agent_interface import Agent
 from environments.base import BaseEnvironment, ActionType, StateWithKey
