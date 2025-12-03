@@ -90,9 +90,9 @@ class MuZeroRevealedRootNode(MCTSNode):
 
 
 class MuZeroInnerNode:
-    def __init__(self, latent: torch.Tensor, network: "MuZeroNet"):
+    def __init__(self, latent: torch.Tensor, player_idx: int, network: "MuZeroNet"):
         self.latent = latent
-        # todo player_idx? Does muzero need to track that?
+        self.player_idx = player_idx
         self.edges: List[MuZeroEdge] = self._init_actions(network=network)
 
     def _init_actions(self, network):
