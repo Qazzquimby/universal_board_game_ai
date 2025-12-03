@@ -145,7 +145,7 @@ class MCTSNode:
     def __init__(
         self,
     ):
-        self.edges: List[DeterministicEdge] = []
+        self.edges: Dict[int, DeterministicEdge] = {}
         self.is_expanded = False
 
         # for value estimate, not actually needed
