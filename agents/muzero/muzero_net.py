@@ -186,6 +186,7 @@ class MuZeroNet(BaseTokenizingNet):
         num_heads: int = 4,
         num_encoder_layers: int = 2,
         dropout: float = 0.1,
+        num_actions_for_inner_nodes: int = 5,
     ):
         super().__init__(env=env, embedding_dim=embedding_dim)
         self.embedding_dim = embedding_dim
@@ -203,6 +204,11 @@ class MuZeroNet(BaseTokenizingNet):
             StateLatentAndActionToSuccessorLatentSampler(
                 embedding_dim=self.embedding_dim
             )
+        )
+
+        self.state_latent_to_actions = StateLatentToActions(
+            embedding_dim=self.embedding_dim,
+            num_actions=num_actions_for_inner_nodes,
         )
 
         self.root_state_observation_to_policy = RootStateObservationAndActionsToPolicy(
@@ -234,6 +240,17 @@ class MuZeroNet(BaseTokenizingNet):
         )
         return mu.squeeze(0), log_var.squeeze(0)
 
+    def get_state_latent_to_actions(
+        self, state_latent: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        latent_state_batch = state_latent.unsqueeze(0)
+        (
+            action_tokens,
+            action_weights,
+        ) = self.state_latent_to_actions(latent_state_batch)
+        return action_tokens.squeeze(0), action_weights.squeeze(0)
+
+    ###
     def _get_policy_scores(
         self, hidden_states: torch.Tensor, action_tokens: torch.Tensor
     ) -> torch.Tensor:

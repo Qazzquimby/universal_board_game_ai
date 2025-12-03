@@ -89,14 +89,28 @@ class MuZeroRevealedRootNode(MCTSNode):
 class MuZeroInnerNode:
     def __init__(self, latent: torch.Tensor, network: "MuZeroNet"):
         self.latent = latent
-
-        # todo player_idx?
-
-        # todo construct edges
+        # todo player_idx? Does muzero need to track that?
         self.edges: List[MuZeroEdge] = self._init_actions(network=network)
 
     def _init_actions(self, network):
-        pass  # todo update network
+        action_tokens, priors = network.get_available_actions_and_priors(
+            state_latent=self.latent
+        )
+        edges = []
+        for action_token, prior in zip(action_tokens.tolist(), priors.tolist()):
+            (
+                successor_sampler_mu,
+                successor_sampler_log_var,
+            ) = network.get_state_latent_to_successor_latent_sampler_params(
+                state_latent=self.latent, action_token=action_token
+            )
+            edge = MuZeroEdge(
+                prior=prior,
+                successor_sampler_mu=successor_sampler_mu,
+                successor_sampler_log_var=successor_sampler_log_var,
+            )
+            edges.append(edge)
+        return edges
 
 
 class MuZeroEdge(Edge):
