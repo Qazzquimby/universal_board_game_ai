@@ -46,7 +46,7 @@ from agents.base_learning_agent import (
     GameHistoryStep,
 )
 from agents.loss_functions import entropy_adjusted_cross_entropy_loss
-from agents.muzero.muzero_mcts import MuZeroEdge
+from agents.muzero.muzero_mcts import MuZeroEdge, MuZeroNode
 from agents.muzero.muzero_net import (
     MuZeroNet,
     MuZeroNetworkOutput,
@@ -600,9 +600,17 @@ class MuZeroEpochMetrics:
 
 
 class ProgWidener:
-    def __init__(self, mu, log_var):
+    def __init__(
+        self,
+        mu: torch.Tensor,
+        log_var: torch.Tensor,
+        min_distance_for_child: float = 2.0,
+        base_accesses_per_widen: int = 10,
+    ):
         self.mu = mu
         self.log_var = log_var
+        self.min_distance_for_child = min_distance_for_child
+        self.base_accesses_per_widen = base_accesses_per_widen
 
         self.num_widens = 0
         self.num_accesses = 0
@@ -619,10 +627,12 @@ class ProgWidener:
         return None
 
     def _get_needed_widens(self):
-        if self.num_accesses <= 10:
+        if self.num_accesses <= self.base_accesses_per_widen:
             return 1
 
-        return math.floor(math.log2(self.num_accesses / 10)) + 2
+        return (
+            math.floor(math.log2(self.num_accesses / self.base_accesses_per_widen)) + 2
+        )
 
     def _widen(self, existing_children: torch.Tensor) -> Optional[torch.Tensor]:
         self.num_widens += 1
@@ -632,7 +642,7 @@ class ProgWidener:
             existing_children=existing_children, sample=sample
         )
         min_distance = torch.min(distances)
-        if min_distance >= 2:  # todo config
+        if min_distance >= self.min_distance_for_child:
             return sample
         else:
             return None

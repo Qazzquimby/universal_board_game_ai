@@ -1,5 +1,5 @@
 import random
-from typing import List
+from typing import List, Union
 
 import torch
 
@@ -115,6 +115,9 @@ class MuZeroInnerNode:
             )
             edges.append(edge)
         return edges
+
+
+MuZeroNode = Union[MuZeroObservedRootNode, MuZeroInnerNode]
 
 
 class MuZeroEdge(Edge):
