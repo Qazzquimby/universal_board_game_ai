@@ -3,11 +3,13 @@ from typing import List, Dict
 
 import torch
 
+from agents.muzero.muzero_agent import ProgWidener
+from agents.muzero.muzero_net import MuZeroNet
 from algorithms.mcts import Edge, MCTSNodeWithState
 from environments.base import StateWithKey
 
 
-class MuZeroEdge(Edge):
+class MuZeroEdge(Edge):  # ABC
     def __init__(self, prior: float):
         super().__init__(prior)
         # A single edge can lead to multiple outcomes (child nodes) due to stochastic dynamics.
@@ -42,6 +44,10 @@ class MuZeroObservedRootNode(MCTSNodeWithState):
             return new_revelation_node
         else:
             return random.choice(self.revelations)
+
+    @classmethod
+    def get_sampler_params(cls):
+        pass  # todo? Better way of handling this?
 
 
 class MuZeroRevealedRootNode:

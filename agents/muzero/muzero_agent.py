@@ -690,7 +690,7 @@ class MuZeroAgent(BaseLearningAgent):
         (
             root_node_hidden_info_sampler_mu,
             root_node_hidden_info_sampler_log_var,
-        ) = self.network.state_to_root_node_hidden_info_sampler(
+        ) = self.network.root_state_observation_revealed_latent_sampler(
             state_tokens=state_tokens
         )
 

@@ -213,61 +213,6 @@ class MuZeroNet(BaseTokenizingNet):
             embedding_dim=self.embedding_dim
         )
 
-    def state_to_root_node_hidden_info_sampler(
-        self,
-        state_tokens: torch.Tensor,
-        state_padding_mask: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Representation function (h): Encodes a batch of states into a stochastic hidden state distribution.
-        """
-        batch_size = state_tokens.shape[0]
-
-        # Prepend game token
-        game_token = self.game_token.expand(batch_size, -1, -1)
-        sequence = torch.cat([game_token, state_tokens], dim=1)
-
-        if state_padding_mask is not None:
-            # The mask needs to be extended for the game token.
-            # Game token is not masked, so we add False for it.
-            game_token_mask = torch.zeros(
-                (batch_size, 1), dtype=torch.bool, device=state_padding_mask.device
-            )
-            padding_mask = torch.cat([game_token_mask, state_padding_mask], dim=1)
-        else:
-            padding_mask = None
-
-        transformer_output = self.state_transformer_encoder(
-            sequence, src_key_padding_mask=padding_mask
-        )
-        game_token_output = transformer_output[:, 0, :]  # (batch_size, dim)
-
-        mu = self.enc_to_hidden_info_sampler_mu(game_token_output)
-        log_var = self.enc_to_hidden_info_sampler_log_var(game_token_output)
-        return mu, log_var
-
-    def sampled_root_enc_state_to_successor_enc(
-        self, enc_state: torch.Tensor, action_token: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Dynamics function (g): Predicts the distribution of the next hidden state
-        given a current hidden state and an encoded action token.
-        """
-        dynamics_input = torch.cat([enc_state, action_token], dim=1)
-        base_output = self.sampled_root_latent_node_to_successor_enc(dynamics_input)
-
-        mu = self.enc_root_and_action_to_successor_sampler_mu(base_output)
-        log_var = self.enc_root_and_action_to_successor_sampler_log_var(base_output)
-        return mu, log_var
-
-    # todo update user where appropriate
-    def inner_enc_to_successor_sampler(
-        self, enc_state: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        mu = self.inner_enc_state_to_successor_sampler_mu(enc_state)
-        log_var = self.inner_enc_state_to_successor_sampler_log_var(enc_state)
-        return mu, log_var
-
     def _get_policy_scores(
         self, hidden_states: torch.Tensor, action_tokens: torch.Tensor
     ) -> torch.Tensor:
@@ -412,7 +357,7 @@ class MuZeroNet(BaseTokenizingNet):
             (
                 target_representation_mu,
                 target_representation_log_var,
-            ) = self.state_to_root_node_hidden_info_sampler(  # todo update
+            ) = self.root_state_observation_revealed_latent_sampler(  # todo update
                 unrolled_states_tokens[:, i], unrolled_states_padding_mask[:, i]
             )
 
@@ -523,7 +468,7 @@ class MuZeroNet(BaseTokenizingNet):
         (
             hidden_state_mu,
             hidden_state_log_var,
-        ) = self.state_to_root_node_hidden_info_sampler(  # todo update
+        ) = self.root_state_observation_revealed_latent_sampler(  # todo update
             initial_state_tokens, initial_state_padding_mask
         )
         current_hidden_state = take_sample(hidden_state_mu, hidden_state_log_var)
