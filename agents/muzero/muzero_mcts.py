@@ -6,6 +6,7 @@ import torch
 from agents.muzero.muzero_net import MuZeroNet
 from algorithms.mcts import Edge, MCTSNodeWithState, MCTSNode
 from environments.base import StateWithKey, ActionType
+from algorithms.sampling import ProgWidener
 
 
 class MuZeroObservedRootNode(MCTSNodeWithState):

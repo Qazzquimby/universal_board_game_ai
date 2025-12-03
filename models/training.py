@@ -45,6 +45,9 @@ def run_training_loop(
         base_agent=mcts_agent,
     )
 
+    # TODO REMOVE
+    self_play_agent = current_agent
+
     self_play_agent.temperature = 0.15
 
     current_agent.load_game_logs(

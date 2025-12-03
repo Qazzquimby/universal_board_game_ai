@@ -44,7 +44,7 @@ from agents.base_learning_agent import (
     GameHistoryStep,
 )
 from agents.loss_functions import entropy_adjusted_cross_entropy_loss
-from agents.muzero.muzero_mcts import MuZeroEdge, MuZeroNode
+from agents.muzero.muzero_mcts import MuZeroEdge, MuZeroNode, MuZeroObservedRootNode
 from agents.muzero.muzero_net import (
     MuZeroNet,
     MuZeroNetworkOutput,
@@ -631,48 +631,23 @@ class MuZeroAgent(BaseLearningAgent):
         self.root: Optional["MuZeroRootNodeHiddenInfoSampler"] = None
 
     def search(self, env: BaseEnvironment, train: bool = False):
-        # Skip cache when setting root since muzero will never get cache hits
-        state_tokens = self.network.tokenize_state(state=self.root.state_with_key.state)
-        (
-            root_node_hidden_info_sampler_mu,
-            root_node_hidden_info_sampler_log_var,
-        ) = self.network.root_state_observation_revealed_latent_sampler(
-            state_tokens=state_tokens
-        )
-
-        self.root = MuZeroRootNodeHiddenInfoSampler(
+        self.root = MuZeroObservedRootNode(
+            state_with_key=self.env.get_state_with_key(),
+            actions=env.get_legal_actions(),
             player_idx=env.get_current_player(),
-            state_with_key=env.get_state_with_key(),
-            mu=root_node_hidden_info_sampler_mu,
-            log_var=root_node_hidden_info_sampler_log_var,
+            network=self.network,
         )
 
         for i in range(self.num_simulations):
-            self.root.prog_widener.num_accesses = self.root.num_visits
-            child_latents = torch.stack(
-                [sample_node.latent for sample_node in self.root.root_samples]
-            )
-            new_sample_latent = self.root.prog_widener.widen_if_needed(
-                existing_children=child_latents
-            )
-            if new_sample_latent:
-                new_sample_node = MuZeroNode(
-                    player_idx=self.root.player_idx,
-                    latent=new_sample_latent,
-                    state_with_key=self.root.state_with_key,
-                )
-                self.root.root_samples.append(new_sample_node)
+            revelation = self.root.get_revelation()
 
-            root_sample = random.choice(self.root.root_samples)
-
-            ###
             sim_env = env.copy()
             selection_result = self.selection_strategy.select(
-                root_sample,
-                sim_env,
-                self.node_cache,
-                self.num_simulations - i,
-                None,
+                node=revelation,  # todo check
+                sim_env=sim_env,
+                cache=self.node_cache,  # todo check if this will ever hit for muzero, I thinkno
+                remaining_sims=self.num_simulations - i,
+                contender_actions=None,  # todo ?
             )
 
             leaf_node = selection_result.leaf_node
