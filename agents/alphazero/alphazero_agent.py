@@ -19,7 +19,7 @@ from agents.loss_functions import entropy_adjusted_cross_entropy_loss
 from environments.base import BaseEnvironment, ActionType, StateType, DataFrame
 from algorithms.mcts import (
     DummyAlphaZeroNet,
-    MCTSNode,
+    MCTSNodeWithState,
     UCB1Selection,
     ExpansionStrategy,
     EvaluationStrategy,
@@ -39,7 +39,7 @@ class AlphaZeroEvaluation(EvaluationStrategy):
     def __init__(self, network: nn.Module):
         self.network = network
 
-    def evaluate(self, node: "MCTSNode", env: BaseEnvironment) -> float:
+    def evaluate(self, node: "MCTSNodeWithState", env: BaseEnvironment) -> float:
         if env.is_done:
             return env.get_reward_for_player(player=env.get_current_player())
 
@@ -52,7 +52,7 @@ class AlphaZeroExpansion(ExpansionStrategy):
     def __init__(self, network: nn.Module):
         self.network = network
 
-    def expand(self, node: "MCTSNode", env: BaseEnvironment) -> None:
+    def expand(self, node: "MCTSNodeWithState", env: BaseEnvironment) -> None:
         if node.is_expanded or env.is_done:
             return
 
@@ -154,14 +154,16 @@ class AlphaZeroAgent(BaseLearningAgent):
         """Returns the collate function for the DataLoader."""
         return get_tokenizing_collate_fn(self.network)
 
-    def _expand_leaf(self, leaf_node: MCTSNode, leaf_env: BaseEnvironment, train: bool):
+    def _expand_leaf(
+        self, leaf_node: MCTSNodeWithState, leaf_env: BaseEnvironment, train: bool
+    ):
         if not leaf_node.is_expanded and not leaf_env.is_done:
             self.expansion_strategy.expand(leaf_node, leaf_env)
 
             if leaf_node == self.root and train and self.config.dirichlet_epsilon > 0:
                 self._apply_dirichlet_noise(self.root)
 
-    def _apply_dirichlet_noise(self, node: MCTSNode):
+    def _apply_dirichlet_noise(self, node: MCTSNodeWithState):
         if not node.edges:
             return
         actions = list(node.edges.keys())
@@ -293,7 +295,9 @@ def make_pure_az(
     )
 
 
-def get_policy_value(network: AlphaZeroNet, node: "MCTSNode", env: BaseEnvironment):
+def get_policy_value(
+    network: AlphaZeroNet, node: "MCTSNodeWithState", env: BaseEnvironment
+):
     key = node.state_with_key.key
     cached_result = network.cache.get(key)
 

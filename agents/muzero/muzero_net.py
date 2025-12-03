@@ -30,11 +30,6 @@ class MuZeroNetworkOutput:
     target_representation_log_var: torch.Tensor
 
 
-# Don't delete
-# Hidden state vae is a distribution for sampling hidden state tensors from, for stochasticity.
-# A hidden state tensor can be used to predict a variable length list of encoded action tokens with size action_dim. These should be stored with the hidden state tensor.
-
-
 def pad_action_sets(
     action_sets: List[List[List[torch.Tensor]]], embedding_dim: int, device
 ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -83,6 +78,148 @@ def take_sample(mu: torch.Tensor, log_var: torch.Tensor) -> torch.Tensor:
     return mu + eps * std
 
 
+class RootStateObservationToRevealedLatentSampler(nn.Module):
+    def __init__(
+        self,
+        embedding_dim: int = 64,
+        num_heads: int = 4,
+        num_encoder_layers: int = 2,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        self.embedding_dim = embedding_dim
+
+        self.state_transformer_encoder = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(
+                d_model=embedding_dim,
+                nhead=num_heads,
+                dropout=dropout,
+                batch_first=True,
+            ),
+            num_layers=num_encoder_layers,
+        )
+        self.game_token = nn.Parameter(torch.randn(1, 1, embedding_dim))
+        self.enc_to_latent_mu = nn.Linear(embedding_dim, embedding_dim)
+        self.enc_to_latent_log_var = nn.Linear(embedding_dim, embedding_dim)
+
+    def forward(
+        self,
+        state_tokens: torch.Tensor,
+        state_padding_mask: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        batch_size = state_tokens.shape[0]
+
+        # Prepend game token
+        game_token = self.game_token.expand(batch_size, -1, -1)
+        sequence = torch.cat([game_token, state_tokens], dim=1)
+
+        if state_padding_mask is not None:
+            # The mask needs to be extended for the game token.
+            # Game token is not masked, so we add False for it.
+            game_token_mask = torch.zeros(
+                (batch_size, 1), dtype=torch.bool, device=state_padding_mask.device
+            )
+            padding_mask = torch.cat([game_token_mask, state_padding_mask], dim=1)
+        else:
+            padding_mask = None
+
+        transformer_output = self.state_transformer_encoder(
+            sequence, src_key_padding_mask=padding_mask
+        )
+        game_token_output = transformer_output[:, 0, :]
+        mu = self.enc_to_latent_mu(game_token_output)
+        log_var = self.enc_to_latent_log_var(game_token_output)
+        return mu, log_var
+
+
+class RootStateObservationAndActionsToPolicy(nn.Module):
+    def __init__(self, embedding_dim: int = 64):
+        super().__init__()
+        self.embedding_dim = embedding_dim
+
+        policy_input_dim = embedding_dim + embedding_dim
+        self.root_state_observation_and_action_to_policy_head = nn.Sequential(
+            nn.Linear(policy_input_dim, 64),
+            nn.ReLU(),
+            nn.Linear(64, 1),
+        )
+
+    def forward(
+        self, latent_state: torch.Tensor, action_token: torch.Tensor
+    ) -> torch.Tensor:
+        policy_input = torch.cat([latent_state, action_token], dim=1)
+        scores = self.root_state_observation_and_action_to_policy_head(
+            policy_input
+        ).squeeze(-1)
+        return scores
+
+
+class StateLatentAndActionToSuccessorLatentSampler(nn.Module):
+    def __init__(self, embedding_dim: int = 64):
+        super().__init__()
+        self.embedding_dim = embedding_dim
+
+        dynamics_hidden_dim = embedding_dim * 2
+        action_embedding_dim = embedding_dim
+
+        self.state_and_action_to_successor_mu = nn.Linear(
+            dynamics_hidden_dim, embedding_dim
+        )
+        self.state_and_action_to_successor_log_var = nn.Linear(
+            dynamics_hidden_dim, embedding_dim
+        )
+
+        self.state_and_action_to_successor_base = nn.Sequential(
+            nn.Linear(embedding_dim + action_embedding_dim, dynamics_hidden_dim),
+            nn.ReLU(),
+        )
+
+    def forward(
+        self, latent_state: torch.Tensor, action_token: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        dynamics_input = torch.cat([latent_state, action_token], dim=1)
+        base_output = self.state_and_action_to_successor_base(dynamics_input)
+
+        mu = self.state_and_action_to_successor_mu(base_output)
+        log_var = self.state_and_action_to_successor_log_var(base_output)
+        return mu, log_var
+
+
+class StateLatentToValue(nn.Module):
+    def __init__(self, embedding_dim: int = 64):
+        super().__init__()
+        self.embedding_dim = embedding_dim
+
+        self.latent_to_value_head = nn.Sequential(
+            nn.Linear(embedding_dim, embedding_dim),
+            nn.ReLU(),
+            nn.Linear(embedding_dim, 1),
+            nn.Tanh(),
+        )
+
+    def forward(self, latent_state: torch.Tensor) -> torch.Tensor:
+        value_pred = self.latent_to_value_head(latent_state).squeeze(-1)
+        return value_pred
+
+
+class StateLatentToActions(nn.Module):
+    def __init__(self, embedding_dim: int = 64, num_actions: int = 5):
+        super().__init__()
+        self.num_actions = num_actions
+        self.embedding_dim = embedding_dim
+
+        self.fc_vectors = nn.Linear(
+            self.embedding_dim, self.num_actions * self.embedding_dim
+        )
+        self.fc_weight_logits = nn.Linear(self.embedding_dim, self.num_actions)
+
+    def forward(self, x):
+        actions_pred = self.fc_vectors(x).view(-1, self.num_actions, self.embedding_dim)
+        logits = self.fc_weight_logits(x)
+        weights_pred = F.softmax(logits, dim=-1)
+        return actions_pred, weights_pred
+
+
 class MuZeroNet(BaseTokenizingNet):
     def __init__(
         self,
@@ -95,50 +232,27 @@ class MuZeroNet(BaseTokenizingNet):
         super().__init__(env=env, embedding_dim=embedding_dim)
         self.embedding_dim = embedding_dim
 
-        # state_to_root_node_hidden_info_sampler (representation, h)
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=embedding_dim, nhead=num_heads, dropout=dropout, batch_first=True
-        )
-        self.state_transformer_encoder = nn.TransformerEncoder(
-            encoder_layer, num_layers=num_encoder_layers
-        )
-        self.game_token = nn.Parameter(torch.randn(1, 1, embedding_dim))
-        self.enc_to_hidden_info_sampler_mu = nn.Linear(embedding_dim, embedding_dim)
-        self.enc_to_hidden_info_sampler_log_var = nn.Linear(
-            embedding_dim, embedding_dim
+        self.root_state_observation_to_revealed_latent_sampler = (
+            RootStateObservationToRevealedLatentSampler(
+                embedding_dim=self.embedding_dim,
+                num_heads=num_heads,
+                num_encoder_layers=num_encoder_layers,
+                dropout=dropout,
+            )
         )
 
-        # sampled_root_enc_state_node_to_successor_enc (dynamics, g)
-        # It takes latent_state + action_embedding -> successor_enc
-        # todo does this need to be a sampler to handle stochasticity?
-        action_embedding_dim = embedding_dim
-        dynamics_hidden_dim = embedding_dim * 2
-        self.sampled_root_latent_node_to_successor_enc = nn.Sequential(
-            nn.Linear(embedding_dim + action_embedding_dim, dynamics_hidden_dim),
-            nn.ReLU(),
+        self.state_latent_and_action_to_successor_latent_sampler = (
+            StateLatentAndActionToSuccessorLatentSampler(
+                embedding_dim=self.embedding_dim
+            )
         )
 
-        # inner_enc_to_successor_sampler (more dynamics, g)
-        # Takes inner latent state
-        self.inner_enc_state_to_successor_sampler_mu = nn.Linear(
-            embedding_dim, embedding_dim
-        )
-        self.inner_enc_state_to_successor_sampler_log_var = nn.Linear(
-            embedding_dim, embedding_dim
+        self.root_state_observation_to_policy = RootStateObservationAndActionsToPolicy(
+            embedding_dim=self.embedding_dim
         )
 
-        # get_policy_and_value (prediction, f)
-        self.latent_to_value_head = nn.Sequential(
-            nn.Linear(embedding_dim, embedding_dim),
-            nn.ReLU(),
-            nn.Linear(embedding_dim, 1),
-            nn.Tanh(),
-        )
-
-        # The policy head scores (hidden_state, action) pairs.
-        policy_input_dim = embedding_dim + embedding_dim
-        self.policy_head = nn.Sequential(
-            nn.Linear(policy_input_dim, 64), nn.ReLU(), nn.Linear(64, 1)
+        self.state_latent_to_value = StateLatentToValue(
+            embedding_dim=self.embedding_dim
         )
 
     def state_to_root_node_hidden_info_sampler(

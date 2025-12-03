@@ -3,7 +3,7 @@ import timeit
 import numpy as np
 from environments.gobblet.gobblet import Gobblet
 from environments.base import DataFrame
-from algorithms.mcts import MCTSNode, RandomRolloutEvaluation
+from algorithms.mcts import MCTSNodeWithState, RandomRolloutEvaluation
 
 
 def setup_initial_board():
@@ -233,7 +233,7 @@ def profile_mcts_evaluation(df_type: str, scenarios: dict):
 
     for name, setup_func in scenarios.items():
         env = setup_func()
-        node = MCTSNode(env.get_state_with_key())
+        node = MCTSNodeWithState(env.get_state_with_key())
         print(f"\nScenario: {name}")
 
         # Time it

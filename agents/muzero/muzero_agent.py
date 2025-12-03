@@ -28,11 +28,12 @@
 # There is no finite set of legal actions. Root uses action token inputs. Latent nodes simply generate possible successors from a vae with progressive widening.
 import math
 import random
-from typing import Optional, List, Dict, Union, Tuple
+from typing import Optional, List, Dict, Tuple
 from collections import defaultdict, deque
 from dataclasses import dataclass
 
 import torch
+from jaxtyping import Float
 from einops import einops
 from torch import nn, optim
 import torch.nn.functional as F
@@ -58,10 +59,11 @@ from algorithms.mcts import (
     BackpropagationStrategy,
     UCB1Selection,
     StandardBackpropagation,
-    MCTSNode,
+    MCTSNodeWithState,
     SearchPath,
     Edge,
     MCTSNodeCache,
+    MCTSNode,
 )
 from environments.base import (
     BaseEnvironment,
@@ -360,40 +362,61 @@ class MuZeroEdge(Edge):
         self.child_nodes: List["MuZeroNode"] = []
 
 
-class MuZeroNode(MCTSNode):
-    """Represents a node in the MCTS tree for MuZero."""
-
-    edges: Dict[Union[ActionType, int], MuZeroEdge]  # just for type hint
+class MuZeroObservedRootNode(MCTSNodeWithState):
+    """Root node from the player's observation"""
 
     def __init__(
         self,
-        player_idx: int,
-        latent: torch.Tensor,
-        state_with_key: Optional[StateWithKey] = None,
-    ):
-        # state_with_key is only present for the root samples
-        super().__init__(state_with_key=state_with_key)
-        self.latent = latent
-        self.player_idx = player_idx
-        self.action_tokens: Optional[List[torch.Tensor]] = None
-
-
-class MuZeroRootNodeHiddenInfoSampler(MCTSNode):
-    """A special root node for MuZero that holds samples of possible states."""
-
-    def __init__(
-        self,
-        player_idx: int,
         state_with_key: StateWithKey,
+        player_idx: int,
         mu: torch.Tensor,
         log_var: torch.Tensor,
     ):
-        super().__init__(state_with_key)
-        self.edges: Dict[Union[ActionType, int], MuZeroEdge]
+        super().__init__(state_with_key=state_with_key)
         self.player_idx = player_idx
-        self.root_samples: List[MuZeroNode] = []
+        self.revelations = []
+        self.widener = ProgWidener(mu=mu, log_var=log_var)
 
-        self.prog_widener = ProgWidener(mu=mu, log_var=log_var)
+    def get_revelation(self):
+        new_revelation = self.widener.widen_if_needed(
+            existing_children=torch.stack([rev.latent for rev in self.revelations])
+        )
+        if new_revelation is not None:
+            new_revelation_node = MuZeroRevealedRootNode(
+                player_idx=self.player_idx,
+                latent=new_revelation,
+            )
+            self.revelations.append(new_revelation_node)
+            return new_revelation_node
+        else:
+            return random.choice(self.revelations)
+
+
+class MuZeroRevealedRootNode:
+    """Possible revelation of the root node given hidden info"""
+
+    def __init__(self, player_idx: int, latent: torch.Tensor):
+        self.player_idx = player_idx
+        self.latent = latent
+        self.edges: Dict[int, MuZeroRootEdge] = {}
+
+class MuZeroRootEdge:
+
+class MuZeroInnerEdge:
+    pass
+
+
+class MuZeroInnerNode(MCTSNode):
+    edges: Dict[int, MuZeroInnerEdge]  # just for type hint
+
+    def __init__(self, player_idx: int, latent: torch.Tensor):
+        super().__init__()
+        self.player_idx = player_idx
+        self.latent = latent
+        self.actions = self._get_actions
+
+    def _get_actions(self):
+        pass
 
 
 class MuZeroExpansion(ExpansionStrategy):
@@ -417,7 +440,6 @@ class MuZeroExpansion(ExpansionStrategy):
                 node.is_expanded = True
                 return
 
-            # TODO, no. Inner actions are just dummies, not vectors. Not used to generate next state.
             # Sample random action tokens
             action_tokens = [
                 torch.randn(
@@ -632,12 +654,10 @@ class ProgWidener:
         self.num_widens = 0
         self.num_accesses = 0
 
-    def count_access(self):
-        self.num_accesses += 1
-
     def widen_if_needed(
         self, existing_children: torch.Tensor
     ) -> Optional[torch.Tensor]:
+        self.num_accesses += 1
         needed_widens = self._get_needed_widens()
         if needed_widens > self.num_widens:
             return self._widen(

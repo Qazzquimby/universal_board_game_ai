@@ -11,7 +11,7 @@ from algorithms.mcts import (
     ExpansionStrategy,
     EvaluationStrategy,
     BackpropagationStrategy,
-    MCTSNode,
+    MCTSNodeWithState,
     PolicyResult,
     MCTSNodeCache,
     EARLY_STOP_IF_CHANGE_IMPOSSIBLE_CHECK_FREQUENCY,
@@ -42,7 +42,7 @@ class BaseMCTSAgent(Agent):
 
         self.num_simulations = num_simulations
 
-        self.root: MCTSNode = None
+        self.root: MCTSNodeWithState = None
         self.node_cache = MCTSNodeCache()
 
     def set_root_to_state(self, state_with_key: StateWithKey):
@@ -53,14 +53,16 @@ class BaseMCTSAgent(Agent):
         if matching_node:
             self.root = matching_node
         else:
-            self.root = MCTSNode(state_with_key=state_with_key)
+            self.root = MCTSNodeWithState(state_with_key=state_with_key)
             self.node_cache.cache_node(key=state_with_key.key, node=self.root)
 
     def _should_stop_early(self, sim_idx: int) -> bool:
         """Checks if the search can be stopped early."""
         return False  # Consider ucb tracking https://aistudio.google.com/prompts/1u8ZK7JpExSOXckEx9FfhrfSQTn5cFr8X
 
-    def _expand_leaf(self, leaf_node: MCTSNode, leaf_env: BaseEnvironment, train: bool):
+    def _expand_leaf(
+        self, leaf_node: MCTSNodeWithState, leaf_env: BaseEnvironment, train: bool
+    ):
         """Default expansion logic. Can be overridden."""
         if not leaf_node.is_expanded:
             self.expansion_strategy.expand(leaf_node, leaf_env)
@@ -105,7 +107,7 @@ class BaseMCTSAgent(Agent):
             path=path, player_to_value=player_to_value
         )
 
-    def search(self, env: BaseEnvironment, train: bool = False) -> MCTSNode:
+    def search(self, env: BaseEnvironment, train: bool = False) -> MCTSNodeWithState:
         """
         Run the MCTS search for a specified number of simulations.
         """

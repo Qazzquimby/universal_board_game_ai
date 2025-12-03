@@ -4,7 +4,7 @@ from typing import Optional, List
 import pytest
 
 from algorithms.mcts import (
-    MCTSNode,
+    MCTSNodeWithState,
     UCB1Selection,
     UniformExpansion,
     RandomRolloutEvaluation,
@@ -22,9 +22,9 @@ def connect4_env_small() -> Connect4:
 
 
 @pytest.fixture
-def root_node() -> MCTSNode:
+def root_node() -> MCTSNodeWithState:
     """Fixture for a basic root node."""
-    return MCTSNode()
+    return MCTSNodeWithState()
 
 
 def test_ucb1_selection_init():
@@ -38,10 +38,10 @@ def test_ucb1_selection_init():
 def test_ucb1_score_child():
     """Test the _score_child method of UCB1Selection."""
     selector = UCB1Selection(exploration_constant=math.sqrt(2))  # Common C value
-    parent = MCTSNode()
+    parent = MCTSNodeWithState()
     parent.visit_count = 10
 
-    child_visited = MCTSNode(parent=parent, prior=0.5)
+    child_visited = MCTSNodeWithState(parent=parent, prior=0.5)
     child_visited.visit_count = 5
     child_visited.total_value = 2.0  # Value from child's perspective = 2/5 = 0.4
     # Score = -Q(child) + C * P(child) * sqrt(log(N(parent)) / N(child))
@@ -51,7 +51,7 @@ def test_ucb1_score_child():
         expected_score_visited
     )
 
-    child_unvisited = MCTSNode(parent=parent, prior=0.5)
+    child_unvisited = MCTSNodeWithState(parent=parent, prior=0.5)
     child_unvisited.visit_count = 0
     # Score for unvisited should be infinity
     assert selector._score_edge(child_unvisited, parent.visit_count) == float("inf")
@@ -80,7 +80,7 @@ def test_ucb1_select_unvisited_child(root_node, connect4_env_small):
 
     total_visits_for_root = 0
     for action in legal_actions:
-        child = MCTSNode(parent=root_node, prior=uniform_prior)
+        child = MCTSNodeWithState(parent=root_node, prior=uniform_prior)
         if (
             action == action_unvisited_col
             and action_visited_col != action_unvisited_col
@@ -139,7 +139,7 @@ def test_ucb1_select_best_score(root_node, connect4_env_small):
 
     total_visits_for_root = 0
     for action in legal_actions:
-        child = MCTSNode(parent=root_node, prior=uniform_prior)
+        child = MCTSNodeWithState(parent=root_node, prior=uniform_prior)
         if action == action_col0:
             child.visit_count = 5
             child.total_value = 1.0  # For P1. From P0's view, Q_child is -0.2
@@ -198,7 +198,7 @@ def test_ucb1_select_path(root_node, connect4_env_small):
     child1_node_for_path = None
     root_total_visits = 0
     for action_at_root in legal_actions_root:
-        node = MCTSNode(parent=root_node, prior=uniform_prior_root)
+        node = MCTSNodeWithState(parent=root_node, prior=uniform_prior_root)
         if action_at_root == action_r_c1:
             node.visit_count = 5
             node.total_value = 0.0  # P1's value. P0 sees 0.0.
@@ -224,7 +224,9 @@ def test_ucb1_select_path(root_node, connect4_env_small):
 
     grandchild1_node_for_path = None
     for action_at_child1 in legal_actions_child1:
-        node = MCTSNode(parent=child1_node_for_path, prior=uniform_prior_child1)
+        node = MCTSNodeWithState(
+            parent=child1_node_for_path, prior=uniform_prior_child1
+        )
         if action_at_child1 == action_c1_gc1:
             node.visit_count = 0  # Unvisited, to be selected
             grandchild1_node_for_path = node
@@ -593,8 +595,8 @@ def test_standard_backpropagation(root_node):
     backpropagator = StandardBackpropagation()
 
     # Create a path: root -> child -> grandchild
-    child = MCTSNode(parent=root_node)
-    grandchild = MCTSNode(parent=child)
+    child = MCTSNodeWithState(parent=root_node)
+    grandchild = MCTSNodeWithState(parent=child)
     path = [root_node, child, grandchild]
 
     # Simulate value from grandchild's perspective (player at leaf)
@@ -646,7 +648,7 @@ def test_standard_backpropagation(root_node):
 
 def test_mcts_node_init():
     """Test MCTSNode initialization."""
-    node = MCTSNode()
+    node = MCTSNodeWithState()
     assert node.parent is None
     assert node.prior == 0.0
     assert not node.children
@@ -655,15 +657,15 @@ def test_mcts_node_init():
     assert node.value == 0.0  # Test value property with zero visits
     assert not node.is_expanded()
 
-    parent = MCTSNode()
-    child = MCTSNode(parent=parent, prior=0.75)
+    parent = MCTSNodeWithState()
+    child = MCTSNodeWithState(parent=parent, prior=0.75)
     assert child.parent == parent
     assert child.prior == 0.75
 
 
 def test_mcts_node_value_property():
     """Test the value property calculation."""
-    node = MCTSNode()
+    node = MCTSNodeWithState()
     node.visit_count = 10
     node.total_value = 5.0
     assert node.value == 0.5
@@ -675,9 +677,9 @@ def test_mcts_node_value_property():
 
 def test_mcts_node_is_expanded():
     """Test the is_expanded method."""
-    node = MCTSNode()
+    node = MCTSNodeWithState()
     assert not node.is_expanded()
     # Connect4 action is an int (column index)
     action_example_col = 0
-    node.children[action_example_col] = MCTSNode(parent=node)
+    node.children[action_example_col] = MCTSNodeWithState(parent=node)
     assert node.is_expanded()
