@@ -33,7 +33,6 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 
 import torch
-from jaxtyping import Float
 from einops import einops
 from torch import nn, optim
 import torch.nn.functional as F
@@ -60,16 +59,13 @@ from algorithms.mcts import (
     BackpropagationStrategy,
     UCB1Selection,
     StandardBackpropagation,
-    MCTSNodeWithState,
     SearchPath,
-    Edge,
     MCTSNodeCache,
     MCTSNode,
 )
 from environments.base import (
     BaseEnvironment,
     ActionType,
-    StateWithKey,
     DataFrame,
     StateType,
 )

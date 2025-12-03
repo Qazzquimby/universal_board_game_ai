@@ -106,14 +106,19 @@ class SearchPath:
         return current_node, action_to_current, parent_node
 
 
-@dataclass
 class Edge:
     """Represents an action from a state"""
 
-    prior: float
-    num_visits: int = 0
-    total_value: float = 0.0  # from perspective of player taking the action
-    child_node: Optional["MCTSNodeWithState"] = field(default=None, repr=False)
+    def __init__(
+        self,
+        prior: float,
+        num_visits: int = 0,
+        total_value: float = 0.0,
+        # from perspective of player taking the action
+    ):
+        self.prior = prior
+        self.num_visits = num_visits
+        self.total_value = total_value
 
     @property
     def value(self) -> float:
@@ -122,11 +127,25 @@ class Edge:
         return self.total_value / self.num_visits
 
 
+class DeterministicEdge(Edge):
+    """Edge with only one child node"""
+
+    def __init__(
+        self,
+        prior: float,
+        num_visits: int = 0,
+        total_value: float = 0.0,  # from perspective of player taking the action
+        child_node: Optional["MCTSNodeWithState"] = None,
+    ):
+        super().__init__(prior=prior, num_visits=num_visits, total_value=total_value)
+        self.child_node = child_node
+
+
 class MCTSNode:
     def __init__(
         self,
     ):
-        self.edges: List[Edge]
+        self.edges: List[DeterministicEdge] = []
         self.is_expanded = False
 
         # for value estimate, not actually needed
@@ -328,7 +347,9 @@ class UCB1Selection(SelectionStrategy):
             raise ValueError("Exploration constant cannot be negative.")
         self.exploration_constant = exploration_constant
 
-    def _score_edge(self, edge: Edge, parent_node_num_visits: int) -> float:
+    def _score_edge(
+        self, edge: DeterministicEdge, parent_node_num_visits: int
+    ) -> float:
         """Calculates the UCB1 score for a child node."""
         if edge.num_visits == 0:
             return float("inf")
@@ -429,7 +450,7 @@ class UniformExpansion(ExpansionStrategy):
         assert legal_actions
         assert not node.edges
         for action_index, action in enumerate(legal_actions):
-            node.edges[action_index] = Edge(prior=1.0)
+            node.edges[action_index] = DeterministicEdge(prior=1.0)
         node.is_expanded = True
 
 

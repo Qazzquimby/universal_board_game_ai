@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import List, Dict, Tuple
+from typing import List, Dict
 from collections import deque
 
 import torch
@@ -24,7 +24,7 @@ from algorithms.mcts import (
     ExpansionStrategy,
     EvaluationStrategy,
     StandardBackpropagation,
-    Edge,
+    DeterministicEdge,
     BackpropagationStrategy,
     SelectionStrategy,
     MCTSNodeCache,
@@ -61,7 +61,7 @@ class AlphaZeroExpansion(ExpansionStrategy):
         for action_index, prior in policy_dict.items():
             # todo action index, was action. Check all uses of node.edges
             # action_key = tuple(action_index) if isinstance(action_index, list) else action_index
-            node.edges[action_index] = Edge(prior=prior)
+            node.edges[action_index] = DeterministicEdge(prior=prior)
         node.is_expanded = True
 
 
@@ -166,10 +166,10 @@ class AlphaZeroAgent(BaseLearningAgent):
     def _apply_dirichlet_noise(self, node: MCTSNodeWithState):
         if not node.edges:
             return
-        actions = list(node.edges.keys())
-        noise = np.random.dirichlet([self.config.dirichlet_alpha] * len(actions))
+        action_indices = range(len(node.edges))
+        noise = np.random.dirichlet([self.config.dirichlet_alpha] * len(action_indices))
         eps = self.config.dirichlet_epsilon
-        for i, action in enumerate(actions):
+        for i, action in enumerate(action_indices):
             node.edges[action].prior = (
                 node.edges[action].prior * (1 - eps) + noise[i] * eps
             )

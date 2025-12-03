@@ -5,15 +5,8 @@ import torch
 
 from agents.muzero.muzero_agent import ProgWidener
 from agents.muzero.muzero_net import MuZeroNet
-from algorithms.mcts import Edge, MCTSNodeWithState
-from environments.base import StateWithKey
-
-
-class MuZeroEdge(Edge):  # ABC
-    def __init__(self, prior: float):
-        super().__init__(prior)
-        # A single edge can lead to multiple outcomes (child nodes) due to stochastic dynamics.
-        self.child_nodes: List["MuZeroNode"] = []
+from algorithms.mcts import Edge, MCTSNodeWithState, MCTSNode
+from environments.base import StateWithKey, ActionType
 
 
 class MuZeroObservedRootNode(MCTSNodeWithState):
@@ -22,13 +15,20 @@ class MuZeroObservedRootNode(MCTSNodeWithState):
     def __init__(
         self,
         state_with_key: StateWithKey,
+        actions: List[ActionType],
         player_idx: int,
         network: "MuZeroNet",
     ):
         super().__init__(state_with_key=state_with_key)
+        self.action_tokens = network.tokenize_actions(actions)
         self.player_idx = player_idx
         self.revelations = []
-        mu, log_var = network.get_representation_params(state=state_with_key.state)
+        (
+            mu,
+            log_var,
+        ) = network.get_root_state_observation_to_revealed_latent_sampler_params(
+            state=state_with_key.state
+        )
         self.widener = ProgWidener(mu=mu, log_var=log_var)
 
     def get_revelation(self):
@@ -37,8 +37,9 @@ class MuZeroObservedRootNode(MCTSNodeWithState):
         )
         if new_revelation is not None:
             new_revelation_node = MuZeroRevealedRootNode(
-                player_idx=self.player_idx,
+                observed_root=self,
                 latent=new_revelation,
+                action_tokens=self.action_tokens,
             )
             self.revelations.append(new_revelation_node)
             return new_revelation_node
@@ -46,16 +47,81 @@ class MuZeroObservedRootNode(MCTSNodeWithState):
             return random.choice(self.revelations)
 
 
-
-class MuZeroRevealedRootNode:
+class MuZeroRevealedRootNode(MCTSNode):
     """Possible revelation of the root node given hidden info"""
 
-    def __init__(self, player_idx: int, latent: torch.Tensor):
-        self.player_idx = player_idx
+    edges: List["MuZeroEdge"]  # for type hint
+
+    def __init__(
+        self,
+        observed_root: MuZeroObservedRootNode,
+        latent: torch.Tensor,
+        action_tokens: torch.Tensor,
+        network: "MuZeroNet",
+    ):
+        super().__init__()
+        self.observed_root = observed_root
         self.latent = latent
-        self.edges: Dict[int, MuZeroRootEdge] = {}
+        self.action_tokens = action_tokens
+
+        for action_token in action_tokens.tolist():
+            prior = network.get_action_prior_from_state_latent(
+                state_latent=self.latent, action_token=action_token
+            )
+            (
+                successor_sampler_mu,
+                successor_sampler_log_var,
+            ) = network.get_state_latent_to_successor_latent_sampler_params(
+                state_latent=self.latent, action_token=action_token
+            )
+            edge = MuZeroEdge(
+                prior=prior,
+                successor_sampler_mu=successor_sampler_mu,
+                successor_sampler_log_var=successor_sampler_log_var,
+            )
+            self.edges.append(edge)
+
+    @property
+    def player_idx(self):
+        return self.observed_root.player_idx
 
 
-class MuZeroRootEdge:
-    class MuZeroInnerEdge:
-        pass
+class MuZeroInnerNode:
+    def __init__(self, latent: torch.Tensor, network: "MuZeroNet"):
+        self.latent = latent
+
+        # todo player_idx?
+
+        # todo construct edges
+        self.edges: List[MuZeroEdge] = self._init_actions(network=network)
+
+    def _init_actions(self, network):
+        pass  # todo update network
+
+
+class MuZeroEdge(Edge):
+    def __init__(
+        self,
+        prior: float,
+        successor_sampler_mu: torch.Tensor,
+        successor_sampler_log_var: torch.Tensor,
+    ):
+        super().__init__(prior=prior)
+        self.child_nodes: List["MuZeroInnerNode"] = []
+
+        self.widener = ProgWidener(
+            mu=successor_sampler_mu, log_var=successor_sampler_log_var
+        )
+
+    def get_child_node(self):
+        new_successor_latent = self.widener.widen_if_needed(
+            existing_children=torch.stack([node.latent for node in self.child_nodes])
+        )
+        if new_successor_latent is not None:
+            new_child_node = MuZeroInnerNode(
+                latent=new_successor_latent,
+            )
+            self.child_nodes.append(new_child_node)
+            return new_child_node
+        else:
+            return random.choice(self.child_nodes)

@@ -213,7 +213,7 @@ class MuZeroNet(BaseTokenizingNet):
             embedding_dim=self.embedding_dim
         )
 
-    def get_representation_params(
+    def get_root_state_observation_to_revealed_latent_sampler_params(
         self, state: StateType
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         state_tokens = self.tokenize_state(state)
@@ -221,8 +221,16 @@ class MuZeroNet(BaseTokenizingNet):
         (
             mu,
             log_var,
-        ) = self.root_state_observation_to_revealed_latent_sampler(
-            state_tokens_batch
+        ) = self.root_state_observation_to_revealed_latent_sampler(state_tokens_batch)
+        return mu.squeeze(0), log_var.squeeze(0)
+
+    def get_state_latent_to_successor_latent_sampler_params(
+        self, state_latent: torch.Tensor, action_token: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        latent_state_batch = state_latent.unsqueeze(0)
+        action_token_batch = action_token.unsqueeze(0)
+        (mu, log_var,) = self.state_latent_and_action_to_successor_latent_sampler(
+            latent_state_batch, action_token_batch
         )
         return mu.squeeze(0), log_var.squeeze(0)
 
