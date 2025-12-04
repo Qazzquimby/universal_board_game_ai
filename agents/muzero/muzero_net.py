@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from typing import Tuple, Optional
-
+from jaxtyping import Float
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -56,9 +56,11 @@ class RootStateObservationToRevealedLatentSampler(nn.Module):
 
     def forward(
         self,
-        state_tokens: torch.Tensor,
-        state_padding_mask: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        state_tokens: Float[torch.Tensor, "batch seq_len emb_dim"],
+        state_padding_mask: Optional[Float[torch.Tensor, "batch seq_len"]] = None,
+    ) -> Tuple[
+        Float[torch.Tensor, "batch emb_dim"], Float[torch.Tensor, "batch emb_dim"]
+    ]:
         batch_size = state_tokens.shape[0]
 
         # Prepend game token
@@ -97,8 +99,10 @@ class RootStateObservationAndActionsToPolicy(nn.Module):
         )
 
     def forward(
-        self, latent_state: torch.Tensor, action_token: torch.Tensor
-    ) -> torch.Tensor:
+        self,
+        latent_state: Float[torch.Tensor, "batch emb_dim"],
+        action_token: Float[torch.Tensor, "batch emb_dim"],
+    ) -> Float[torch.Tensor, "batch emb_dim"]:
         policy_input = torch.cat([latent_state, action_token], dim=1)
         scores = self.root_state_observation_and_action_to_policy_head(
             policy_input
@@ -127,7 +131,9 @@ class StateLatentAndActionToSuccessorLatentSampler(nn.Module):
         )
 
     def forward(
-        self, latent_state: torch.Tensor, action_token: torch.Tensor
+        self,
+        latent_state: Float[torch.Tensor, "batch emb_dim"],
+        action_token: Float[torch.Tensor, "batch emb_dim"],
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         dynamics_input = torch.cat([latent_state, action_token], dim=1)
         base_output = self.state_and_action_to_successor_base(dynamics_input)
@@ -149,7 +155,9 @@ class StateLatentToValue(nn.Module):
             nn.Tanh(),
         )
 
-    def forward(self, latent_state: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, latent_state: Float[torch.Tensor, "batch emb_dim"]
+    ) -> Float[torch.Tensor, "batch 1"]:
         value_pred = self.latent_to_value_head(latent_state).squeeze(-1)
         return value_pred
 
@@ -215,18 +223,23 @@ class MuZeroNet(BaseTokenizingNet):
 
     def get_root_state_observation_to_revealed_latent_sampler_params(
         self, state: StateType
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> Tuple[
+        Float[torch.Tensor, "batch emb_dim"], Float[torch.Tensor, "batch emb_dim"]
+    ]:
         state_tokens = self.tokenize_state(state)
-        state_tokens_batch = state_tokens.unsqueeze(0)
         (
             mu,
             log_var,
-        ) = self.root_state_observation_to_revealed_latent_sampler(state_tokens_batch)
+        ) = self.root_state_observation_to_revealed_latent_sampler(state_tokens)
         return mu.squeeze(0), log_var.squeeze(0)
 
     def get_state_latent_to_successor_latent_sampler_params(
-        self, state_latent: torch.Tensor, action_token: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        self,
+        state_latent: Float[torch.Tensor, "batch emb_dim"],
+        action_token: Float[torch.Tensor, "batch emb_dim"],
+    ) -> Tuple[
+        Float[torch.Tensor, "batch emb_dim"], Float[torch.Tensor, "batch emb_dim"]
+    ]:
         latent_state_batch = state_latent.unsqueeze(0)
         action_token_batch = action_token.unsqueeze(0)
         (mu, log_var,) = self.state_latent_and_action_to_successor_latent_sampler(
@@ -235,8 +248,10 @@ class MuZeroNet(BaseTokenizingNet):
         return mu.squeeze(0), log_var.squeeze(0)
 
     def get_state_latent_to_actions(
-        self, state_latent: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        self, state_latent: Float[torch.Tensor, "batch emb_dim"]
+    ) -> Tuple[
+        Float[torch.Tensor, "batch emb_dim"], Float[torch.Tensor, "batch emb_dim"]
+    ]:
         latent_state_batch = state_latent.unsqueeze(0)
         (
             action_tokens,
