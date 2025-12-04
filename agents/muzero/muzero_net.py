@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+import typing
 from dataclasses import dataclass
 from typing import Tuple, Optional
 from jaxtyping import Float
@@ -84,6 +87,9 @@ class RootStateObservationToRevealedLatentSampler(nn.Module):
         mu = self.enc_to_latent_mu(game_token_output)
         log_var = self.enc_to_latent_log_var(game_token_output)
         return mu, log_var
+
+    if typing.TYPE_CHECKING:
+        __call__ = forward
 
 
 class RootStateObservationAndActionsToPolicy(nn.Module):
