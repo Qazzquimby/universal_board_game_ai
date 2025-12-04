@@ -33,9 +33,12 @@ class MuZeroObservedRootNode(MCTSNodeWithState):
         self.widener = ProgWidener(mu=mu, log_var=log_var)
 
     def get_revelation(self):
-        new_revelation = self.widener.widen_if_needed(
-            existing_children=torch.stack([rev.latent for rev in self.revelations])
-        )
+        if self.revelations:
+            existing_children = torch.stack([rev.latent for rev in self.revelations])
+            new_revelation = self.widener.widen_if_needed(existing_children)
+        else:
+            new_revelation = self.widener.widen_if_needed()
+
         if new_revelation is not None:
             new_revelation_node = MuZeroRevealedRootNode(
                 network=self.network,
@@ -59,7 +62,7 @@ class MuZeroRevealedRootNode(MCTSNode):
         observed_root: MuZeroObservedRootNode,
         latent: torch.Tensor,
         action_tokens: torch.Tensor,
-        network: "MuZeroNet",
+        network: MuZeroNet,
     ):
         super().__init__()
         self.observed_root = observed_root
@@ -67,14 +70,14 @@ class MuZeroRevealedRootNode(MCTSNode):
         self.action_tokens = action_tokens
 
         for action_token in action_tokens.tolist():
-            prior = network.get_action_prior_from_state_latent(
-                state_latent=self.latent, action_token=action_token
+            prior = network.root_state_observation_to_policy.forward(
+                state_latent=self.latent, action_tokenffff=action_token
             )
             (
                 successor_sampler_mu,
                 successor_sampler_log_var,
-            ) = network.get_state_latent_to_successor_latent_sampler_params(
-                state_latent=self.latent, action_token=action_token
+            ) = network.root_state_observation_to_policy(
+                state_latent=self.latent, action_tokenfggf=action_token
             )
             edge = MuZeroEdge(
                 network=network,

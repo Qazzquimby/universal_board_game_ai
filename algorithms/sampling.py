@@ -4,6 +4,8 @@ import einops
 import torch
 from typing import Optional
 
+from jaxtyping import Float
+
 
 class ProgWidener:
     def __init__(
@@ -22,11 +24,11 @@ class ProgWidener:
         self.num_accesses = 0
 
     def widen_if_needed(
-        self, existing_children: torch.Tensor
-    ) -> Optional[torch.Tensor]:
+        self, existing_children: Optional[Float[torch.Tensor, "emb_dim"]] = None
+    ) -> Optional[Float[torch.Tensor, "emb_dim"]]:
         self.num_accesses += 1
         needed_widens = self._get_needed_widens()
-        if needed_widens > self.num_widens:
+        if needed_widens > self.num_widens or existing_children is None:
             return self._widen(
                 existing_children=existing_children,
             )
@@ -40,10 +42,15 @@ class ProgWidener:
             math.floor(math.log2(self.num_accesses / self.base_accesses_per_widen)) + 2
         )
 
-    def _widen(self, existing_children: torch.Tensor) -> Optional[torch.Tensor]:
+    def _widen(
+        self, existing_children: Optional[Float[torch.Tensor, "emb_dim"]] = None
+    ) -> Optional[torch.Tensor]:
         self.num_widens += 1
 
         sample = take_sample(mu=self.mu, log_var=self.log_var)
+        if existing_children is None:
+            return sample
+
         distances = self._get_sample_distances(
             existing_children=existing_children, sample=sample
         )

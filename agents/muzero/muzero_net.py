@@ -115,6 +115,9 @@ class RootStateObservationAndActionsToPolicy(nn.Module):
         ).squeeze(-1)
         return scores
 
+    if typing.TYPE_CHECKING:
+        __call__ = forward
+
 
 class StateLatentAndActionToSuccessorLatentSampler(nn.Module):
     def __init__(self, embedding_dim: int = 64):
