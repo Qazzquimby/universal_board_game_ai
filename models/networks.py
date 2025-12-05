@@ -3,6 +3,8 @@ import torch.nn as nn
 
 from typing import Dict, List, Tuple
 
+from jaxtyping import Float
+
 from environments.base import BaseEnvironment, StateType, ActionType, DataFrame
 
 
@@ -166,7 +168,9 @@ class BaseTokenizingNet(nn.Module):
 
         return padded_tokens, padding_mask
 
-    def tokenize_actions(self, actions: List[ActionType]) -> torch.Tensor:
+    def tokenize_actions(
+        self, actions: List[ActionType]
+    ) -> Float[torch.Tensor, "1 seq_len emb_dim"]:
         """Converts a batch of actions into embedding tokens using vectorized operations."""
         device = self.get_device()
         if not actions:
@@ -189,7 +193,7 @@ class BaseTokenizingNet(nn.Module):
             for i, comp_name in enumerate(action_components):
                 component_values = actions_tensor[:, i]
                 action_embeddings += self.embedding_layers[comp_name](component_values)
-            return action_embeddings
+            return action_embeddings.unsqueeze(0)
 
         # Handle complex, multi-type actions (e.g. Gobblet)
         action_embeddings = torch.zeros(batch_size, self.embedding_dim, device=device)
@@ -225,7 +229,7 @@ class BaseTokenizingNet(nn.Module):
                 val_tensor = torch.tensor(val + 1, dtype=torch.long, device=device)
                 action_embeddings[i] += self.embedding_layers[comp_name](val_tensor)
 
-        return action_embeddings
+        return action_embeddings.unsqueeze(0)
 
     def tokenize_action(self, action: ActionType) -> torch.Tensor:
         """Converts a single action into an embedding token."""

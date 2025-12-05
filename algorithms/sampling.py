@@ -24,8 +24,8 @@ class ProgWidener:
         self.num_accesses = 0
 
     def widen_if_needed(
-        self, existing_children: Optional[Float[torch.Tensor, "emb_dim"]] = None
-    ) -> Optional[Float[torch.Tensor, "emb_dim"]]:
+        self, existing_children: Optional[Float[torch.Tensor, "1 emb_dim"]] = None
+    ) -> Optional[Float[torch.Tensor, "1 emb_dim"]]:
         self.num_accesses += 1
         needed_widens = self._get_needed_widens()
         if needed_widens > self.num_widens or existing_children is None:
@@ -43,20 +43,20 @@ class ProgWidener:
         )
 
     def _widen(
-        self, existing_children: Optional[Float[torch.Tensor, "emb_dim"]] = None
+        self, existing_children: Optional[Float[torch.Tensor, "1 emb_dim"]] = None
     ) -> Optional[torch.Tensor]:
         self.num_widens += 1
 
         sample = take_sample(mu=self.mu, log_var=self.log_var)
         if existing_children is None:
-            return sample
+            return sample.unsqueeze(0)
 
         distances = self._get_sample_distances(
             existing_children=existing_children, sample=sample
         )
         min_distance = torch.min(distances)
         if min_distance >= self.min_distance_for_child:
-            return sample
+            return sample.unsqueeze(0)
         else:
             return None
 

@@ -1,7 +1,12 @@
-from typing import Optional, Dict, List
+from typing import Optional, Dict
 
 import numpy as np
 
+from agents.muzero.muzero_agent import (
+    MuZeroSelection,
+    MuZeroExpansion,
+    MuZeroEvaluation,
+)
 from algorithms.mcts import (
     UCB1Selection,
     UniformExpansion,
@@ -26,9 +31,9 @@ class BaseMCTSAgent(Agent):
     def __init__(
         self,
         num_simulations: int,
-        selection_strategy: SelectionStrategy,
-        expansion_strategy: ExpansionStrategy,
-        evaluation_strategy: EvaluationStrategy,
+        selection_strategy: MuZeroSelection,
+        expansion_strategy: MuZeroExpansion,
+        evaluation_strategy: MuZeroEvaluation,
         backpropagation_strategy: BackpropagationStrategy,
     ):
         if num_simulations <= 0:

@@ -450,9 +450,9 @@ class MuZeroSelection(UCB1Selection):
     def select(
         self,
         node: MuZeroNode,
-        cache: MCTSNodeCache,
         remaining_sims: int,
         contender_actions: Optional[set],
+        cache: MCTSNodeCache = None,  # unused for muzero
         sim_env: Optional[BaseEnvironment] = None,  # unused for muzero
     ) -> MuZeroSelectionResult:
         path = SearchPath(initial_node=node)
@@ -639,20 +639,16 @@ class MuZeroAgent(BaseLearningAgent):
         )
 
         for i in range(self.num_simulations):
-            revelation = self.root.get_revelation()
+            revelation: MuZeroNode = self.root.get_revelation()
 
             sim_env = env.copy()
             selection_result = self.selection_strategy.select(
-                node=revelation,  # todo check
-                sim_env=sim_env,
-                cache=self.node_cache,  # todo check if this will ever hit for muzero, I thinkno
+                node=revelation,
+                contender_actions=None,  # todo, when is this not None?
                 remaining_sims=self.num_simulations - i,
-                contender_actions=None,  # todo ?
             )
 
             leaf_node = selection_result.leaf_node
-            leaf_env = selection_result.leaf_env
-
             self._expand_leaf(leaf_node, leaf_env, train)
             value = self.evaluation_strategy.evaluate(leaf_node, leaf_env)
             # The path goes back to the root sample
@@ -677,11 +673,9 @@ class MuZeroAgent(BaseLearningAgent):
         # We don't set priors correctly here as they are not used after search.
         self.root.edges = dict(aggregated_edges)
 
-    def _expand_leaf(
-        self, leaf_node: "MuZeroNode", leaf_env: BaseEnvironment, train: bool
-    ):
-        if not leaf_node.is_expanded and not leaf_env.is_done:
-            self.expansion_strategy.expand(leaf_node, leaf_env)
+    def _expand_leaf(self, leaf_node: "MuZeroNode", train: bool):
+        if not leaf_node.is_expanded:  # todo predict isDone from state latent
+            self.expansion_strategy.expand(leaf_node)
 
     def _create_buffer_experiences(
         self,

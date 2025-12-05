@@ -3,6 +3,8 @@ from __future__ import annotations
 import typing
 from dataclasses import dataclass
 from typing import Tuple, Optional
+
+import einops
 from jaxtyping import Float
 import torch
 import torch.nn as nn
@@ -107,12 +109,14 @@ class RootStateObservationAndActionsToPolicy(nn.Module):
     def forward(
         self,
         latent_state: Float[torch.Tensor, "batch emb_dim"],
-        action_token: Float[torch.Tensor, "batch emb_dim"],
-    ) -> Float[torch.Tensor, "batch emb_dim"]:
-        policy_input = torch.cat([latent_state, action_token], dim=1)
-        scores = self.root_state_observation_and_action_to_policy_head(
-            policy_input
-        ).squeeze(-1)
+        action_token: Float[torch.Tensor, "batch action emb_dim"],
+    ) -> Float[torch.Tensor, "batch action emb_dim"]:
+        # repeat state to match action token height with einops
+        latent_state = einops.repeat(
+            latent_state, "batch emb -> batch action emb", action=action_token.shape[1]
+        )
+        policy_input = torch.cat([latent_state, action_token], dim=-1)
+        scores = self.root_state_observation_and_action_to_policy_head(policy_input)
         return scores
 
     if typing.TYPE_CHECKING:
@@ -142,9 +146,18 @@ class StateLatentAndActionToSuccessorLatentSampler(nn.Module):
     def forward(
         self,
         latent_state: Float[torch.Tensor, "batch emb_dim"],
-        action_token: Float[torch.Tensor, "batch emb_dim"],
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        dynamics_input = torch.cat([latent_state, action_token], dim=1)
+        action_token: Float[torch.Tensor, "batch action emb_dim"],
+    ) -> Tuple[
+        Float[torch.Tensor, "batch action emb_dim"],
+        Float[torch.Tensor, "batch action emb_dim"],
+    ]:
+        latent_state = einops.repeat(
+            latent_state,
+            "batch emb -> batch action emb",
+            action=action_token.shape[1],
+        )
+
+        dynamics_input = torch.cat([latent_state, action_token], dim=-1)
         base_output = self.state_and_action_to_successor_base(dynamics_input)
 
         mu = self.state_and_action_to_successor_mu(base_output)
@@ -182,9 +195,11 @@ class StateLatentToActions(nn.Module):
         )
         self.fc_weight_logits = nn.Linear(self.embedding_dim, self.num_actions)
 
-    def forward(self, x):
-        actions_pred = self.fc_vectors(x).view(-1, self.num_actions, self.embedding_dim)
-        logits = self.fc_weight_logits(x)
+    def forward(self, state_latent: Float[torch.Tensor, "batch emb_dim"]):
+        actions_pred = self.fc_vectors(state_latent).view(
+            -1, self.num_actions, self.embedding_dim
+        )
+        logits = self.fc_weight_logits(state_latent)
         weights_pred = F.softmax(logits, dim=-1)
         return actions_pred, weights_pred
 

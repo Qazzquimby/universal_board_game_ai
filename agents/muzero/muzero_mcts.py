@@ -2,11 +2,21 @@ import random
 from typing import List, Union
 
 import torch
+from jaxtyping import Float
 
 from agents.muzero.muzero_net import MuZeroNet
 from algorithms.mcts import Edge, MCTSNodeWithState, MCTSNode
 from environments.base import StateWithKey, ActionType
 from algorithms.sampling import ProgWidener
+
+
+# Currently assuming alternating between 2 players
+# In future, better to predict the current player at a state from the model
+# Or at least handle more than 2 players
+
+
+def get_next_player(current_player_idx: int, num_players: int = 2) -> int:
+    return (current_player_idx + 1) % num_players
 
 
 class MuZeroObservedRootNode(MCTSNodeWithState):
@@ -60,32 +70,32 @@ class MuZeroRevealedRootNode(MCTSNode):
     def __init__(
         self,
         observed_root: MuZeroObservedRootNode,
-        latent: torch.Tensor,
-        action_tokens: torch.Tensor,
+        latent: Float[torch.Tensor, "1 emb_dim"],
+        action_tokens: Float[torch.Tensor, "1 num_actions emb_dim"],
         network: MuZeroNet,
     ):
         super().__init__()
         self.observed_root = observed_root
         self.latent = latent
         self.action_tokens = action_tokens
-
-        for action_token in action_tokens.tolist():
-            prior = network.root_state_observation_to_policy.forward(
-                state_latent=self.latent, action_tokenffff=action_token
-            )
-            (
-                successor_sampler_mu,
-                successor_sampler_log_var,
-            ) = network.root_state_observation_to_policy(
-                state_latent=self.latent, action_tokenfggf=action_token
-            )
+        prior = network.root_state_observation_to_policy(
+            latent_state=self.latent, action_token=action_tokens
+        )
+        (
+            successor_sampler_mu,
+            successor_sampler_log_var,
+        ) = network.state_latent_and_action_to_successor_latent_sampler(
+            latent_state=self.latent, action_token=action_tokens
+        )
+        for i in range(action_tokens.shape[0]):
             edge = MuZeroEdge(
                 network=network,
-                prior=prior,
-                successor_sampler_mu=successor_sampler_mu,
-                successor_sampler_log_var=successor_sampler_log_var,
+                prior=prior[0][i].item(),
+                successor_sampler_mu=successor_sampler_mu[0][i],
+                successor_sampler_log_var=successor_sampler_log_var[0][i],
+                next_player_idx=get_next_player(self.player_idx),
             )
-            self.edges.append(edge)
+            self.edges[i] = edge
 
     @property
     def player_idx(self):
@@ -115,6 +125,7 @@ class MuZeroInnerNode:
                 prior=prior,
                 successor_sampler_mu=successor_sampler_mu,
                 successor_sampler_log_var=successor_sampler_log_var,
+                next_player_idx=get_next_player(self.player_idx),
             )
             edges.append(edge)
         return edges
@@ -130,10 +141,12 @@ class MuZeroEdge(Edge):
         network: "MuZeroNet",
         successor_sampler_mu: torch.Tensor,
         successor_sampler_log_var: torch.Tensor,
+        next_player_idx: int,
     ):
         super().__init__(prior=prior)
         self.network = network
         self.child_nodes: List["MuZeroInnerNode"] = []
+        self.next_player_idx = next_player_idx
 
         self.widener = ProgWidener(
             mu=successor_sampler_mu, log_var=successor_sampler_log_var
@@ -146,6 +159,7 @@ class MuZeroEdge(Edge):
         if new_successor_latent is not None:
             new_child_node = MuZeroInnerNode(
                 latent=new_successor_latent,
+                player_idx=self.next_player_idx,
                 network=self.network,
             )
             self.child_nodes.append(new_child_node)
