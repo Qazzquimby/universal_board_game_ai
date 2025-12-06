@@ -605,9 +605,9 @@ class MuZeroAgent(BaseLearningAgent):
 
     def __init__(
         self,
-        selection_strategy: SelectionStrategy,
-        expansion_strategy: ExpansionStrategy,
-        evaluation_strategy: EvaluationStrategy,
+        selection_strategy: MuZeroSelection,
+        expansion_strategy: MuZeroExpansion,
+        evaluation_strategy: MuZeroEvaluation,
         backpropagation_strategy: BackpropagationStrategy,
         network: nn.Module,
         optimizer,
