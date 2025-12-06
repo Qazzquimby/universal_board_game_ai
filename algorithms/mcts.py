@@ -57,10 +57,8 @@ class SearchPath:
         self._visited_keys: set[int] = set()
         self.add(node=initial_node, action_leading_to_node=None)
 
-    def add(
-        self, node: "MCTSNodeWithState", action_leading_to_node: Optional[ActionType]
-    ):
-        if node.state_with_key:
+    def add(self, node: "MCTSNode", action_leading_to_node: Optional[ActionType]):
+        if isinstance(node, MCTSNodeWithState) and node.state_with_key:
             self._visited_keys.add(node.state_with_key.key)
         self._steps.append(PathStep(node, action_leading_to_node))
 
