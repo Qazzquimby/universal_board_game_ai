@@ -116,7 +116,7 @@ class MuZeroRevealedRootNode(MuZeroNode):
         current_player_index: int,
         network: MuZeroNet,
     ):
-        prior = network.root_state_observation_to_policy(
+        prior = network.state_latent_and_actions_to_policy(
             state_latent=latent, action_token=action_tokens
         )
         super().__init__(
