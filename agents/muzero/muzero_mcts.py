@@ -53,6 +53,7 @@ class MuZeroObservedRootNode(MCTSNodeWithState):
         if new_revelation is not None:
             new_revelation_node = MuZeroRevealedRootNode(
                 network=self.network,
+                current_player_index=self.current_player_index,
                 observed_root=self,
                 latent=new_revelation,
                 action_tokens=self.action_tokens,
@@ -115,7 +116,7 @@ class MuZeroRevealedRootNode(MuZeroNode):
         network: MuZeroNet,
     ):
         prior = network.root_state_observation_to_policy(
-            state_latent=self.latent, action_token=action_tokens
+            state_latent=latent, action_token=action_tokens
         )
         super().__init__(
             latent=latent,

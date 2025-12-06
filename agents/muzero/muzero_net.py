@@ -264,24 +264,22 @@ class MuZeroNet(BaseTokenizingNet):
     ) -> Tuple[
         Float[torch.Tensor, "batch emb_dim"], Float[torch.Tensor, "batch emb_dim"]
     ]:
-        state_latent_batch = state_latent.unsqueeze(0)
-        action_token_batch = action_token.unsqueeze(0)
         (mu, log_var,) = self.state_latent_and_action_to_successor_latent_sampler(
-            state_latent_batch, action_token_batch
+            state_latent, action_token
         )
-        return mu.squeeze(0), log_var.squeeze(0)
+        return mu, log_var
 
     def get_state_latent_to_actions(
         self, state_latent: Float[torch.Tensor, "batch emb_dim"]
     ) -> Tuple[
         Float[torch.Tensor, "batch emb_dim"], Float[torch.Tensor, "batch emb_dim"]
     ]:
-        state_latent_batch = state_latent.unsqueeze(0)
+        state_latent_batch = state_latent
         (
             action_tokens,
             action_weights,
         ) = self.state_latent_to_actions_and_priors(state_latent_batch)
-        return action_tokens.squeeze(0), action_weights.squeeze(0)
+        return action_tokens, action_weights
 
     ### todo update as needed
     # def _get_policy_scores(
