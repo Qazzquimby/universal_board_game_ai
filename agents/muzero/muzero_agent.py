@@ -446,29 +446,7 @@ class MuZeroSelection(UCB1Selection):
             - A boolean indicating if the selection phase was terminated (True if a
               new node was created).
         """
-        edge: MuZeroEdge = current_node.edges[action_index]
-
-        # todo when does widening happen?
-        # root node hidden info sampling
-        # inner node successor sampling
-        # handle both here?
-        # do they use different edge types?
-
-        # Root Node sampler -> root node, is not an edge type
-        # Root node -> inner node uses an edge type with meaningful action edges
-        #  (doesn't need sampling)
-        # Inner node -> inner node uses an edge with no action
-        # each edge doesnt need sampling, but it samples making more edges
-        # so sounds like every edge only has one child here..?
-        # unless root node -> inner node samples to handle stochasticity. That sounds reasonable.
-
-        child_limit = _calculate_child_limit(edge.num_visits)
-        if len(edge.child_nodes) < child_limit:
-            return self._widen_new_child(
-                current_node=current_node, action_index=action_index
-            )
-        else:
-            return self._select_child(edge=edge)
+        assert False # unused, node is chosen by the edge
 
     def _widen_new_child(
         self,
@@ -609,14 +587,13 @@ class MuZeroAgent(BaseLearningAgent):
                 contender_actions=contender_actions,
             )
 
+            self._aggregate_root_edges()
             contender_actions = self.get_new_contender_actions(
                 contender_actions=contender_actions, remaining_sims=remaining_sims
             )
             if contender_actions and len(contender_actions) <= 1:
                 break
 
-        # After simulations, aggregate edges from samples to the root for policy selection.
-        self._aggregate_root_edges()
         return self.root
 
     def _run_simulation(

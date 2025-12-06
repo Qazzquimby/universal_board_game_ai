@@ -93,7 +93,7 @@ class MuZeroNode(MCTSNode):
         ) = self.network.get_state_latent_to_successor_latent_sampler_params(
             state_latent=self.latent, action_token=self.action_tokens
         )
-        edges = {}
+        self.edges = {}
         for i in range(self.action_tokens.shape[1]):
             edge = MuZeroEdge(
                 network=self.network,
@@ -102,8 +102,7 @@ class MuZeroNode(MCTSNode):
                 successor_sampler_log_var=successor_sampler_log_var[0][i],
                 next_player_index=get_next_player(self.current_player_index),
             )
-            edges[i] = edge
-        return edges
+            self.edges[i] = edge
 
 
 class MuZeroRevealedRootNode(MuZeroNode):
