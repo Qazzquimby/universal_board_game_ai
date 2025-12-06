@@ -26,7 +26,6 @@
 # - getValue, model using latent
 
 # There is no finite set of legal actions. Root uses action token inputs. Latent nodes simply generate possible successors from a vae with progressive widening.
-import random
 from typing import Optional, List, Dict, Tuple
 from collections import defaultdict, deque
 from dataclasses import dataclass
@@ -56,7 +55,6 @@ from agents.muzero.muzero_net import (
 )
 from algorithms.sampling import take_sample
 from algorithms.mcts import (
-    SelectionStrategy,
     ExpansionStrategy,
     EvaluationStrategy,
     BackpropagationStrategy,
@@ -65,6 +63,7 @@ from algorithms.mcts import (
     SearchPath,
     MCTSNodeCache,
     MCTSNode,
+    Edge,
 )
 from environments.base import (
     BaseEnvironment,
@@ -419,18 +418,13 @@ class MuZeroSelection(UCB1Selection):
         while current_node.edges:
             if not current_node.is_expanded:
                 return MuZeroSelectionResult(path=path)
-
             best_action_index = self._select_action_index_from_edges(
                 current_node=current_node,
                 start_node=node,
                 contender_actions=contender_actions,
             )
-
-            next_node = self._traverse_or_expand_edge(
-                current_node=current_node, action_index=best_action_index
-            )
-
-            current_node = next_node
+            edge = current_node.edges[best_action_index]
+            current_node = edge.get_child_node()
             path.add(current_node, best_action_index)
         return MuZeroSelectionResult(path=path)
 
@@ -591,7 +585,7 @@ class MuZeroAgent(BaseLearningAgent):
         self.expansion_strategy: MuZeroExpansion
         self.evaluation_strategy: MuZeroEvaluation
 
-        self.root: Optional["MuZeroRootNodeHiddenInfoSampler"] = None
+        self.root: Optional[MuZeroObservedRootNode] = None
 
     def search(self, env: BaseEnvironment, train: bool = False):
         self.root = MuZeroObservedRootNode(
@@ -653,14 +647,14 @@ class MuZeroAgent(BaseLearningAgent):
         )
 
     def _aggregate_root_edges(self):
-        """Aggregates edges from all root samples into the main root node."""
-        self.root.edges = {}
-        aggregated_edges = defaultdict(lambda: MuZeroEdge(prior=0.0))
+        """Aggregates edges from all revelations into the main root node."""
+        self.root.edges = {}  # the revelations have child edges but the root doesnt yet
+        aggregated_edges = defaultdict(lambda: Edge(prior=0.0))
 
-        for sample_node in self.root.root_samples:
-            for action, edge in sample_node.edges.items():
-                aggregated_edges[action].num_visits += edge.num_visits
-                aggregated_edges[action].total_value += edge.total_value
+        for revelation in self.root.revelations:
+            for action_index, edge in revelation.edges.items():
+                aggregated_edges[action_index].num_visits += edge.num_visits
+                aggregated_edges[action_index].total_value += edge.total_value
 
         # We don't set priors correctly here as they are not used after search.
         self.root.edges = dict(aggregated_edges)

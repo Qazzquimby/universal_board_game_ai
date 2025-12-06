@@ -184,7 +184,7 @@ class StateLatentToValue(nn.Module):
         return value_pred
 
 
-class StateLatentToActions(nn.Module):
+class StateLatentToActionsAndPriors(nn.Module):
     def __init__(self, embedding_dim: int = 64, num_actions: int = 5):
         super().__init__()
         self.num_actions = num_actions
@@ -232,7 +232,7 @@ class MuZeroNet(BaseTokenizingNet):
             )
         )
 
-        self.state_latent_to_actions = StateLatentToActions(
+        self.state_latent_to_actions_and_priors = StateLatentToActionsAndPriors(
             embedding_dim=self.embedding_dim,
             num_actions=num_actions_for_inner_nodes,
         )
@@ -280,7 +280,7 @@ class MuZeroNet(BaseTokenizingNet):
         (
             action_tokens,
             action_weights,
-        ) = self.state_latent_to_actions(state_latent_batch)
+        ) = self.state_latent_to_actions_and_priors(state_latent_batch)
         return action_tokens.squeeze(0), action_weights.squeeze(0)
 
     ### todo update as needed

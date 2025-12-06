@@ -52,7 +52,7 @@ class PathStep:
 class SearchPath:
     """The path taken during one MCTS selection phase."""
 
-    def __init__(self, initial_node: "MCTSNodeWithState"):
+    def __init__(self, initial_node: "MCTSNode"):
         self._steps: List[PathStep] = []
         self._visited_keys: set[int] = set()
         self.add(node=initial_node, action_leading_to_node=None)
@@ -415,8 +415,8 @@ class UCB1Selection(SelectionStrategy):
 
     def _select_action_index_from_edges(
         self,
-        current_node: MCTSNodeWithState,
-        start_node: MCTSNodeWithState,
+        current_node: MCTSNode,
+        start_node: MCTSNode,
         contender_actions: Optional[set],
     ) -> int:
         edges_to_consider = current_node.edges
