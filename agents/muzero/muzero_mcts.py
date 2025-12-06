@@ -15,8 +15,8 @@ from algorithms.sampling import ProgWidener
 # Or at least handle more than 2 players
 
 
-def get_next_player(current_player_idx: int, num_players: int = 2) -> int:
-    return (current_player_idx + 1) % num_players
+def get_next_player(current_player_index: int, num_players: int = 2) -> int:
+    return (current_player_index + 1) % num_players
 
 
 class MuZeroObservedRootNode(MCTSNodeWithState):
@@ -26,13 +26,13 @@ class MuZeroObservedRootNode(MCTSNodeWithState):
         self,
         state_with_key: StateWithKey,
         actions: List[ActionType],
-        player_idx: int,
+        current_player_index: int,
         network: "MuZeroNet",
     ):
         super().__init__(state_with_key=state_with_key)
         self.network = network
         self.action_tokens = network.tokenize_actions(actions)
-        self.player_idx = player_idx
+        self.player_idx = current_player_index  # uses property current_player_index
         self.revelations = []
         (
             mu,
@@ -79,33 +79,35 @@ class MuZeroRevealedRootNode(MCTSNode):
         self.latent = latent
         self.action_tokens = action_tokens
         prior = network.root_state_observation_to_policy(
-            latent_state=self.latent, action_token=action_tokens
+            state_latent=self.latent, action_token=action_tokens
         )
         (
             successor_sampler_mu,
             successor_sampler_log_var,
         ) = network.state_latent_and_action_to_successor_latent_sampler(
-            latent_state=self.latent, action_token=action_tokens
+            state_latent=self.latent, action_token=action_tokens
         )
-        for i in range(action_tokens.shape[0]):
+        for i in range(action_tokens.shape[1]):
             edge = MuZeroEdge(
                 network=network,
                 prior=prior[0][i].item(),
                 successor_sampler_mu=successor_sampler_mu[0][i],
                 successor_sampler_log_var=successor_sampler_log_var[0][i],
-                next_player_idx=get_next_player(self.player_idx),
+                next_player_index=get_next_player(self.current_player_index),
             )
             self.edges[i] = edge
 
     @property
-    def player_idx(self):
-        return self.observed_root.player_idx
+    def current_player_index(self):
+        return self.observed_root.current_player_index
 
 
 class MuZeroInnerNode:
-    def __init__(self, latent: torch.Tensor, player_idx: int, network: "MuZeroNet"):
+    def __init__(
+        self, latent: torch.Tensor, current_player_index: int, network: "MuZeroNet"
+    ):
         self.latent = latent
-        self.player_idx = player_idx
+        self.current_player_index = current_player_index
         self.edges: List[MuZeroEdge] = self._init_actions(network=network)
 
     def _init_actions(self, network):
@@ -125,7 +127,7 @@ class MuZeroInnerNode:
                 prior=prior,
                 successor_sampler_mu=successor_sampler_mu,
                 successor_sampler_log_var=successor_sampler_log_var,
-                next_player_idx=get_next_player(self.player_idx),
+                next_player_index=get_next_player(self.current_player_index),
             )
             edges.append(edge)
         return edges
@@ -141,12 +143,12 @@ class MuZeroEdge(Edge):
         network: "MuZeroNet",
         successor_sampler_mu: torch.Tensor,
         successor_sampler_log_var: torch.Tensor,
-        next_player_idx: int,
+        next_player_index: int,
     ):
         super().__init__(prior=prior)
         self.network = network
         self.child_nodes: List["MuZeroInnerNode"] = []
-        self.next_player_idx = next_player_idx
+        self.next_player_index = next_player_index
 
         self.widener = ProgWidener(
             mu=successor_sampler_mu, log_var=successor_sampler_log_var
@@ -159,7 +161,7 @@ class MuZeroEdge(Edge):
         if new_successor_latent is not None:
             new_child_node = MuZeroInnerNode(
                 latent=new_successor_latent,
-                player_idx=self.next_player_idx,
+                current_player_index=self.next_player_index,
                 network=self.network,
             )
             self.child_nodes.append(new_child_node)

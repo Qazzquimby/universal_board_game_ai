@@ -108,14 +108,14 @@ class RootStateObservationAndActionsToPolicy(nn.Module):
 
     def forward(
         self,
-        latent_state: Float[torch.Tensor, "batch emb_dim"],
+        state_latent: Float[torch.Tensor, "batch emb_dim"],
         action_token: Float[torch.Tensor, "batch action emb_dim"],
     ) -> Float[torch.Tensor, "batch action emb_dim"]:
         # repeat state to match action token height with einops
-        latent_state = einops.repeat(
-            latent_state, "batch emb -> batch action emb", action=action_token.shape[1]
+        state_latent = einops.repeat(
+            state_latent, "batch emb -> batch action emb", action=action_token.shape[1]
         )
-        policy_input = torch.cat([latent_state, action_token], dim=-1)
+        policy_input = torch.cat([state_latent, action_token], dim=-1)
         scores = self.root_state_observation_and_action_to_policy_head(policy_input)
         return scores
 
@@ -145,19 +145,19 @@ class StateLatentAndActionToSuccessorLatentSampler(nn.Module):
 
     def forward(
         self,
-        latent_state: Float[torch.Tensor, "batch emb_dim"],
+        state_latent: Float[torch.Tensor, "batch emb_dim"],
         action_token: Float[torch.Tensor, "batch action emb_dim"],
     ) -> Tuple[
         Float[torch.Tensor, "batch action emb_dim"],
         Float[torch.Tensor, "batch action emb_dim"],
     ]:
-        latent_state = einops.repeat(
-            latent_state,
+        state_latent = einops.repeat(
+            state_latent,
             "batch emb -> batch action emb",
             action=action_token.shape[1],
         )
 
-        dynamics_input = torch.cat([latent_state, action_token], dim=-1)
+        dynamics_input = torch.cat([state_latent, action_token], dim=-1)
         base_output = self.state_and_action_to_successor_base(dynamics_input)
 
         mu = self.state_and_action_to_successor_mu(base_output)
@@ -178,9 +178,9 @@ class StateLatentToValue(nn.Module):
         )
 
     def forward(
-        self, latent_state: Float[torch.Tensor, "batch emb_dim"]
+        self, state_latent: Float[torch.Tensor, "batch emb_dim"]
     ) -> Float[torch.Tensor, "batch 1"]:
-        value_pred = self.latent_to_value_head(latent_state).squeeze(-1)
+        value_pred = self.latent_to_value_head(state_latent).squeeze(-1)
         return value_pred
 
 
@@ -264,10 +264,10 @@ class MuZeroNet(BaseTokenizingNet):
     ) -> Tuple[
         Float[torch.Tensor, "batch emb_dim"], Float[torch.Tensor, "batch emb_dim"]
     ]:
-        latent_state_batch = state_latent.unsqueeze(0)
+        state_latent_batch = state_latent.unsqueeze(0)
         action_token_batch = action_token.unsqueeze(0)
         (mu, log_var,) = self.state_latent_and_action_to_successor_latent_sampler(
-            latent_state_batch, action_token_batch
+            state_latent_batch, action_token_batch
         )
         return mu.squeeze(0), log_var.squeeze(0)
 
@@ -276,11 +276,11 @@ class MuZeroNet(BaseTokenizingNet):
     ) -> Tuple[
         Float[torch.Tensor, "batch emb_dim"], Float[torch.Tensor, "batch emb_dim"]
     ]:
-        latent_state_batch = state_latent.unsqueeze(0)
+        state_latent_batch = state_latent.unsqueeze(0)
         (
             action_tokens,
             action_weights,
-        ) = self.state_latent_to_actions(latent_state_batch)
+        ) = self.state_latent_to_actions(state_latent_batch)
         return action_tokens.squeeze(0), action_weights.squeeze(0)
 
     ### todo update as needed
