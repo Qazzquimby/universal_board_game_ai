@@ -372,69 +372,23 @@ class MuZeroInnerNode(MCTSNode):
         pass
 
 
-# Update all below
-
-
 class MuZeroExpansion(ExpansionStrategy):
-    def __init__(self, network: nn.Module):
+    def __init__(self, network: MuZeroNet):
         self.network = network
 
-    def expand(self, node: "MuZeroNode", env: BaseEnvironment) -> None:
-        if node.is_expanded or env.is_done:
-            return
-
-        is_root = node.state_with_key is not None
-
-        if is_root:
-            # use real environment actions
-            legal_actions = env.get_legal_actions()
-            node.action_tokens = self.network.tokenize_actions(legal_actions)
-        else:
-            # For inner nodes, we generate successor states by sampling actions.
-            num_successors = _calculate_child_limit(node.num_visits)
-            if num_successors == 0:
-                node.is_expanded = True
-                return
-
-            # Sample random action tokens
-            action_tokens = [
-                torch.randn(
-                    self.network.embedding_dim, device=self.network.get_device()
-                )
-                for _ in range(num_successors)
-            ]
-            if not action_tokens:
-                node.is_expanded = True
-                return
-
-            node.action_tokens = torch.stack(action_tokens)
-
-        assert node.action_tokens.dim() == 2
-
-        if not node.action_tokens.numel():
-            node.is_expanded = True
-            return
-
-        policy_dict = self.network.get_policy(
-            hidden_state=node.latent, legal_action_tokens=node.action_tokens
-        )
-
-        for action_index, prior in policy_dict.items():
-            node.edges[action_index] = MuZeroEdge(prior=prior)
-        node.is_expanded = True
+    def expand(self, node: "MuZeroNode") -> None:
+        pass  # node creation already creates edges with priors
 
 
 class MuZeroEvaluation(EvaluationStrategy):
-    def __init__(self, network: nn.Module):
+    def __init__(self, network: MuZeroNet):
         self.network = network
 
-    def evaluate(self, node: "MuZeroNode", env: BaseEnvironment) -> float:
+    def evaluate(self, node: "MuZeroNode") -> float:
         if node.latent is None:
-            if env.is_done:
-                return env.get_reward_for_player(player=env.get_current_player())
-            return 0.0
+            return 0.0  # I think this is fine since its just root
 
-        value = self.network.get_value(hidden_state=node.latent)
+        value = self.network.state_latent_to_value(state_latent=node.latent).item()
         return float(value)
 
 
@@ -542,7 +496,7 @@ class MuZeroSelection(UCB1Selection):
         # todo right now every time we get the next_hidden_state_vae it's always sampled only once..?
         next_hidden_state = take_sample(next_hidden_state_mu, next_hidden_state_log_var)
 
-        next_player_idx = 1 - current_node.player_idx
+        next_player_idx = 1 - current_node.current_player_index
         next_node = MuZeroNode(
             player_idx=next_player_idx,
             latent=next_hidden_state,
@@ -643,7 +597,7 @@ class MuZeroAgent(BaseLearningAgent):
         self.root = MuZeroObservedRootNode(
             state_with_key=self.env.get_state_with_key(),
             actions=env.get_legal_actions(),
-            player_idx=env.get_current_player(),
+            current_player_index=env.get_current_player(),
             network=self.network,
         )
         contender_actions: Optional[set] = None
