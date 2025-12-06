@@ -84,16 +84,17 @@ class BaseMCTSAgent(Agent):
             remaining_sims=remaining_sims,
             contender_actions=contender_actions,
         )
-        path = selection_result.path
-        leaf_node = selection_result.leaf_node
-        leaf_env = selection_result.leaf_env
 
         # 2. Expansion
-        self._expand_leaf(leaf_node, leaf_env, train)
+        self._expand_leaf(selection_result.leaf_node, selection_result.leaf_env, train)
 
         # 3. Evaluation
-        player_at_leaf = leaf_env.get_current_player()
-        value = float(self.evaluation_strategy.evaluate(leaf_node, leaf_env))
+        player_at_leaf = selection_result.leaf_env.get_current_player()
+        value = float(
+            self.evaluation_strategy.evaluate(
+                selection_result.leaf_node, selection_result.leaf_env
+            )
+        )
         player_to_value = {}
         for player in range(env.num_players):
             if player == player_at_leaf:
@@ -103,7 +104,7 @@ class BaseMCTSAgent(Agent):
 
         # 4. Backpropagation
         self.backpropagation_strategy.backpropagate(
-            path=path, player_to_value=player_to_value
+            path=selection_result.path, player_to_value=player_to_value
         )
 
     def search(self, env: BaseEnvironment, train: bool = False) -> MCTSNodeWithState:

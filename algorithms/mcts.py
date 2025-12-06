@@ -205,9 +205,9 @@ class SelectionStrategy(abc.ABC):
     @abc.abstractmethod
     def select(
         self,
-        node: "MCTSNodeWithState",
-        sim_env: BaseEnvironment,
-        cache: "MCTSNodeCache",
+        node: "MCTSNode",
+        # sim_env: BaseEnvironment,
+        # cache: "MCTSNodeCache",
         remaining_sims: int,
         contender_actions: Optional[set],
     ) -> SelectionResult:
@@ -219,7 +219,7 @@ class ExpansionStrategy(abc.ABC):
     def expand(
         self,
         node: "MCTSNodeWithState",
-        env: BaseEnvironment,
+        # env: BaseEnvironment,
     ) -> None:
         """
         Expand a leaf node by adding children based on legal actions.
@@ -234,7 +234,11 @@ class ExpansionStrategy(abc.ABC):
 
 class EvaluationStrategy(abc.ABC):
     @abc.abstractmethod
-    def evaluate(self, node: "MCTSNodeWithState", env: BaseEnvironment) -> float:
+    def evaluate(
+        self,
+        node: "MCTSNodeWithState",
+        # env: BaseEnvironment
+    ) -> float:
         """
         Evaluate a leaf node to estimate its value.
         The value should be from the perspective of the player whose turn it is at the leaf node.

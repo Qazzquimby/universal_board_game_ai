@@ -44,7 +44,12 @@ from agents.base_learning_agent import (
     GameHistoryStep,
 )
 from agents.loss_functions import entropy_adjusted_cross_entropy_loss
-from agents.muzero.muzero_mcts import MuZeroEdge, MuZeroNode, MuZeroObservedRootNode
+from agents.muzero.muzero_mcts import (
+    MuZeroEdge,
+    MuZeroNode,
+    MuZeroObservedRootNode,
+    MuZeroRevealedRootNode,
+)
 from agents.muzero.muzero_net import (
     MuZeroNet,
     MuZeroNetworkOutput,
@@ -628,6 +633,10 @@ class MuZeroAgent(BaseLearningAgent):
             training_config=training_config,
             model_name=model_name,
         )
+        self.selection_strategy: MuZeroSelection
+        self.expansion_strategy: MuZeroExpansion
+        self.evaluation_strategy: MuZeroEvaluation
+
         self.root: Optional["MuZeroRootNodeHiddenInfoSampler"] = None
 
     def search(self, env: BaseEnvironment, train: bool = False):
@@ -637,28 +646,57 @@ class MuZeroAgent(BaseLearningAgent):
             player_idx=env.get_current_player(),
             network=self.network,
         )
+        contender_actions: Optional[set] = None
 
-        for i in range(self.num_simulations):
-            revelation: MuZeroNode = self.root.get_revelation()
+        for sim_idx in range(self.num_simulations):
+            if self._should_stop_early(sim_idx):
+                break
+            remaining_sims = self.num_simulations - sim_idx
+            revelation: MuZeroRevealedRootNode = self.root.get_revelation()
 
-            sim_env = env.copy()
-            selection_result = self.selection_strategy.select(
-                node=revelation,
-                contender_actions=None,  # todo, when is this not None?
-                remaining_sims=self.num_simulations - i,
+            self._run_simulation(
+                revelation=revelation,
+                train=train,
+                remaining_sims=remaining_sims,
+                contender_actions=contender_actions,
             )
 
-            leaf_node = selection_result.leaf_node
-            self._expand_leaf(leaf_node, leaf_env, train)
-            value = self.evaluation_strategy.evaluate(leaf_node, leaf_env)
-            # The path goes back to the root sample
-
-            self.backpropagation_strategy.backpropagate(
-                selection_result.path, {0: value, 1: -value}
+            contender_actions = self.get_new_contender_actions(
+                contender_actions=contender_actions, remaining_sims=remaining_sims
             )
+            if contender_actions and len(contender_actions) <= 1:
+                break
 
         # After simulations, aggregate edges from samples to the root for policy selection.
         self._aggregate_root_edges()
+        return self.root
+
+    def _run_simulation(
+        self,
+        revelation: MuZeroRevealedRootNode,
+        train: bool,
+        remaining_sims: int,
+        contender_actions: Optional[set],
+        env=None,  # not used in muzero
+    ):
+        """Runs a single simulation from selection to backpropagation."""
+        # 1. Selection
+        selection_result = self.selection_strategy.select(
+            node=revelation,
+            contender_actions=None,
+            remaining_sims=remaining_sims,
+        )
+
+        # 2. Expansion
+        self._expand_leaf(leaf_node=selection_result.leaf_node, train=train)
+
+        # 3. Evaluation
+        value = self.evaluation_strategy.evaluate(node=selection_result.leaf_node)
+
+        # 4. Backpropagation
+        self.backpropagation_strategy.backpropagate(
+            selection_result.path, {0: value, 1: -value}
+        )
 
     def _aggregate_root_edges(self):
         """Aggregates edges from all root samples into the main root node."""
