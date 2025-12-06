@@ -1,5 +1,5 @@
 import random
-from typing import List, Union
+from typing import List, Dict
 
 import torch
 from jaxtyping import Float
@@ -67,7 +67,7 @@ class MuZeroObservedRootNode(MCTSNodeWithState):
 class MuZeroNode(MCTSNode):
     # Base class
 
-    edges: List["MuZeroEdge"]  # for type hint
+    edges: Dict[int, "MuZeroEdge"]  # for type hint
 
     def __init__(
         self,
@@ -78,29 +78,31 @@ class MuZeroNode(MCTSNode):
         network: MuZeroNet,
     ):
         super().__init__()
+        self.network = network
         self.latent = latent
         self.current_player_index = current_player_index
         self.action_tokens = action_tokens
         self.prior = prior
-        self.edges: List[MuZeroEdge] = self._init_actions(network=network)
+        self.edges: Dict[int, MuZeroEdge] = {}
 
-    def _init_actions(self, network):
+    def expand(self):
+        self.is_expanded = True
         (
             successor_sampler_mu,
             successor_sampler_log_var,
-        ) = network.get_state_latent_to_successor_latent_sampler_params(
+        ) = self.network.get_state_latent_to_successor_latent_sampler_params(
             state_latent=self.latent, action_token=self.action_tokens
         )
-        edges = []
+        edges = {}
         for i in range(self.action_tokens.shape[1]):
             edge = MuZeroEdge(
-                network=network,
+                network=self.network,
                 prior=self.prior[0][i].item(),
                 successor_sampler_mu=successor_sampler_mu[0][i],
                 successor_sampler_log_var=successor_sampler_log_var[0][i],
                 next_player_index=get_next_player(self.current_player_index),
             )
-            edges.append(edge)
+            edges[i] = edge
         return edges
 
 
@@ -127,15 +129,13 @@ class MuZeroRevealedRootNode(MuZeroNode):
         )
         self.observed_root = observed_root
 
-        self.is_expanded = True  # todo highly unsure about these
-
 
 class MuZeroInnerNode(MuZeroNode):
     def __init__(
         self, latent: torch.Tensor, current_player_index: int, network: "MuZeroNet"
     ):
         action_tokens, priors = network.state_latent_to_actions_and_priors(
-            state_latent=self.latent
+            state_latent=latent
         )
 
         super().__init__(
@@ -145,8 +145,6 @@ class MuZeroInnerNode(MuZeroNode):
             prior=priors,
             network=network,
         )
-
-        self.is_expanded = True
 
 
 class MuZeroEdge(Edge):

@@ -376,7 +376,7 @@ class MuZeroExpansion(ExpansionStrategy):
         self.network = network
 
     def expand(self, node: "MuZeroNode") -> None:
-        pass  # node creation already creates edges with priors
+        node.expand()
 
 
 class MuZeroEvaluation(EvaluationStrategy):
