@@ -251,6 +251,7 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
         self,
         game_history: List[GameHistoryStep],
         final_outcome: float,
+        file_path: str,
     ) -> EpisodeResult:
         """
         Processes the history of a completed episode to generate training data.
@@ -278,7 +279,7 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
             )
 
         buffer_experiences = self._create_buffer_experiences(
-            game_history, value_targets
+            game_history, value_targets, file_path=file_path
         )
         return EpisodeResult(
             buffer_experiences=buffer_experiences, logged_history=logged_history

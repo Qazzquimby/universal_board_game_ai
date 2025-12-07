@@ -24,20 +24,25 @@ def _default_serializer(obj):
         )
 
 
-def save_game_log(
-    logged_history: List[LoggedStep],
+def get_file_path(
     iteration: int,
     game_index: int,
     env_name: str,
     model_name: str,
 ):
-    """Saves the processed game history to a JSON file."""
     log_dir = DATA_DIR / env_name / "game_logs" / model_name
     log_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    filename = f"game_{iteration}_{timestamp}_{game_index:04d}.json"
-    filepath = log_dir / filename
+    file_name = f"game_{iteration}_{timestamp}_{game_index:04d}.json"
+    file_path = log_dir / file_name
+    return file_path
 
+
+def save_game_log(
+    logged_history: List[LoggedStep],
+    file_path: str,
+):
+    """Saves the processed game history to a JSON file."""
     serializable_log = []
     for step in logged_history:
         serializable_log.append(
@@ -49,5 +54,5 @@ def save_game_log(
             }
         )
 
-    with open(filepath, "w") as f:
+    with open(file_path, "w") as f:
         json.dump(serializable_log, f, indent=2, default=_default_serializer)

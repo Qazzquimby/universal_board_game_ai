@@ -51,7 +51,11 @@ class MuZeroObservedRootNode(MCTSNodeWithState):
 
     def get_revelation(self):
         if self.revelations:
-            existing_children = torch.stack([rev.latent for rev in self.revelations])
+            existing_children = torch.stack(
+                [rev.latent for rev in self.revelations], dim=1
+            )
+            _1, _action, _emb_dim = existing_children.shape
+            assert _1 == 1
             new_revelation = self.widener.widen_if_needed(existing_children)
         else:
             new_revelation = self.widener.widen_if_needed()
@@ -86,6 +90,8 @@ class MuZeroNode(MCTSNode):
         super().__init__()
         self.network = network
         self.latent = latent
+        _batch, _emb_dim = latent.shape
+        assert _batch == 1
         self.current_player_index = current_player_index
         self.action_tokens = action_tokens
         self.prior = prior
@@ -104,8 +110,8 @@ class MuZeroNode(MCTSNode):
             edge = MuZeroEdge(
                 network=self.network,
                 prior=self.prior[0][i].item(),
-                successor_sampler_mu=successor_sampler_mu[0][i],
-                successor_sampler_log_var=successor_sampler_log_var[0][i],
+                successor_sampler_mu=successor_sampler_mu[0][i].unsqueeze(0),
+                successor_sampler_log_var=successor_sampler_log_var[0][i].unsqueeze(0),
                 next_player_index=get_next_player(self.current_player_index),
             )
             self.edges[i] = edge
@@ -157,8 +163,8 @@ class MuZeroEdge(Edge):
         self,
         prior: float,
         network: "MuZeroNet",
-        successor_sampler_mu: torch.Tensor,
-        successor_sampler_log_var: torch.Tensor,
+        successor_sampler_mu: Float[torch.Tensor, "1 emb"],
+        successor_sampler_log_var: Float[torch.Tensor, "1 emb"],
         next_player_index: int,
     ):
         super().__init__(prior=prior)
@@ -172,7 +178,11 @@ class MuZeroEdge(Edge):
 
     def get_child_node(self):
         if self.child_nodes:
-            existing_children = torch.stack([node.latent for node in self.child_nodes])
+            existing_children = torch.stack(
+                [node.latent for node in self.child_nodes], dim=1
+            )
+            _1, _action, _emb = existing_children.shape
+            assert _1 == 1
         else:
             existing_children = None
         new_successor_latent = self.widener.widen_if_needed(

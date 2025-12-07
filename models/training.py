@@ -10,7 +10,7 @@ from loguru import logger
 from agents.base_learning_agent import GameHistoryStep, BaseLearningAgent
 from agents.mcts_agent import MCTSAgent, make_pure_mcts
 from core.config import AppConfig
-from core.serialization import save_game_log
+from core.serialization import save_game_log, get_file_path
 from environments.base import BaseEnvironment, DataFrame
 from agents.alphazero.alphazero_agent import AlphaZeroAgent
 from agents.muzero.muzero_agent import MuZeroAgent
@@ -18,7 +18,7 @@ from factories import get_environment, create_learning_agent
 from remote_play.client import RemotePlayClient
 from utils.training_reporter import TrainingReporter, BenchmarkResults
 
-SELF_PLAY_ON_FIRST_ITER = False  # True
+SELF_PLAY_ON_FIRST_ITER = False
 
 USE_REMOTE_SELF_PLAY = False
 
@@ -242,8 +242,17 @@ def _process_and_save_game_results(
     env: BaseEnvironment,
 ) -> int:
     """Processes a single game's results and saves them."""
+    file_path = get_file_path(
+        iteration=iteration + 1,
+        game_index=game_log_index,
+        env_name=config.env.name,
+        model_name=model_name,
+    )
+
     episode_result = learning_agent.process_finished_episode(
-        game_history, final_outcome
+        game_history=game_history,
+        final_outcome=final_outcome,
+        file_path=file_path,
     )
 
     buffer_experiences = episode_result.buffer_experiences
@@ -254,10 +263,7 @@ def _process_and_save_game_results(
 
     save_game_log(
         logged_history=episode_result.logged_history,
-        iteration=iteration + 1,
-        game_index=game_log_index,
-        env_name=config.env.name,
-        model_name=model_name,
+        file_path=file_path,
     )
     return len(buffer_experiences)
 

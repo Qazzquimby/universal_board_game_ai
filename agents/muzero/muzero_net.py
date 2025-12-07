@@ -265,8 +265,8 @@ class MuZeroNet(BaseTokenizingNet):
     ) -> Tuple[
         Float[torch.Tensor, "batch emb_dim"], Float[torch.Tensor, "batch emb_dim"]
     ]:
-        (mu, log_var,) = self.state_latent_and_action_to_successor_latent_sampler(
-            state_latent, action_token
+        mu, log_var = self.state_latent_and_action_to_successor_latent_sampler(
+            state_latent=state_latent, action_token=action_token
         )
         return mu, log_var
 

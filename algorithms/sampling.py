@@ -10,8 +10,8 @@ from jaxtyping import Float
 class ProgWidener:
     def __init__(
         self,
-        mu: torch.Tensor,
-        log_var: torch.Tensor,
+        mu: Float[torch.Tensor, "1 emb"],
+        log_var: Float[torch.Tensor, "1 emb"],
         min_distance_for_child: float = 2.0,
         base_accesses_per_widen: int = 10,
     ):
@@ -24,8 +24,8 @@ class ProgWidener:
         self.num_accesses = 0
 
     def widen_if_needed(
-        self, existing_children: Optional[Float[torch.Tensor, "1 emb_dim"]] = None
-    ) -> Optional[Float[torch.Tensor, "1 emb_dim"]]:
+        self, existing_children: Optional[Float[torch.Tensor, "1 action emb"]] = None
+    ) -> Optional[Float[torch.Tensor, "1 emb"]]:
         self.num_accesses += 1
         needed_widens = self._get_needed_widens()
         if needed_widens > self.num_widens or existing_children is None:
@@ -43,29 +43,37 @@ class ProgWidener:
         )
 
     def _widen(
-        self, existing_children: Optional[Float[torch.Tensor, "1 emb_dim"]] = None
-    ) -> Optional[torch.Tensor]:
+        self, existing_children: Optional[Float[torch.Tensor, "1 action emb"]] = None
+    ) -> Optional[Float[torch.Tensor, "1 emb"]]:
         self.num_widens += 1
 
         sample = take_sample(mu=self.mu, log_var=self.log_var)
+        _batch, _emb = sample.shape
+
         if existing_children is None:
-            return sample.unsqueeze(0)
+            return sample
+        _1, _action, _emb = existing_children.shape
+        assert _1 == 1
 
         distances = self._get_sample_distances(
             existing_children=existing_children, sample=sample
         )
         min_distance = torch.min(distances)
         if min_distance >= self.min_distance_for_child:
-            return sample.unsqueeze(0)
+            return sample
         else:
             return None
 
     def _get_sample_distances(
-        self, existing_children: torch.Tensor, sample: torch.Tensor
+        self,
+        existing_children: Float[torch.Tensor, "1 action emb"],
+        sample: Float[torch.Tensor, "1 emb"],
     ):
-        stacked_sample = einops.repeat(
-            sample, "emb -> h emb", h=existing_children.shape[0]
-        )
+        _1, _action, _emb = existing_children.shape
+        assert _1 == 1
+        _1, _emb = sample.shape
+
+        stacked_sample = einops.repeat(sample, "1 emb -> 1 action emb", action=_action)
         var = torch.exp(self.log_var)
         distances = torch.sqrt(
             torch.sum(((existing_children - stacked_sample) ** 2) / var)
@@ -73,7 +81,9 @@ class ProgWidener:
         return distances
 
 
-def take_sample(mu: torch.Tensor, log_var: torch.Tensor) -> torch.Tensor:
+def take_sample(
+    mu: Float[torch.Tensor, "batch emb"], log_var: Float[torch.Tensor, "batch emb"]
+) -> Float[torch.Tensor, "batch emb"]:
     std = torch.exp(0.5 * log_var)
     eps = torch.randn_like(std)
     return mu + eps * std
