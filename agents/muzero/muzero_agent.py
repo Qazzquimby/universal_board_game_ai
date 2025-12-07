@@ -887,7 +887,12 @@ class MuZeroAgent(BaseLearningAgent):
 
     def _calculate_hidden_state_consistency_loss_per_step(self, network_output):
         if not network_output.pred_dynamics_mu.numel():
-            return torch.tensor(0.0, network_output.pred_policies.device)
+            num_steps = network_output.pred_policies.shape[1]
+            return torch.zeros(
+                num_steps,
+                device=network_output.pred_policies.device,
+                dtype=network_output.pred_policies.dtype,
+            )
 
         loss = wasserstein_distance_loss(
             mu1=network_output.pred_dynamics_mu,
