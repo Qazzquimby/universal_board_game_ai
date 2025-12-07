@@ -75,8 +75,7 @@ class RootStateObservationToRevealedLatentSampler(nn.Module):
 
         if state_padding_mask is not None:
             # The mask needs to be extended for the game token.
-            # Game token is not masked, so we add False for it.
-            game_token_mask = torch.zeros(
+            game_token_mask = torch.ones(
                 (batch_size, 1), dtype=torch.bool, device=state_padding_mask.device
             )
             padding_mask = torch.cat([game_token_mask, state_padding_mask], dim=1)

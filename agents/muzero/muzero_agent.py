@@ -74,6 +74,9 @@ from environments.base import (
 from core.config import MuZeroConfig, TrainingConfig
 
 
+# Masks are True for valid indices and False for padding.
+
+
 @dataclass
 class MuZeroUnrollStep:
     """
@@ -184,7 +187,7 @@ def pad_action_sets(
                 _action, _dim = actions.shape
                 assert _dim == embedding_dim
                 num_actions = actions.shape[0]
-                padded_tensor[batch_index, seq_index, :num_actions] = actions.squeeze(0)
+                padded_tensor[batch_index, seq_index, :num_actions] = actions
                 mask[batch_index, seq_index, :num_actions] = True
     return padded_tensor, mask
 
@@ -227,7 +230,7 @@ def _tokenize_and_pad_states(
         ):
             pad_len = max_tokens - tokens.shape[1]
             padded_tokens = F.pad(tokens, (0, 0, 0, pad_len), "constant", 0)
-            padded_mask = F.pad(mask, (0, pad_len), "constant", True)
+            padded_mask = F.pad(mask, (0, pad_len), "constant", False)
             padded_tokens_list.append(padded_tokens)
             padded_masks_list.append(padded_mask)
 
@@ -291,7 +294,7 @@ def _tokenize_and_pad_actions(
 
 
 def _pad_targets(
-    policy_target_seqs: List[List[Float[torch.Tensor, "seq"]]],  # todo fucking jaxtype
+    policy_target_seqs: List[List[Float[torch.Tensor, "seq"]]],
     value_target_seqs: List[Float[torch.Tensor, "seq"]],
     batch_size: int,
 ) -> Tuple[Float[torch.Tensor, "batch seq action"], Float[torch.Tensor, "batch seq"]]:

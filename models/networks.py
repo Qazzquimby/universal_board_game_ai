@@ -164,7 +164,7 @@ class BaseTokenizingNet(nn.Module):
         if sorted_tokens.numel() > 0:
             padded_tokens[sorted_batch_indices, seq_indices] = sorted_tokens
 
-        padding_mask = torch.arange(max_len, device=device)[None, :] >= lengths[:, None]
+        padding_mask = torch.arange(max_len, device=device)[None, :] < lengths[:, None]
 
         return padded_tokens, padding_mask
 
