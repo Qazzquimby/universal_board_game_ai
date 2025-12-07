@@ -31,7 +31,7 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 
 import torch
-from jaxtyping import Float
+from jaxtyping import Float, Bool
 from torch import nn, optim
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
@@ -45,7 +45,6 @@ from agents.base_learning_agent import (
 )
 from agents.loss_functions import entropy_adjusted_cross_entropy_loss
 from agents.muzero.muzero_mcts import (
-    MuZeroEdge,
     MuZeroNode,
     MuZeroObservedRootNode,
     MuZeroRevealedRootNode,
@@ -154,10 +153,10 @@ def _extract_sequences_from_batch(batch: List[MuZeroExperience]):
 def pad_action_sets(
     action_sets: List[List[Float[torch.Tensor, "num_actions emb_dim"]]],
     embedding_dim: int,
-    device,
+    device: torch.device,
 ) -> Tuple[
     Float[torch.Tensor, "batch step action emb_dim"],
-    Float[torch.Tensor, "batch step action"],  # check this
+    Bool[torch.Tensor, "batch step action"],
 ]:
     # action_sets is batch, step -> tensor of action x dim
     batch_size = len(action_sets)
@@ -182,14 +181,17 @@ def pad_action_sets(
     for batch_index, seq in enumerate(action_sets):
         for seq_index, actions in enumerate(seq):
             if actions is not None and actions.numel() > 0:
-                num_actions = actions.shape[1]
-                padded_tensor[batch_index, seq_index, :num_actions] = actions
+                _action, _dim = actions.shape
+                assert _dim == embedding_dim
+                num_actions = actions.shape[0]
+                padded_tensor[batch_index, seq_index, :num_actions] = actions.squeeze(0)
                 mask[batch_index, seq_index, :num_actions] = True
-
     return padded_tensor, mask
 
 
-def _tokenize_and_pad_states(states_seqs, network, batch_size):
+def _tokenize_and_pad_states(
+    states_seqs: List[List[StateType]], network: "MuZeroNet", batch_size: int
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:  # todo jaxtype
     # Tokenize states
     initial_states = [seq[0] for seq in states_seqs]
     batched_initial_state = _get_batched_state(state_dicts=initial_states)
@@ -244,8 +246,12 @@ def _tokenize_and_pad_states(states_seqs, network, batch_size):
 
 
 def _tokenize_and_pad_actions(
-    action_index_seqs, candidate_actions_seqs, network, batch_size, device
-):
+    action_index_seqs: List[List[int]],
+    candidate_actions_seqs: List[List[List[int]]],
+    network: "MuZeroNet",
+    batch_size: int,
+    device: torch.device,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:  # todo jaxtype
     # Tokenize actions
     max_action_index_hist_len = max((len(seq) for seq in action_index_seqs), default=0)
     action_tokens_history = torch.zeros(
@@ -257,7 +263,9 @@ def _tokenize_and_pad_actions(
     for i, seq in enumerate(action_index_seqs):
         if seq:
             tokens = network.tokenize_actions(seq)
-            action_tokens_history[i, : len(seq), :] = tokens
+            _batch, _seq, _dim = tokens.shape
+            assert _batch == 1
+            action_tokens_history[i, : len(seq), :] = tokens.squeeze(0)
 
     tokenized_candidate_actions_seqs = []
     for seq in candidate_actions_seqs:
@@ -265,6 +273,9 @@ def _tokenize_and_pad_actions(
         for step_actions in seq:
             if step_actions:
                 tokenized = network.tokenize_actions(step_actions)
+                _batch, _num_actions, _dim = tokenized.shape
+                assert _batch == 1
+                tokenized = tokenized.squeeze(0)
             else:
                 tokenized = torch.empty(
                     0, network.embedding_dim, device=device, dtype=torch.float32
@@ -279,7 +290,11 @@ def _tokenize_and_pad_actions(
     return action_tokens_history, candidate_action_tokens, candidate_action_tokens_mask
 
 
-def _pad_targets(policy_target_seqs, value_target_seqs, batch_size):
+def _pad_targets(
+    policy_target_seqs: List[List[Float[torch.Tensor, "seq"]]],  # todo fucking jaxtype
+    value_target_seqs: List[Float[torch.Tensor, "seq"]],
+    batch_size: int,
+) -> Tuple[Float[torch.Tensor, "batch seq, action"], Float[torch.Tensor, "batch seq"]]:
     # Pad targets
     all_policies = [p for p_seq in policy_target_seqs for p in p_seq]
     if all_policies:
