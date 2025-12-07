@@ -42,6 +42,7 @@ from agents.base_learning_agent import (
     BaseLearningAgent,
     _get_batched_state,
     GameHistoryStep,
+    GameExperience,
 )
 from agents.loss_functions import entropy_adjusted_cross_entropy_loss
 from agents.muzero.muzero_mcts import (
@@ -53,7 +54,6 @@ from agents.muzero.muzero_net import (
     MuZeroNet,
     MuZeroNetworkOutput,
 )
-from algorithms.sampling import take_sample
 from algorithms.mcts import (
     ExpansionStrategy,
     EvaluationStrategy,
@@ -89,7 +89,7 @@ class MuZeroUnrollStep:
 
 
 @dataclass
-class MuZeroExperience:
+class MuZeroExperience(GameExperience):
     """Holds a trajectory of experience for MuZero training."""
 
     steps: List[MuZeroUnrollStep]
@@ -294,7 +294,7 @@ def _pad_targets(
     policy_target_seqs: List[List[Float[torch.Tensor, "seq"]]],  # todo fucking jaxtype
     value_target_seqs: List[Float[torch.Tensor, "seq"]],
     batch_size: int,
-) -> Tuple[Float[torch.Tensor, "batch seq, action"], Float[torch.Tensor, "batch seq"]]:
+) -> Tuple[Float[torch.Tensor, "batch seq action"], Float[torch.Tensor, "batch seq"]]:
     # Pad targets
     all_policies = [p for p_seq in policy_target_seqs for p in p_seq]
     if all_policies:
@@ -593,6 +593,7 @@ class MuZeroAgent(BaseLearningAgent):
         self,
         game_history: List[GameHistoryStep],
         value_targets: List[float],
+        file_path: str,
     ) -> List[MuZeroExperience]:
         """Creates MuZeroExperience objects for the replay buffer."""
         num_unroll_steps = self.config.num_unroll_steps
@@ -628,7 +629,9 @@ class MuZeroAgent(BaseLearningAgent):
                 )
 
             if unroll_steps_for_turn:
-                experiences.append(MuZeroExperience(steps=unroll_steps_for_turn))
+                experiences.append(
+                    MuZeroExperience(steps=unroll_steps_for_turn, file_path=file_path)
+                )
         return experiences
 
     def _get_dataset(self, buffer: deque) -> Dataset:
@@ -639,7 +642,9 @@ class MuZeroAgent(BaseLearningAgent):
         """Returns the collate function for the DataLoader for MuZero."""
         return get_muzero_tokenizing_collate_fn(network=self.network)
 
-    def _process_game_log_data(self, game_data: List[Dict]) -> List["MuZeroExperience"]:
+    def _process_game_log_data(
+        self, game_data: List[Dict], file_path: str
+    ) -> List["MuZeroExperience"]:
         """Processes data from a single game log file into a list of experiences."""
         game_history: List[GameHistoryStep] = []
         value_targets: List[float] = []
@@ -683,7 +688,9 @@ class MuZeroAgent(BaseLearningAgent):
                 game_history.append(game_history_step)
                 value_targets.append(value_target)
 
-        experiences = self._create_buffer_experiences(game_history, value_targets)
+        experiences = self._create_buffer_experiences(
+            game_history=game_history, value_targets=value_targets, file_path=file_path
+        )
         return experiences
 
     def _run_batch(

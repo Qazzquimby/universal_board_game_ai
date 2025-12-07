@@ -14,6 +14,7 @@ from agents.base_learning_agent import (
     get_tokenizing_collate_fn,
     LossStatistics,
     GameHistoryStep,
+    GameExperience,
 )
 from agents.loss_functions import entropy_adjusted_cross_entropy_loss
 from environments.base import BaseEnvironment, ActionType, StateType, DataFrame
@@ -66,7 +67,7 @@ class AlphaZeroExpansion(ExpansionStrategy):
 
 
 @dataclass
-class AlphaZeroExperience:
+class AlphaZeroExperience(GameExperience):
     state: StateType
     policy_target: np.ndarray
     value_target: float
@@ -126,6 +127,7 @@ class AlphaZeroAgent(BaseLearningAgent):
         self,
         game_history: List[GameHistoryStep],
         value_targets: List[float],
+        file_path: str,
     ) -> List[AlphaZeroExperience]:
         """Creates AlphaZeroExperience objects for the replay buffer."""
         experiences = []
@@ -142,6 +144,7 @@ class AlphaZeroAgent(BaseLearningAgent):
                     policy_target=step.policy,
                     value_target=value_targets[turn_index],
                     legal_actions=legal_actions,
+                    file_path=file_path,
                 )
             )
         return experiences
@@ -210,7 +213,9 @@ class AlphaZeroAgent(BaseLearningAgent):
         )
 
     def _process_game_log_data(
-        self, game_data: List[Dict]
+        self,
+        game_data: List[Dict],
+        file_path: str,
     ) -> List["AlphaZeroExperience"]:
         """Processes data from a single game log file into a list of experiences."""
         experiences = []
@@ -243,6 +248,7 @@ class AlphaZeroAgent(BaseLearningAgent):
                         policy_target=policy_target,
                         value_target=value_target,
                         legal_actions=legal_actions,
+                        file_path=file_path,
                     )
                 )
         return experiences

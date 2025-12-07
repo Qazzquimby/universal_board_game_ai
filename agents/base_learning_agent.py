@@ -5,6 +5,7 @@ import random
 import typing
 from collections import deque
 from datetime import datetime
+from hashlib import md5
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict, Any, Callable
 from dataclasses import dataclass
@@ -178,6 +179,11 @@ class GameHistoryStep:
     legal_actions: List[ActionType]  # Only used by muzero for training
 
 
+@dataclass
+class GameExperience:
+    file_path: str
+
+
 class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
     """Base agent for MCTS-based learning agents like AlphaZero and MuZero."""
 
@@ -316,15 +322,19 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
         self,
         game_history: List[GameHistoryStep],
         value_targets: List[float],
+        file_path: str,
     ) -> List[Any]:
         """Creates experiences for the replay buffer."""
         pass
 
-    def add_experiences_to_buffer(self, experiences: List[Any]):
-        """Adds experiences to the replay buffer, splitting between train and val."""
-        random.shuffle(experiences)
+    def add_experiences_to_buffer(self, experiences: List[GameExperience]):
+        FRACTION_VALIDATION = 0.2
+        validation_indicator = int(1 / FRACTION_VALIDATION)
         for exp in experiences:
-            if random.random() < 0.2:
+            hashed = int(md5(exp.file_path.encode()).hexdigest(), 16)
+            bucket = hashed % validation_indicator
+
+            if bucket == 0:
                 self.val_replay_buffer.append(exp)
             else:
                 self.train_replay_buffer.append(exp)
@@ -346,7 +356,9 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
         pass
 
     @abc.abstractmethod
-    def _process_game_log_data(self, game_data: List[Dict]) -> List[Any]:
+    def _process_game_log_data(
+        self, game_data: List[Dict], file_path: str
+    ) -> List[Any]:
         """Processes data from a single game log file into a list of experiences."""
         pass
 
@@ -371,22 +383,24 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
             return
 
         all_experiences = []
-        for filepath in tqdm(log_files, desc="Scanning Logs"):
+        for file_path in tqdm(log_files, desc="Scanning Logs"):
             if len(all_experiences) >= buffer_limit:
                 break
 
-            with open(filepath, "r") as f:
+            with open(file_path, "r") as f:
                 try:
                     game_data = json.load(f)
                 except json.JSONDecodeError:
-                    logger.warning(f"Could not decode JSON from {filepath}. Skipping.")
+                    logger.warning(f"Could not decode JSON from {file_path}. Skipping.")
                     continue
 
             loaded_games += 1
             if not game_data:
                 continue
 
-            experiences_from_game = self._process_game_log_data(game_data)
+            experiences_from_game = self._process_game_log_data(
+                game_data=game_data, file_path=file_path.as_posix()
+            )
             if experiences_from_game:
                 all_experiences.extend(experiences_from_game)
 

@@ -95,7 +95,7 @@ class RootStateObservationToRevealedLatentSampler(nn.Module):
         __call__ = forward
 
 
-class StateLatentAndActionsToPolicy(nn.Module):
+class StateLatentAndActionsToPolicyLogits(nn.Module):
     def __init__(self, embedding_dim: int = 64):
         super().__init__()
         self.embedding_dim = embedding_dim
@@ -111,15 +111,14 @@ class StateLatentAndActionsToPolicy(nn.Module):
         self,
         state_latent: Float[torch.Tensor, "batch emb_dim"],
         action_token: Float[torch.Tensor, "batch action emb_dim"],
-    ) -> Float[torch.Tensor, "batch action 1"]:
+    ) -> Float[torch.Tensor, "batch action"]:
         # repeat state to match action token height with einops
         state_latent = einops.repeat(
             state_latent, "batch emb -> batch action emb", action=action_token.shape[1]
         )
         policy_input = torch.cat([state_latent, action_token], dim=-1)
         prior_logits = self.state_latent_and_action_to_policy_head(policy_input)
-        prior = torch.softmax(prior_logits.squeeze(-1), dim=1)
-        return prior
+        return prior_logits.squeeze(-1)
 
     if typing.TYPE_CHECKING:
         __call__ = forward
@@ -181,7 +180,7 @@ class StateLatentToValue(nn.Module):
 
     def forward(
         self, state_latent: Float[torch.Tensor, "batch emb_dim"]
-    ) -> Float[torch.Tensor, "batch 1"]:
+    ) -> Float[torch.Tensor, "batch"]:
         value_pred = self.latent_to_value_head(state_latent).squeeze(-1)
         return value_pred
 
@@ -239,8 +238,8 @@ class MuZeroNet(BaseTokenizingNet):
             num_actions=num_actions_for_inner_nodes,
         )
 
-        self.state_latent_and_actions_to_policy = StateLatentAndActionsToPolicy(
-            embedding_dim=self.embedding_dim
+        self.state_latent_and_actions_to_policy_logits = (
+            StateLatentAndActionsToPolicyLogits(embedding_dim=self.embedding_dim)
         )
 
         self.state_latent_to_value = StateLatentToValue(
@@ -257,7 +256,7 @@ class MuZeroNet(BaseTokenizingNet):
             mu,
             log_var,
         ) = self.root_state_observation_to_revealed_latent_sampler(state_tokens)
-        return mu.squeeze(0), log_var.squeeze(0)
+        return mu, log_var
 
     def get_state_latent_to_successor_latent_sampler_params(
         self,
@@ -314,13 +313,18 @@ class MuZeroNet(BaseTokenizingNet):
 
         for i in range(num_unroll_steps + 1):
             # POLICY
-            pred_policy_logits = self.state_latent_and_actions_to_policy(
+            prior_logits = self.state_latent_and_actions_to_policy_logits(
                 current_hidden_state, candidate_action_tokens[:, i]
-            ).squeeze(-1)
+            )
+            _batch, _action = prior_logits.shape
 
             mask = candidate_action_tokens_mask[:, i]
-            pred_policy_logits[~mask] = -torch.inf
-            unrolled_pred_policies.append(pred_policy_logits)
+            prior_logits[~mask] = -torch.inf
+            prior_logits = prior_logits.masked_fill(
+                ~candidate_action_tokens_mask[:, i], float("-inf")
+            )
+            prior = torch.softmax(prior_logits, dim=1)
+            unrolled_pred_policies.append(prior)
 
             # VALUE
             pred_value = self.state_latent_to_value(current_hidden_state)
