@@ -7,7 +7,7 @@
 # Create a RootNodeHiddenInfoSampler node
 # Represents the full distribution of possible states given the ObservedState
 # - ObservedState from player's perspective, input param
-# - hidden info sampler mu and logvar, from representation model
+# - hidden info sampler mu and log_var, from representation model
 # - sampledRootNodes, generated as needed with prog widening
 #
 # SampledRootNode has
@@ -903,10 +903,10 @@ class MuZeroAgent(BaseLearningAgent):
             )
 
         loss = wasserstein_distance_loss(
-            mu1=network_output.pred_dynamics_mu,
-            logvar1=network_output.pred_dynamics_log_var,
-            mu2=network_output.target_representation_mu.detach(),
-            logvar2=network_output.target_representation_log_var.detach(),
+            mu_1=network_output.pred_dynamics_mu,
+            log_var_1=network_output.pred_dynamics_log_var,
+            mu_2=network_output.target_representation_mu.detach(),
+            log_var_2=network_output.target_representation_log_var.detach(),
         )
         return loss
 
@@ -920,15 +920,15 @@ def scale_loss_by_step(loss: torch.Tensor, discount: float = 0.8):
 
 
 def wasserstein_distance_loss(
-    mu1: Float[torch.Tensor, "batch unroll emb"],
-    logvar1: Float[torch.Tensor, "batch unroll emb"],
-    mu2: Float[torch.Tensor, "batch unroll emb"],
-    logvar2: Float[torch.Tensor, "batch unroll emb"],
+    mu_1: Float[torch.Tensor, "batch unroll emb"],
+    log_var_1: Float[torch.Tensor, "batch unroll emb"],
+    mu_2: Float[torch.Tensor, "batch unroll emb"],
+    log_var_2: Float[torch.Tensor, "batch unroll emb"],
 ) -> Float[torch.Tensor, "unroll"]:
     # W^2(p, q) = ||mu1 - mu2||^2 + ||sigma1 - sigma2||^2
-    mean_diff_squared = torch.sum((mu1 - mu2).pow(2), dim=2)
-    sigma1 = torch.exp(0.5 * logvar1)
-    sigma2 = torch.exp(0.5 * logvar2)
+    mean_diff_squared = torch.sum((mu_1 - mu_2).pow(2), dim=2)
+    sigma1 = torch.exp(0.5 * log_var_1)
+    sigma2 = torch.exp(0.5 * log_var_2)
     std_diff_squared = torch.sum((sigma1 - sigma2).pow(2), dim=2)
     distance = mean_diff_squared + std_diff_squared
     return torch.mean(distance, dim=0)
