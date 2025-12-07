@@ -152,30 +152,22 @@ def _extract_sequences_from_batch(batch: List[MuZeroExperience]):
 
 
 def pad_action_sets(
-    action_sets: List[List[Float[torch.Tensor, "action emb_dim"]]],
+    action_sets: List[List[Float[torch.Tensor, "1 action emb_dim"]]],
     embedding_dim: int,
     device,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    # actions are batch, step, action x dim
-    if not action_sets:
-        return torch.empty(0, 0, 0, 0, device=device), torch.empty(
-            0, 0, 0, dtype=torch.bool, device=device
-        )
-
+    # action_sets is batch, step -> tensor of action x dim
     batch_size = len(action_sets)
-    if batch_size == 0:
-        return torch.empty(0, 0, 0, embedding_dim, device=device), torch.empty(
-            0, 0, 0, dtype=torch.bool, device=device
-        )
-
-    max_steps = 0
-    max_actions = 0
-    for batch in action_sets:
-        if len(batch) > max_steps:
-            max_steps = len(batch)
-        for step in batch:
-            if len(step) > max_actions:
-                max_actions = len(step)
+    max_steps = max((len(seq) for seq in action_sets), default=0)
+    max_actions = max(
+        (
+            s.shape[0]
+            for seq in action_sets
+            for s in seq
+            if s is not None and s.numel() > 0
+        ),
+        default=0,
+    )
 
     padded_tensor = torch.zeros(
         batch_size, max_steps, max_actions, embedding_dim, device=device
@@ -184,13 +176,12 @@ def pad_action_sets(
         batch_size, max_steps, max_actions, dtype=torch.bool, device=device
     )
 
-    for batch_index, batch in enumerate(action_sets):
-        for step_index, actions in enumerate(batch.size[1]):
-            if actions:
-                num_actions = len(actions)
-                action_tensor = torch.cat(actions, dim=0)
-                padded_tensor[batch_index, step_index, :num_actions] = action_tensor
-                mask[batch_index, step_index, :num_actions] = True
+    for batch_index, seq in enumerate(action_sets):
+        for seq_index, actions in enumerate(seq):
+            if actions is not None and actions.numel() > 0:
+                num_actions = actions.shape[1]
+                padded_tensor[batch_index, seq_index, :num_actions] = actions
+                mask[batch_index, seq_index, :num_actions] = True
 
     return padded_tensor, mask
 
@@ -269,10 +260,13 @@ def _tokenize_and_pad_actions(
     for seq in candidate_actions_seqs:
         step_list = []
         for step_actions in seq:
-            tokenized = network.tokenize_actions(step_actions) if step_actions else []
-            step_list.append(
-                [row.unsqueeze(0) for row in tokenized] if tokenized.numel() else []
-            )
+            if step_actions:
+                tokenized = network.tokenize_actions(step_actions)
+            else:
+                tokenized = torch.empty(
+                    0, network.embedding_dim, device=device, dtype=torch.float32
+                )
+            step_list.append(tokenized)
         tokenized_candidate_actions_seqs.append(step_list)
 
     (
