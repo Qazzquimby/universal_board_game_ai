@@ -31,7 +31,7 @@ class MuZeroObservedRootNode(MCTSNodeWithState):
     ):
         super().__init__(state_with_key=state_with_key)
         self.network = network
-        self.action_tokens = network.tokenize_actions(actions)
+        self.action_tokens = network.tokenize_actions(actions).unsqueeze(0)
         self.player_idx = current_player_index  # uses property current_player_index
         self.revelations = []
         (

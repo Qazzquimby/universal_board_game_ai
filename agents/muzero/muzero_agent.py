@@ -152,10 +152,13 @@ def _extract_sequences_from_batch(batch: List[MuZeroExperience]):
 
 
 def pad_action_sets(
-    action_sets: List[List[Float[torch.Tensor, "1 action emb_dim"]]],
+    action_sets: List[List[Float[torch.Tensor, "num_actions emb_dim"]]],
     embedding_dim: int,
     device,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> Tuple[
+    Float[torch.Tensor, "batch step action emb_dim"],
+    Float[torch.Tensor, "batch step action"],  # check this
+]:
     # action_sets is batch, step -> tensor of action x dim
     batch_size = len(action_sets)
     max_steps = max((len(seq) for seq in action_sets), default=0)
