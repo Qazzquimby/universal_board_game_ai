@@ -832,7 +832,7 @@ class MuZeroAgent(BaseLearningAgent):
         policy_losses = self._calculate_policy_loss_per_step(
             pred_policies=pred_policies, policy_targets=policy_targets
         )
-        policy_losses *= 0.6
+        policy_losses = policy_losses * 0.6
         scaled_policy_losses = scale_loss_by_step(policy_losses)
         total_policy_loss = torch.sum(scaled_policy_losses)
         return policy_losses, total_policy_loss
