@@ -485,6 +485,7 @@ class MuZeroAgent(BaseLearningAgent):
 
     model_type = "muzero"
     config: MuZeroConfig
+    network: MuZeroNet
 
     def __init__(
         self,
@@ -844,13 +845,15 @@ class MuZeroAgent(BaseLearningAgent):
         total_value_loss = torch.sum(scaled_value_losses)
         return value_losses, total_value_loss
 
-    def _compute_hidden_state_consistency_loss(self, network_output):
+    def _compute_hidden_state_consistency_loss(
+        self, network_output: MuZeroNetworkOutput
+    ):
         hidden_state_losses = self._calculate_hidden_state_consistency_loss_per_step(
             network_output=network_output
         )
         scaled_hidden_state_losses = scale_loss_by_step(hidden_state_losses)
         total_hidden_state_loss = torch.sum(scaled_hidden_state_losses)
-        return hidden_state_losses, total_hidden_state_loss
+        return hidden_state_losses, total_hidden_state_loss  # hint
 
     def _calculate_value_loss_per_step(
         self, pred_values, value_targets
@@ -888,7 +891,9 @@ class MuZeroAgent(BaseLearningAgent):
         policy_losses_tensor = torch.stack(policy_losses_per_step)
         return policy_losses_tensor
 
-    def _calculate_hidden_state_consistency_loss_per_step(self, network_output):
+    def _calculate_hidden_state_consistency_loss_per_step(
+        self, network_output: MuZeroNetworkOutput
+    ) -> Float[torch.Tensor, "unroll"]:
         if not network_output.pred_dynamics_mu.numel():
             num_steps = network_output.pred_policies.shape[1]
             return torch.zeros(
@@ -900,8 +905,8 @@ class MuZeroAgent(BaseLearningAgent):
         loss = wasserstein_distance_loss(
             mu1=network_output.pred_dynamics_mu,
             logvar1=network_output.pred_dynamics_log_var,
-            mu2=network_output.target_representation_mu,
-            logvar2=network_output.target_representation_log_var,
+            mu2=network_output.target_representation_mu.detach(),
+            logvar2=network_output.target_representation_log_var.detach(),
         )
         return loss
 
@@ -915,8 +920,11 @@ def scale_loss_by_step(loss: torch.Tensor, discount: float = 0.8):
 
 
 def wasserstein_distance_loss(
-    mu1: torch.Tensor, logvar1: torch.Tensor, mu2: torch.Tensor, logvar2: torch.Tensor
-):
+    mu1: Float[torch.Tensor, "batch unroll emb"],
+    logvar1: Float[torch.Tensor, "batch unroll emb"],
+    mu2: Float[torch.Tensor, "batch unroll emb"],
+    logvar2: Float[torch.Tensor, "batch unroll emb"],
+) -> Float[torch.Tensor, "unroll"]:
     # W^2(p, q) = ||mu1 - mu2||^2 + ||sigma1 - sigma2||^2
     mean_diff_squared = torch.sum((mu1 - mu2).pow(2), dim=2)
     sigma1 = torch.exp(0.5 * logvar1)
