@@ -18,7 +18,7 @@ from factories import get_environment, create_learning_agent
 from remote_play.client import RemotePlayClient
 from utils.training_reporter import TrainingReporter, BenchmarkResults
 
-SELF_PLAY_ON_FIRST_ITER = True
+SELF_PLAY_ON_FIRST_ITER = False  # True
 
 USE_REMOTE_SELF_PLAY = False
 
@@ -44,9 +44,6 @@ def run_training_loop(
         current_agent=current_agent,
         base_agent=mcts_agent,
     )
-
-    # TODO REMOVE
-    self_play_agent = current_agent
 
     self_play_agent.temperature = 0.15
 

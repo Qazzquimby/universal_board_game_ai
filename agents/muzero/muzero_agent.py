@@ -31,6 +31,7 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 
 import torch
+from jaxtyping import Float
 from torch import nn, optim
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
@@ -151,9 +152,11 @@ def _extract_sequences_from_batch(batch: List[MuZeroExperience]):
 
 
 def pad_action_sets(
-    action_sets: List[List[List[torch.Tensor]]], embedding_dim: int, device
+    action_sets: List[List[Float[torch.Tensor, "action emb_dim"]]],
+    embedding_dim: int,
+    device,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    # actions are batch, step, action, dim
+    # actions are batch, step, action x dim
     if not action_sets:
         return torch.empty(0, 0, 0, 0, device=device), torch.empty(
             0, 0, 0, dtype=torch.bool, device=device
@@ -182,7 +185,7 @@ def pad_action_sets(
     )
 
     for batch_index, batch in enumerate(action_sets):
-        for step_index, actions in enumerate(batch):
+        for step_index, actions in enumerate(batch.size[1]):
             if actions:
                 num_actions = len(actions)
                 action_tensor = torch.cat(actions, dim=0)
