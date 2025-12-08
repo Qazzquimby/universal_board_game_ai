@@ -816,8 +816,8 @@ class MuZeroAgent(BaseLearningAgent):
     def _calculate_loss(
         self,
         network_output: MuZeroNetworkOutput,
-        policy_targets: torch.Tensor,
-        value_targets: torch.Tensor,  # TODO TYPE
+        policy_targets: Float[torch.Tensor, "batch unroll action"],
+        value_targets: Float[torch.Tensor, "batch unroll"],
         step_mask: Bool[torch.Tensor, "batch unroll"],
     ) -> MuZeroLossStatistics:
         """Calculates the MuZero loss over an unrolled trajectory."""
@@ -855,8 +855,13 @@ class MuZeroAgent(BaseLearningAgent):
             hidden_state_losses_per_step=hidden_state_losses_per_step,
         )
 
-    def _compute_policy_loss(self, pred_policies, policy_targets, step_mask):
-        policy_losses = self._calculate_policy_loss_per_step(  # TODO TYPE
+    def _compute_policy_loss(
+        self,
+        pred_policies: Float[torch.Tensor, "batch unroll action"],
+        policy_targets: Float[torch.Tensor, "batch unroll action"],
+        step_mask: Float[torch.Tensor, "batch unroll"],
+    ) -> Tuple[Float[torch.Tensor, "unroll"], Float[torch.Tensor, "1"]]:
+        policy_losses = self._calculate_policy_loss_per_step(
             pred_policies=pred_policies,
             policy_targets=policy_targets,
             step_mask=step_mask,
@@ -866,8 +871,13 @@ class MuZeroAgent(BaseLearningAgent):
         total_policy_loss = torch.sum(scaled_policy_losses)
         return policy_losses, total_policy_loss
 
-    def _compute_value_loss(self, pred_values, value_targets, step_mask):
-        value_losses = self._calculate_value_loss_per_step(  # TODO TYPE
+    def _compute_value_loss(
+        self,
+        pred_values: Float[torch.Tensor, "batch unroll"],
+        value_targets: Float[torch.Tensor, "batch unroll"],
+        step_mask: Bool[torch.Tensor, "batch unroll"],
+    ) -> Tuple[Float[torch.Tensor, "unroll"], Float[torch.Tensor, "1"]]:
+        value_losses = self._calculate_value_loss_per_step(
             pred_values=pred_values, value_targets=value_targets, step_mask=step_mask
         )
         scaled_value_losses = scale_loss_by_step(value_losses)
@@ -911,10 +921,10 @@ class MuZeroAgent(BaseLearningAgent):
 
     def _calculate_policy_loss_per_step(
         self,
-        pred_policies,
-        policy_targets,
-        step_mask,
-    ) -> torch.Tensor:  # TODO TYPE
+        pred_policies: Float[torch.Tensor, "batch unroll action"],
+        policy_targets: Float[torch.Tensor, "batch unroll action"],
+        step_mask: Bool[torch.Tensor, "batch unroll"],
+    ) -> Float[torch.Tensor, "unroll"]:
         num_steps = pred_policies.shape[1]
         assert policy_targets.shape[1] == num_steps
 
