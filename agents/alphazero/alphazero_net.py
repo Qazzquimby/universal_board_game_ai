@@ -110,13 +110,15 @@ class AlphaZeroNet(BaseTokenizingNet):
         game_token = self.game_token.expand(batch_size, -1, -1)
         sequence = torch.cat([game_token, state_tokens], dim=1)
 
-        game_token_mask = torch.zeros(
+        game_token_mask = torch.ones(
             batch_size, 1, dtype=torch.bool, device=state_tokens.device
         )
         full_padding_mask = torch.cat([game_token_mask, state_padding_mask], dim=1)
 
         transformer_output = self.transformer_encoder(
-            sequence, src_key_padding_mask=full_padding_mask
+            sequence,
+            src_key_padding_mask=~full_padding_mask
+            # We use True for real, False for pad. They want the opposite.
         )
         game_token_output = transformer_output[:, 0, :]  # (batch, dim)
 

@@ -61,7 +61,9 @@ class StateModel(nn.Module):
         mask = torch.cat((piece_mask, game_mask), dim=1)
         tokens = self.dropout(tokens)
 
-        transformer_output = self.transformer_encoder(tokens, src_key_padding_mask=mask)
+        transformer_output = self.transformer_encoder(
+            tokens, src_key_padding_mask=~mask
+        )
         game_out = transformer_output[:, -1, :]
         value_out = F.relu(self.fc_value(game_out))
         value = torch.tanh(self.value_head(value_out))

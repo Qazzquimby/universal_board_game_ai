@@ -83,7 +83,9 @@ class RootStateObservationToRevealedLatentSampler(nn.Module):
             padding_mask = None
 
         transformer_output = self.state_transformer_encoder(
-            sequence, src_key_padding_mask=padding_mask
+            sequence,
+            src_key_padding_mask=~padding_mask
+            # our mask uses True for real, False for pad. They want the opposite.
         )
         game_token_output = transformer_output[:, 0, :]
         mu = self.enc_to_latent_mu(game_token_output)
