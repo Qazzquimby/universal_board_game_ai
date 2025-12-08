@@ -307,6 +307,7 @@ class MuZeroNet(BaseTokenizingNet):
         ) = self.root_state_observation_to_revealed_latent_sampler(
             initial_state_tokens, initial_state_padding_mask
         )
+        assert not revelation_mu.isnan().any() and not revelation_log_var.isnan().any()
         current_latent = take_sample(revelation_mu, revelation_log_var)
 
         for unroll_step in range(num_unroll_steps + 1):
@@ -317,15 +318,14 @@ class MuZeroNet(BaseTokenizingNet):
             _batch, _action = prior_logits.shape
 
             mask = candidate_action_tokens_mask[:, unroll_step]
-            prior_logits[~mask] = -torch.inf
-            prior_logits = prior_logits.masked_fill(
-                ~candidate_action_tokens_mask[:, unroll_step], float("-inf")
-            )
+            prior_logits = prior_logits.masked_fill(~mask, float("-inf"))
             prior = torch.softmax(prior_logits, dim=1)
+            assert not prior.isnan().any()
             unrolled_pred_policies.append(prior)
 
             # VALUE
             pred_value = self.state_latent_to_value(current_latent)
+            assert not pred_value.isnan().any()
             unrolled_pred_values.append(pred_value)
 
             if unroll_step < num_unroll_steps:
@@ -340,6 +340,7 @@ class MuZeroNet(BaseTokenizingNet):
                 )
                 successor_mu = successor_mu.squeeze(1)
                 successor_log_var = successor_log_var.squeeze(1)
+                assert not successor_mu.isnan().any()
 
                 unrolled_pred_successor_mu.append(successor_mu)
                 unrolled_pred_successor_log_var.append(successor_log_var)

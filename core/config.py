@@ -24,7 +24,7 @@ class MCTSConfig(BaseModel):
 
 TRAINING_BATCH_SIZE = 128
 
-REPLAY_BUFFER_SIZE = 10_000
+REPLAY_BUFFER_SIZE = 100_00  # 0
 
 
 class SomethingZeroConfig(BaseModel):

@@ -183,10 +183,10 @@ def pad_action_sets(
 
     for batch_index, seq in enumerate(action_sets):
         for seq_index, actions in enumerate(seq):
-            if actions is not None and actions.numel() > 0:
-                _action, _dim = actions.shape
+            if actions is not None:
+                assert actions.numel() > 0
+                num_actions, _dim = actions.shape
                 assert _dim == embedding_dim
-                num_actions = actions.shape[0]
                 padded_tensor[batch_index, seq_index, :num_actions] = actions
                 mask[batch_index, seq_index, :num_actions] = True
     return padded_tensor, mask
@@ -817,6 +817,7 @@ class MuZeroAgent(BaseLearningAgent):
         ) = self._compute_hidden_state_consistency_loss(network_output=network_output)
 
         total_loss = total_value_loss + total_policy_loss + total_hidden_state_loss
+        assert not total_loss.isnan()
 
         return MuZeroLossStatistics(
             batch_loss=total_loss,
@@ -847,7 +848,7 @@ class MuZeroAgent(BaseLearningAgent):
 
     def _compute_hidden_state_consistency_loss(
         self, network_output: MuZeroNetworkOutput
-    ):
+    ) -> Tuple[Float[torch.Tensor, "inner_unroll"], Float[torch.Tensor, "1"]]:
         hidden_state_losses = self._calculate_hidden_state_consistency_loss_per_step(
             network_output=network_output
         )
