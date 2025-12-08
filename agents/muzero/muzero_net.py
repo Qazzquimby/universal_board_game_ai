@@ -320,7 +320,14 @@ class MuZeroNet(BaseTokenizingNet):
             _batch, _action = prior_logits.shape
 
             mask = candidate_action_tokens_mask[:, unroll_step]
+            assert prior_logits.shape == mask.shape
             prior_logits = prior_logits.masked_fill(~mask, float("-inf"))
+
+            # This would hide the problem. This state should not exist.
+            # no_actions = ~mask.any(dim=1)  # shape: (batch,)
+            # if no_actions.any():
+            #     prior_logits[no_actions] = 0.0
+
             prior = torch.softmax(prior_logits, dim=1)
             assert not prior.isnan().any()
             unrolled_pred_policies.append(prior)

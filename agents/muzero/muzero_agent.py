@@ -183,12 +183,12 @@ def pad_action_sets(
 
     for batch_index, seq in enumerate(action_sets):
         for seq_index, actions in enumerate(seq):
-            if actions is not None:
-                assert actions.numel() > 0
-                num_actions, _dim = actions.shape
-                assert _dim == embedding_dim
-                padded_tensor[batch_index, seq_index, :num_actions] = actions
-                mask[batch_index, seq_index, :num_actions] = True
+            assert actions is not None and actions.numel() > 0
+            assert actions.numel() > 0
+            num_actions, _dim = actions.shape
+            assert _dim == embedding_dim
+            padded_tensor[batch_index, seq_index, :num_actions] = actions
+            mask[batch_index, seq_index, :num_actions] = True
     return padded_tensor, mask
 
 
