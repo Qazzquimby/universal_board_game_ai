@@ -332,7 +332,7 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
         FRACTION_VALIDATION = 0.2
         validation_indicator = int(1 / FRACTION_VALIDATION)
         for exp in experiences:
-            hashed = int(md5(exp.file_path.encode()).hexdigest(), 16)
+            hashed = int(md5(str(exp.file_path).encode()).hexdigest(), 16)
             bucket = hashed % validation_indicator
 
             if bucket == 0:
@@ -400,7 +400,7 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
                 continue
 
             experiences_from_game = self._process_game_log_data(
-                game_data=game_data, file_path=file_path.as_posix()
+                game_data=game_data, file_path=str(file_path)
             )
             if experiences_from_game:
                 all_experiences.extend(experiences_from_game)

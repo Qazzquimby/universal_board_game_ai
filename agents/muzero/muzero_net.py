@@ -79,13 +79,14 @@ class RootStateObservationToRevealedLatentSampler(nn.Module):
                 (batch_size, 1), dtype=torch.bool, device=state_padding_mask.device
             )
             padding_mask = torch.cat([game_token_mask, state_padding_mask], dim=1)
+            padding_mask = (
+                ~padding_mask
+            )  # our mask uses True for real, False for pad. They want the opposite.
         else:
             padding_mask = None
 
         transformer_output = self.state_transformer_encoder(
-            sequence,
-            src_key_padding_mask=~padding_mask
-            # our mask uses True for real, False for pad. They want the opposite.
+            sequence, src_key_padding_mask=padding_mask
         )
         game_token_output = transformer_output[:, 0, :]
         mu = self.enc_to_latent_mu(game_token_output)
