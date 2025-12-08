@@ -121,6 +121,7 @@ class MuZeroCollation:
     candidate_action_tokens_mask: torch.Tensor
     unrolled_states_tokens: torch.Tensor
     unrolled_states_padding_mask: torch.Tensor
+    step_mask: Bool[torch.Tensor, "batch unroll"]
 
 
 def _extract_sequences_from_batch(batch: List[MuZeroExperience]):
@@ -210,7 +211,7 @@ def _tokenize_and_pad_states(
         for i in range(1, max_len):
             states_for_step = [
                 seq[i] if i < len(seq) else seq[-1] for seq in states_seqs
-            ]
+            ]  # todo, [-1] is duplicating into padding
             batched_step_state = _get_batched_state(state_dicts=states_for_step)
             (
                 step_tokens,
@@ -357,6 +358,15 @@ def get_muzero_tokenizing_collate_fn(network: nn.Module) -> callable:
             policy_target_seqs, value_target_seqs, batch_size
         )
 
+        # # #
+        seq_lengths = [len(seq) for seq in states_seqs]  # len(exp.steps)
+        max_steps = max(seq_lengths, default=0)
+        step_mask = torch.zeros(batch_size, max_steps, dtype=torch.bool, device=device)
+        for _batch_index, _seq_length in enumerate(seq_lengths):
+            step_mask[_batch_index, :_seq_length] = True
+        assert policy_targets.shape[1] == max_steps
+        assert candidate_action_tokens.shape[1] == max_steps
+
         return MuZeroCollation(
             initial_state_tokens=initial_state_tokens,
             initial_state_padding_mask=initial_state_padding_mask,
@@ -367,6 +377,7 @@ def get_muzero_tokenizing_collate_fn(network: nn.Module) -> callable:
             candidate_action_tokens_mask=candidate_action_tokens_mask,
             unrolled_states_tokens=unrolled_states_tokens,
             unrolled_states_padding_mask=unrolled_states_padding_mask,
+            step_mask=step_mask,
         )
 
     return collate_fn
@@ -714,7 +725,9 @@ class MuZeroAgent(BaseLearningAgent):
             initial_state_padding_mask=batch_data.initial_state_padding_mask.to(
                 self.device
             ),
-            action_tokens_history=batch_data.action_tokens_history.to(self.device),
+            actual_action_token_history=batch_data.action_tokens_history.to(
+                self.device
+            ),
             candidate_action_tokens=batch_data.candidate_action_tokens.to(self.device),
             candidate_action_tokens_mask=batch_data.candidate_action_tokens_mask.to(
                 self.device
@@ -723,11 +736,13 @@ class MuZeroAgent(BaseLearningAgent):
             unrolled_states_padding_mask=batch_data.unrolled_states_padding_mask.to(
                 self.device
             ),
+            step_mask=batch_data.step_mask.to(self.device),
         )
         loss_statistics: MuZeroLossStatistics = self._calculate_loss(
             network_output=network_output,
             policy_targets=policy_targets_batch,
             value_targets=value_targets_batch,
+            step_mask=batch_data.step_mask.to(self.device),
         )
 
         if is_training:
@@ -802,22 +817,30 @@ class MuZeroAgent(BaseLearningAgent):
         self,
         network_output: MuZeroNetworkOutput,
         policy_targets: torch.Tensor,
-        value_targets: torch.Tensor,
+        value_targets: torch.Tensor,  # TODO TYPE
+        step_mask: Bool[torch.Tensor, "batch unroll"],
     ) -> MuZeroLossStatistics:
         """Calculates the MuZero loss over an unrolled trajectory."""
 
         (policy_losses_per_step, total_policy_loss) = self._compute_policy_loss(
-            pred_policies=network_output.pred_policies, policy_targets=policy_targets
+            pred_policies=network_output.pred_policies,
+            policy_targets=policy_targets,
+            step_mask=step_mask,
         )
 
         value_losses_per_step, total_value_loss = self._compute_value_loss(
-            pred_values=network_output.pred_values, value_targets=value_targets
+            pred_values=network_output.pred_values,
+            value_targets=value_targets,
+            step_mask=step_mask,
         )
 
         (
             hidden_state_losses_per_step,
             total_hidden_state_loss,
-        ) = self._compute_hidden_state_consistency_loss(network_output=network_output)
+        ) = self._compute_hidden_state_consistency_loss(
+            network_output=network_output,
+            step_mask=step_mask,
+        )
 
         total_loss = total_value_loss + total_policy_loss + total_hidden_state_loss
         assert not total_loss.isnan()
@@ -832,42 +855,51 @@ class MuZeroAgent(BaseLearningAgent):
             hidden_state_losses_per_step=hidden_state_losses_per_step,
         )
 
-    def _compute_policy_loss(self, pred_policies, policy_targets):
-        policy_losses = self._calculate_policy_loss_per_step(
-            pred_policies=pred_policies, policy_targets=policy_targets
+    def _compute_policy_loss(self, pred_policies, policy_targets, step_mask):
+        policy_losses = self._calculate_policy_loss_per_step(  # TODO TYPE
+            pred_policies=pred_policies,
+            policy_targets=policy_targets,
+            step_mask=step_mask,
         )
         policy_losses = policy_losses * 0.6
         scaled_policy_losses = scale_loss_by_step(policy_losses)
         total_policy_loss = torch.sum(scaled_policy_losses)
         return policy_losses, total_policy_loss
 
-    def _compute_value_loss(self, pred_values, value_targets):
-        value_losses = self._calculate_value_loss_per_step(
-            pred_values=pred_values, value_targets=value_targets
+    def _compute_value_loss(self, pred_values, value_targets, step_mask):
+        value_losses = self._calculate_value_loss_per_step(  # TODO TYPE
+            pred_values=pred_values, value_targets=value_targets, step_mask=step_mask
         )
         scaled_value_losses = scale_loss_by_step(value_losses)
         total_value_loss = torch.sum(scaled_value_losses)
         return value_losses, total_value_loss
 
     def _compute_hidden_state_consistency_loss(
-        self, network_output: MuZeroNetworkOutput
+        self,
+        network_output: MuZeroNetworkOutput,
+        step_mask: Bool[torch.Tensor, "unroll"],
     ) -> Tuple[Float[torch.Tensor, "inner_unroll"], Float[torch.Tensor, "1"]]:
         hidden_state_losses = self._calculate_hidden_state_consistency_loss_per_step(
-            network_output=network_output
+            network_output=network_output, step_mask=step_mask
         )
         scaled_hidden_state_losses = scale_loss_by_step(hidden_state_losses)
         total_hidden_state_loss = torch.sum(scaled_hidden_state_losses)
         return hidden_state_losses, total_hidden_state_loss  # hint
 
     def _calculate_value_loss_per_step(
-        self, pred_values, value_targets
+        self, pred_values, value_targets, step_mask
     ) -> torch.Tensor:
-        num_steps = pred_values.shape[1]
-        assert value_targets.shape[1] == num_steps
+        num_steps = pred_values.shape[1]  # TODO TYPE
+        assert value_targets.shape[1] == step_mask.shape[1] == num_steps
 
         value_losses_per_step = []
-
         for i in range(num_steps):
+            valid = step_mask[:, i]
+            if not valid.any():
+                value_losses_per_step.append(
+                    torch.tensor(0.0, device=pred_values.device)
+                )
+                continue
             step_value_preds = pred_values[:, i]
             step_value_targets = value_targets[:, i]
 
@@ -878,13 +910,22 @@ class MuZeroAgent(BaseLearningAgent):
         return value_losses_tensor
 
     def _calculate_policy_loss_per_step(
-        self, pred_policies, policy_targets
-    ) -> torch.Tensor:
+        self,
+        pred_policies,
+        policy_targets,
+        step_mask,
+    ) -> torch.Tensor:  # TODO TYPE
         num_steps = pred_policies.shape[1]
         assert policy_targets.shape[1] == num_steps
 
         policy_losses_per_step = []
         for i in range(num_steps):
+            valid: Bool[torch.Tensor, "batch"] = step_mask[:, i]
+            if not valid.any():
+                policy_losses_per_step.append(
+                    torch.tensor(0.0, device=pred_policies.device)
+                )
+                continue
             # Policy loss (Cross-Entropy)
             step_policy_logits = pred_policies[:, i, :]
             step_policy_targets = policy_targets[:, i, :]
@@ -896,8 +937,10 @@ class MuZeroAgent(BaseLearningAgent):
         return policy_losses_tensor
 
     def _calculate_hidden_state_consistency_loss_per_step(
-        self, network_output: MuZeroNetworkOutput
-    ) -> Float[torch.Tensor, "unroll"]:
+        self,
+        network_output: MuZeroNetworkOutput,
+        step_mask: Bool[torch.Tensor, "unroll"],
+    ) -> Float[torch.Tensor, "inner_unroll"]:
         if not network_output.pred_dynamics_mu.numel():
             num_steps = network_output.pred_policies.shape[1]
             return torch.zeros(
@@ -911,6 +954,7 @@ class MuZeroAgent(BaseLearningAgent):
             log_var_1=network_output.pred_dynamics_log_var,
             mu_2=network_output.target_representation_mu.detach(),
             log_var_2=network_output.target_representation_log_var.detach(),
+            step_mask=step_mask,
         )
         return loss
 
@@ -924,10 +968,11 @@ def scale_loss_by_step(loss: torch.Tensor, discount: float = 0.8):
 
 
 def wasserstein_distance_loss(
-    mu_1: Float[torch.Tensor, "batch unroll emb"],
-    log_var_1: Float[torch.Tensor, "batch unroll emb"],
-    mu_2: Float[torch.Tensor, "batch unroll emb"],
-    log_var_2: Float[torch.Tensor, "batch unroll emb"],
+    mu_1: Float[torch.Tensor, "batch inner_unroll emb"],
+    log_var_1: Float[torch.Tensor, "batch inner_unroll emb"],
+    mu_2: Float[torch.Tensor, "batch inner_unroll emb"],
+    log_var_2: Float[torch.Tensor, "batch inner_unroll emb"],
+    step_mask: Bool[torch.Tensor, "batch unroll"],
 ) -> Float[torch.Tensor, "unroll"]:
     # W^2(p, q) = ||mu1 - mu2||^2 + ||sigma1 - sigma2||^2
     mean_diff_squared = torch.sum((mu_1 - mu_2).pow(2), dim=2)
@@ -935,7 +980,12 @@ def wasserstein_distance_loss(
     sigma2 = torch.exp(0.5 * log_var_2)
     std_diff_squared = torch.sum((sigma1 - sigma2).pow(2), dim=2)
     distance = mean_diff_squared + std_diff_squared
-    return torch.mean(distance, dim=0)
+
+    inner_step_mask = step_mask[:, 1:]  # inner unroll steps
+    valid_counts = inner_step_mask.sum(dim=0).clamp(min=1)
+    masked_distance = distance * inner_step_mask
+    per_step_mean = masked_distance.sum(dim=0) / valid_counts
+    return per_step_mean
 
 
 def make_pure_muzero(

@@ -166,6 +166,9 @@ class StateLatentAndActionToSuccessorLatentSampler(nn.Module):
         log_var = self.state_and_action_to_successor_log_var(base_output)
         return mu, log_var
 
+    if typing.TYPE_CHECKING:
+        __call__ = forward
+
 
 class StateLatentToValue(nn.Module):
     def __init__(self, embedding_dim: int = 64):
@@ -184,6 +187,9 @@ class StateLatentToValue(nn.Module):
     ) -> Float[torch.Tensor, "batch"]:
         value_pred = self.latent_to_value_head(state_latent).squeeze(-1)
         return value_pred
+
+    if typing.TYPE_CHECKING:
+        __call__ = forward
 
 
 class StateLatentToActionsAndPriors(nn.Module):
@@ -204,6 +210,9 @@ class StateLatentToActionsAndPriors(nn.Module):
         logits = self.fc_weight_logits(state_latent)
         weights_pred = F.softmax(logits, dim=-1)
         return actions_pred, weights_pred
+
+    if typing.TYPE_CHECKING:
+        __call__ = forward
 
 
 class MuZeroNet(BaseTokenizingNet):
@@ -287,14 +296,21 @@ class MuZeroNet(BaseTokenizingNet):
         self,
         initial_state_tokens: Float[torch.Tensor, "batch seq emb"],
         initial_state_padding_mask: Bool[torch.Tensor, "batch seq"],
-        action_tokens_history: Float[torch.Tensor, "batch unroll emb"],
+        actual_action_token_history: Float[torch.Tensor, "batch inner_unroll emb"],
         candidate_action_tokens: Float[torch.Tensor, "batch unroll action emb"],
         candidate_action_tokens_mask: Bool[torch.Tensor, "batch unroll action"],
         unrolled_states_tokens: Float[torch.Tensor, "batch inner_unroll seq emb"],
         unrolled_states_padding_mask: Bool[torch.Tensor, "batch inner_unroll seq"],
+        step_mask: Bool[torch.Tensor, "batch unroll"],
     ) -> MuZeroNetworkOutput:
 
-        batch_size, num_unroll_steps, emb_dim = action_tokens_history.shape
+        (
+            batch_size,
+            num_unroll_steps,
+            max_actions,
+            emb_dim,
+        ) = candidate_action_tokens.shape
+        num_inner_unroll_steps = num_unroll_steps - 1
 
         unrolled_pred_policies = []
         unrolled_pred_values = []
@@ -312,45 +328,47 @@ class MuZeroNet(BaseTokenizingNet):
         assert not revelation_mu.isnan().any() and not revelation_log_var.isnan().any()
         current_latent = take_sample(revelation_mu, revelation_log_var)
 
-        for unroll_step in range(num_unroll_steps + 1):
+        for step_index in range(num_unroll_steps):
+            valid_steps = step_mask[:, step_index]
             # POLICY
+            actual_action_tokens = candidate_action_tokens[:, step_index]
             prior_logits = self.state_latent_and_actions_to_policy_logits(
-                current_latent, candidate_action_tokens[:, unroll_step]
+                state_latent=current_latent, action_token=actual_action_tokens
             )
             _batch, _action = prior_logits.shape
 
-            mask = candidate_action_tokens_mask[:, unroll_step]
-            assert prior_logits.shape == mask.shape
-            prior_logits = prior_logits.masked_fill(~mask, float("-inf"))
+            action_mask = candidate_action_tokens_mask[:, step_index]
+            assert prior_logits.shape == action_mask.shape
+            prior_logits = prior_logits.masked_fill(~action_mask, float("-inf"))
 
-            # This would hide the problem. This state should not exist.
-            # no_actions = ~mask.any(dim=1)  # shape: (batch,)
-            # if no_actions.any():
-            #     prior_logits[no_actions] = 0.0
+            if valid_steps.any():
+                assert action_mask[valid_steps].any(dim=1).all()
 
-            prior = torch.softmax(prior_logits, dim=1)
-            assert not prior.isnan().any()
+            prior = torch.zeros_like(prior_logits)
+            if valid_steps.any():
+                i = valid_steps.nonzero(as_tuple=True)[0]
+                prior[i] = torch.softmax(prior_logits[i], dim=1)
+
             unrolled_pred_policies.append(prior)
 
             # VALUE
             pred_value = self.state_latent_to_value(current_latent)
-            assert not pred_value.isnan().any()
             unrolled_pred_values.append(pred_value)
 
-            if unroll_step < num_unroll_steps:
+            if step_index < num_inner_unroll_steps:
                 # DYNAMICS, predict next latent
                 # add action dimension
-                action_tokens = action_tokens_history[:, unroll_step].unsqueeze(1)
+                actual_action_tokens = actual_action_token_history[
+                    :, step_index
+                ].unsqueeze(1)
                 (
                     successor_mu,
                     successor_log_var,
                 ) = self.state_latent_and_action_to_successor_latent_sampler(
-                    current_latent, action_tokens
+                    state_latent=current_latent, action_token=actual_action_tokens
                 )
                 successor_mu = successor_mu.squeeze(1)
                 successor_log_var = successor_log_var.squeeze(1)
-                assert not successor_mu.isnan().any()
-
                 unrolled_pred_successor_mu.append(successor_mu)
                 unrolled_pred_successor_log_var.append(successor_log_var)
 
@@ -364,8 +382,8 @@ class MuZeroNet(BaseTokenizingNet):
                     target_representation_mu,
                     target_representation_log_var,
                 ) = self.root_state_observation_to_revealed_latent_sampler(
-                    unrolled_states_tokens[:, unroll_step],
-                    unrolled_states_padding_mask[:, unroll_step],
+                    unrolled_states_tokens[:, step_index],
+                    unrolled_states_padding_mask[:, step_index],
                 )
                 unrolled_target_representation_mu.append(target_representation_mu)
                 unrolled_target_representation_log_var.append(
@@ -404,3 +422,6 @@ class MuZeroNet(BaseTokenizingNet):
             target_representation_mu=target_representation_mu,
             target_representation_log_var=target_representation_log_var,
         )
+
+    if typing.TYPE_CHECKING:
+        __call__ = forward
