@@ -625,9 +625,9 @@ class MuZeroAgent(BaseLearningAgent):
                 unroll_steps_for_turn.append(
                     MuZeroUnrollStep(
                         state=transformed_state,
-                        policy_target=step.policy,
+                        policy_target=unroll_step.policy,
                         value_target=value_target,
-                        legal_actions=step.legal_actions,
+                        legal_actions=unroll_step.legal_actions,
                         action_index=action_index_for_unroll_step,
                     )
                 )
@@ -680,6 +680,9 @@ class MuZeroAgent(BaseLearningAgent):
                     legal_actions = [
                         row[action_id_idx] for row in legal_actions_df._data
                     ]
+                if not legal_actions:
+                    print("No legal actions")
+                    continue
                 assert 0 <= action_index < len(legal_actions)
 
                 game_history_step = GameHistoryStep(
