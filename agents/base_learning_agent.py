@@ -687,12 +687,14 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
             batch_size=self.config.training_batch_size,
             shuffle=True,
             collate_fn=collate_fn,
+            num_workers=0,
         )
         val_loader = DataLoader(
             val_ds,
             batch_size=self.config.training_batch_size,
             shuffle=False,
             collate_fn=collate_fn,
+            num_workers=0,
         )
         return train_loader, val_loader
 
