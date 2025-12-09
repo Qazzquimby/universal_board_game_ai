@@ -842,7 +842,8 @@ class MuZeroAgent(BaseLearningAgent):
             step_mask=step_mask,
         )
 
-        total_loss = total_value_loss + total_policy_loss + total_hidden_state_loss
+        # todo temp, just seeing if it can learn value
+        total_loss = total_value_loss  #  + total_policy_loss + total_hidden_state_loss
         assert not total_loss.isnan()
 
         return MuZeroLossStatistics(
@@ -897,9 +898,12 @@ class MuZeroAgent(BaseLearningAgent):
         return hidden_state_losses, total_hidden_state_loss  # hint
 
     def _calculate_value_loss_per_step(
-        self, pred_values, value_targets, step_mask
-    ) -> torch.Tensor:
-        num_steps = pred_values.shape[1]  # TODO TYPE
+        self,
+        pred_values: Float[torch.Tensor, "batch unroll"],
+        value_targets: Float[torch.Tensor, "batch unroll"],
+        step_mask: Float[torch.Tensor, "batch unroll"],
+    ) -> Float[torch.Tensor, "unroll"]:
+        num_steps = pred_values.shape[1]
         assert value_targets.shape[1] == step_mask.shape[1] == num_steps
 
         value_losses_per_step = []
@@ -910,8 +914,8 @@ class MuZeroAgent(BaseLearningAgent):
                     torch.tensor(0.0, device=pred_values.device)
                 )
                 continue
-            step_value_preds = pred_values[:, i]
-            step_value_targets = value_targets[:, i]
+            step_value_preds = pred_values[valid, i]
+            step_value_targets = value_targets[valid, i]
 
             value_loss = F.mse_loss(step_value_preds, step_value_targets)
             value_losses_per_step.append(value_loss)
@@ -937,8 +941,8 @@ class MuZeroAgent(BaseLearningAgent):
                 )
                 continue
             # Policy loss (Cross-Entropy)
-            step_policy_logits = pred_policies[:, i, :]
-            step_policy_targets = policy_targets[:, i, :]
+            step_policy_logits = pred_policies[valid, i, :]
+            step_policy_targets = policy_targets[valid, i, :]
             policy_loss = entropy_adjusted_cross_entropy_loss(
                 logits=step_policy_logits, targets=step_policy_targets
             )
