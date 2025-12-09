@@ -252,7 +252,7 @@ def _process_and_save_game_results(
     episode_result = learning_agent.process_finished_episode(
         game_history=game_history,
         final_outcome=final_outcome,
-        file_path=file_path,
+        file_path=str(file_path),
     )
 
     buffer_experiences = episode_result.buffer_experiences

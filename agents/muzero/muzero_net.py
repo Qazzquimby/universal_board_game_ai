@@ -10,6 +10,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from agents.base_learning_agent import _get_batched_state
 from environments.base import BaseEnvironment, StateType
 from models.networks import BaseTokenizingNet
 from algorithms.sampling import take_sample
@@ -295,22 +296,69 @@ class MuZeroNet(BaseTokenizingNet):
 
     def forward(
         self,
-        initial_state_tokens: Float[torch.Tensor, "batch seq emb"],
-        initial_state_padding_mask: Bool[torch.Tensor, "batch seq"],
+        states_seqs: typing.List[typing.List[StateType]],
         actual_action_token_history: Float[torch.Tensor, "batch inner_unroll emb"],
         candidate_action_tokens: Float[torch.Tensor, "batch unroll action emb"],
         candidate_action_tokens_mask: Bool[torch.Tensor, "batch unroll action"],
-        unrolled_states_tokens: Float[torch.Tensor, "batch inner_unroll seq emb"],
-        unrolled_states_padding_mask: Bool[torch.Tensor, "batch inner_unroll seq"],
         step_mask: Bool[torch.Tensor, "batch unroll"],
     ) -> MuZeroNetworkOutput:
+        batch_size = len(states_seqs)
+
+        # Tokenize states
+        initial_states = [seq[0] for seq in states_seqs]
+        batched_initial_state = _get_batched_state(state_dicts=initial_states)
+        initial_state_tokens, initial_state_padding_mask = self.tokenize_state_batch(
+            batched_initial_state, batch_size=batch_size
+        )
 
         (
-            batch_size,
+            _batch_size,
             num_unroll_steps,
             max_actions,
             emb_dim,
         ) = candidate_action_tokens.shape
+
+        unrolled_states_tokens_list = []
+        unrolled_states_padding_mask_list = []
+        max_tokens = 0
+        if states_seqs:
+            for i in range(1, num_unroll_steps):
+                states_for_step = [
+                    seq[i] if i < len(seq) else seq[-1] for seq in states_seqs
+                ]  # todo, [-1] is duplicating into padding
+                batched_step_state = _get_batched_state(state_dicts=states_for_step)
+                (
+                    step_tokens,
+                    step_padding_mask,
+                ) = self.tokenize_state_batch(batched_step_state, batch_size=batch_size)
+                if step_tokens.shape[1] > max_tokens:
+                    max_tokens = step_tokens.shape[1]
+                unrolled_states_tokens_list.append(step_tokens)
+                unrolled_states_padding_mask_list.append(step_padding_mask)
+
+        if unrolled_states_tokens_list:
+            # Pad tokens and masks to the max token length in any step
+            padded_tokens_list = []
+            padded_masks_list = []
+            for tokens, mask in zip(
+                unrolled_states_tokens_list, unrolled_states_padding_mask_list
+            ):
+                pad_len = max_tokens - tokens.shape[1]
+                padded_tokens = F.pad(tokens, (0, 0, 0, pad_len), "constant", 0)
+                padded_mask = F.pad(mask, (0, pad_len), "constant", False)
+                padded_tokens_list.append(padded_tokens)
+                padded_masks_list.append(padded_mask)
+
+            unrolled_states_tokens = torch.stack(padded_tokens_list, dim=1)
+            unrolled_states_padding_mask = torch.stack(padded_masks_list, dim=1)
+        else:
+            unrolled_states_tokens = torch.empty(
+                batch_size, 0, 0, 0, device=self.get_device()
+            )
+            unrolled_states_padding_mask = torch.empty(
+                batch_size, 0, 0, device=self.get_device()
+            )
+
         num_inner_unroll_steps = num_unroll_steps - 1
 
         unrolled_pred_policies = []

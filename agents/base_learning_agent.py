@@ -89,6 +89,9 @@ def get_tokenizing_collate_fn(network: nn.Module) -> callable:
         state_dicts, policy_targets, value_targets, legal_actions_batch = zip(*batch)
         batch_size = len(state_dicts)
 
+        # TODO, while this is 'more efficient', it also prevents the tokenization from improving from training
+        # note that tokenization here means 'convert game entities to transformer input', not something like text tokenization.
+
         # Tokenize states
         # Tokenizing in collate because I think its slightly more efficient for padding calculation?
         #  Not sure. tokenize_state_batch may be no more efficient.
