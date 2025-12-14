@@ -190,7 +190,6 @@ def pad_action_sets(
     return padded_tensor, mask
 
 
-
 def _tokenize_and_pad_actions(
     action_index_seqs: List[List[int]],
     candidate_actions_seqs: List[List[List[int]]],
@@ -555,6 +554,7 @@ class MuZeroAgent(BaseLearningAgent):
                 unroll_step = game_history[unroll_step_index]
                 # want to cache apply transforms? Else everything is being done num_unroll_steps times
                 transformed_state = self.network.apply_transforms(unroll_step.state)
+                # Note this means each unroll step will have player=0 and thats okay
                 value_target = value_targets[unroll_step_index]
 
                 is_last_step = (unroll_delta == num_unroll_steps) or (
@@ -768,7 +768,7 @@ class MuZeroAgent(BaseLearningAgent):
         )
 
         # todo temp, just seeing if it can learn value
-        total_loss = total_value_loss  #  + total_policy_loss + total_hidden_state_loss
+        total_loss = total_value_loss + total_policy_loss  # + total_hidden_state_loss
         assert not total_loss.isnan()
 
         return MuZeroLossStatistics(
@@ -815,12 +815,14 @@ class MuZeroAgent(BaseLearningAgent):
         network_output: MuZeroNetworkOutput,
         step_mask: Bool[torch.Tensor, "unroll"],
     ) -> Tuple[Float[torch.Tensor, "inner_unroll"], Float[torch.Tensor, "1"]]:
-        hidden_state_losses = self._calculate_hidden_state_consistency_loss_per_step(
-            network_output=network_output, step_mask=step_mask
-        )
-        scaled_hidden_state_losses = scale_loss_by_step(hidden_state_losses)
-        total_hidden_state_loss = torch.sum(scaled_hidden_state_losses)
-        return hidden_state_losses, total_hidden_state_loss  # hint
+        return (torch.zeros(step_mask.shape[0] - 1), torch.tensor(0.0))
+        # temporarily disabled
+        # hidden_state_losses = self._calculate_hidden_state_consistency_loss_per_step(
+        #     network_output=network_output, step_mask=step_mask
+        # )
+        # scaled_hidden_state_losses = scale_loss_by_step(hidden_state_losses)
+        # total_hidden_state_loss = torch.sum(scaled_hidden_state_losses)
+        # return hidden_state_losses, total_hidden_state_loss
 
     def _calculate_value_loss_per_step(
         self,

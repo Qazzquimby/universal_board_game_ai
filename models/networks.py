@@ -165,7 +165,7 @@ class BaseTokenizingNet(nn.Module):
             padded_tokens[sorted_batch_indices, seq_indices] = sorted_tokens
 
         padding_mask = torch.arange(max_len, device=device)[None, :] < lengths[:, None]
-
+        assert not padded_tokens.isnan().any()
         return padded_tokens, padding_mask
 
     def tokenize_actions(

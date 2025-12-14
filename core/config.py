@@ -22,15 +22,15 @@ class MCTSConfig(BaseModel):
     num_simulations: int = MCTS_SIMULATIONS
 
 
-TRAINING_BATCH_SIZE = 128
+TRAINING_BATCH_SIZE = 128 * 2
 
-REPLAY_BUFFER_SIZE = 100_000
+REPLAY_BUFFER_SIZE = 9999999999999999  # 100_000
 
 
 class SomethingZeroConfig(BaseModel):
     num_simulations: int = MCTS_SIMULATIONS  # MCTS simulations per move
     cpuct: float = 1.0  # Exploration constant in PUCT formula
-    learning_rate: float = 0.0001
+    learning_rate: float = 0.0001  # 0.0001
     weight_decay: float = 0.00001
 
     value_loss_weight: float = 0.5
