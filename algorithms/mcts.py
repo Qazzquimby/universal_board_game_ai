@@ -475,8 +475,10 @@ class PUCTSelection(MCTSSelectionStrategyBase):
         self, edge: DeterministicEdge, parent_node_num_visits: int
     ) -> float:
         """Calculates the PUCT score for a child edge."""
-        # Q(s, a) from parent's perspective: -Q(s', a')
-        exploitation_term = -edge.value if edge.num_visits > 0 else 0.0
+        # It's the same as UCB1 except it doesn't force explore every option
+        # and it avoids div0 on unexplored options.
+
+        exploitation_term = edge.value
 
         # Exploration term: C * P(s, a) * sqrt(N(s)) / (1 + N(s, a))
         # parent_node_num_visits here is N(s)

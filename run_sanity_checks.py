@@ -59,15 +59,16 @@ def run_sanity_checks_for_agent(
     env: BaseEnvironment, agent: Agent, agent_name: str, network_only: bool = False
 ):
     """Runs predictions on predefined sanity check states for a given agent."""
-    logger.info(f"\n--- Running Sanity Checks for Agent: '{agent_name}' ---")
+    print("\n\n##########################################\n\n")
+    print(f"\n--- Running Sanity Checks for Agent: '{agent_name}' ---")
     sanity_states = env.get_sanity_check_states()
 
     if not sanity_states:
-        logger.info("No sanity check states defined for this environment.")
+        print("No sanity check states defined for this environment.")
         return
 
     for check_case in sanity_states:
-        logger.info(f"\nChecking State: {check_case.description}")
+        print(f"\nChecking State: {check_case.description}")
         temp_env = env.copy()
         temp_env.set_state(check_case.state_with_key.state)
         temp_env.render()
@@ -76,14 +77,14 @@ def run_sanity_checks_for_agent(
         policy_dict, value = predict(agent, temp_env, network_only=network_only)
 
         if policy_dict is None:
-            logger.warning(f"  Could not get prediction for this state.")
+            print(f"  Could not get prediction for this state.")
             continue
 
         if value is not None:
             if check_case.expected_value is None:
-                logger.info(f"  Value: Predicted={value:.4f}")
+                print(f"  Value: Predicted={value:.4f}")
             else:
-                logger.info(
+                print(
                     f"  Value: Expected={check_case.expected_value:.1f}, Predicted={value:.4f}"
                 )
 
@@ -91,9 +92,9 @@ def run_sanity_checks_for_agent(
             policy_dict.items(), key=lambda item: item[1], reverse=True
         )
 
-        logger.info(f"  Predicted Probabilities for Legal Actions:")
+        print(f"  Predicted Probabilities for Legal Actions:")
         if not sorted_probs:
-            logger.info("    - (No legal actions)")
+            print("    - (No legal actions)")
         else:
             for action_index, prob in sorted_probs:
                 action = legal_actions[action_index]
@@ -105,7 +106,7 @@ def run_sanity_checks_for_agent(
                     highlight += " <<< EXPECTED"
                 if sorted_probs and action_index == sorted_probs[0][0]:
                     highlight += " (BEST)"
-                logger.info(f"    - {action}: {prob:.4f}{highlight}")
+                print(f"    - {action}: {prob:.4f}{highlight}")
         print("")
 
 
