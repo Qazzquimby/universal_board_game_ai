@@ -32,15 +32,15 @@ def get_agents(env: BaseEnvironment, config: AppConfig) -> Dict[str, Agent]:
     agents = {}
 
     # AlphaZero agent
-    # az_agent_name = f"AZ_{config.mcts.num_simulations}"
-    # # az_agent = _create_az_agent(env, config)
-    # # _load_and_prepare_agent(az_agent, "AlphaZero")
-    # az_agent = create_learning_agent(
-    #     model_type="alphazero",
-    #     env=env,
-    #     config=config,
-    # )
-    # agents[az_agent_name] = az_agent
+    az_agent_name = f"AZ_{config.mcts.num_simulations}"
+    # az_agent = _create_az_agent(env, config)
+    # _load_and_prepare_agent(az_agent, "AlphaZero")
+    az_agent = create_learning_agent(
+        model_type="alphazero",
+        env=env,
+        config=config,
+    )
+    agents[az_agent_name] = az_agent
 
     # # MuZero agent
     mz_agent_name = f"MZ_{config.mcts.num_simulations}"

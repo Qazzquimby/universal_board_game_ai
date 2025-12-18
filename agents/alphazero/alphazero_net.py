@@ -76,10 +76,12 @@ class AlphaZeroNet(BaseTokenizingNet):
 
             # Score legal actions
             action_tokens = self.tokenize_actions(legal_actions)
-            state_embedding_expanded = game_embedding.expand(len(legal_actions), -1)
-            policy_input = torch.cat([state_embedding_expanded, action_tokens], dim=1)
+            state_embedding_expanded = game_embedding.expand(
+                len(legal_actions), -1
+            ).unsqueeze(0)
+            policy_input = torch.cat([state_embedding_expanded, action_tokens], dim=-1)
             scores = self.policy_head(policy_input).squeeze(-1)
-            policy_probs = F.softmax(scores, dim=0)
+            policy_probs = F.softmax(scores, dim=-1).squeeze(0)
 
             # policy_dict = {
             #     action: prob.item() for action, prob in zip(legal_actions, policy_probs)
