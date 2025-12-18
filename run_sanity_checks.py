@@ -5,6 +5,7 @@ from loguru import logger
 
 from agents.alphazero.alphazero_agent import AlphaZeroAgent
 from agents.mcts_agent import MCTSAgent
+from agents.muzero.muzero_agent import MuZeroAgent
 from core.agent_interface import Agent
 from core.config import AppConfig
 from environments.base import BaseEnvironment
@@ -29,7 +30,7 @@ def predict(
         )
         return policy_dict, value
 
-    elif isinstance(agent, (MCTSAgent, AlphaZeroAgent)):
+    elif isinstance(agent, (MCTSAgent, AlphaZeroAgent, MuZeroAgent)):
         # Run MCTS search to populate the root node
         _ = agent.act(env, train=False)
         policy_result = agent.get_policy_from_visits(temperature=0.0)
@@ -110,7 +111,7 @@ def run_sanity_checks_for_agent(
 
 def main():
     config = AppConfig()
-    config.env.name = "Gobblet"  # "Connect4"
+    config.env.name = "Connect4"
 
     logger.remove()
     logger.add(sys.stderr, level="INFO")

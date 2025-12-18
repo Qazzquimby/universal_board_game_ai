@@ -29,6 +29,7 @@ from algorithms.mcts import (
     BackpropagationStrategy,
     SelectionStrategy,
     MCTSNodeCache,
+    PUCTSelection,
 )
 from core.config import (
     AlphaZeroConfig,
@@ -289,7 +290,7 @@ def make_pure_az(
         optimizer = None
 
     return AlphaZeroAgent(
-        selection_strategy=UCB1Selection(exploration_constant=config.cpuct),
+        selection_strategy=PUCTSelection(exploration_constant=config.cpuct),
         expansion_strategy=AlphaZeroExpansion(network=network),
         evaluation_strategy=AlphaZeroEvaluation(network=network),
         backpropagation_strategy=StandardBackpropagation(),

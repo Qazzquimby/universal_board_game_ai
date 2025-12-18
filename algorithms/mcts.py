@@ -341,31 +341,17 @@ class DummyAlphaZeroNet(nn.Module):
         return policy_list, value_list
 
 
-class UCB1Selection(SelectionStrategy):
-    """Selects nodes using the UCB1 algorithm."""
-
-    def __init__(self, exploration_constant: float):
-        if exploration_constant < 0:
-            raise ValueError("Exploration constant cannot be negative.")
-        self.exploration_constant = exploration_constant
+class MCTSSelectionStrategyBase(SelectionStrategy):
+    """
+    Abstract base class for MCTS selection strategies (UCB1, PUCT, etc.).
+    Contains the generic MCTS traversal logic.
+    """
 
     def _score_edge(
         self, edge: DeterministicEdge, parent_node_num_visits: int
     ) -> float:
-        """Calculates the UCB1 score for a child node."""
-        if edge.num_visits == 0:
-            return float("inf")
-
-        # UCB Score = -Q(child) + C * P(child) * sqrt(log(N(parent)) / N(child))
-        # We use -Q(child) because child.value is from the perspective of the player
-        # at the child state. We need the value from the parent's perspective.
-        exploitation_term = edge.value  # check if should be negative
-        exploration_term = (
-            self.exploration_constant
-            * edge.prior
-            * math.sqrt(math.log(parent_node_num_visits) / edge.num_visits)
-        )
-        return exploitation_term + exploration_term
+        """Abstract method to calculate the score for a single edge."""
+        raise NotImplementedError
 
     def select(
         self,
@@ -375,11 +361,12 @@ class UCB1Selection(SelectionStrategy):
         remaining_sims: int,
         contender_actions: Optional[set],
     ) -> SelectionResult:
-        """Select child node with highest UCB score until a leaf node is reached.
-        Modifies sim_env"""
+        """
+        Generic traversal logic: Select child node with highest score until a leaf
+        node is reached or a cycle is detected. Modifies sim_env.
+        """
         path = SearchPath(initial_node=node)
         current_node: MCTSNodeWithState = node
-        # todo rename node to start node?
 
         while not sim_env.is_done:
             if not current_node.is_expanded:
@@ -395,7 +382,7 @@ class UCB1Selection(SelectionStrategy):
             step_result = sim_env.step(best_action)
 
             if path.has_visited_key(step_result.next_state_with_key.key):
-                # Cycle detected, terminate search path here.
+                # Cycle detected
                 return SelectionResult(path=path, leaf_env=sim_env)
 
             next_node = cache.get_matching_node(key=step_result.next_state_with_key.key)
@@ -411,6 +398,8 @@ class UCB1Selection(SelectionStrategy):
 
             current_node = next_node
             path.add(current_node, best_action_index)
+
+        # Reached a terminal state
         return SelectionResult(path=path, leaf_env=sim_env)
 
     def _select_action_index_from_edges(
@@ -419,6 +408,7 @@ class UCB1Selection(SelectionStrategy):
         start_node: MCTSNode,
         contender_actions: Optional[set],
     ) -> int:
+        """Helper to find the action index with the maximum score using the abstract _score_edge."""
         edges_to_consider = current_node.edges
         if current_node is start_node and contender_actions is not None:
             edges_to_consider = {
@@ -429,16 +419,74 @@ class UCB1Selection(SelectionStrategy):
 
         best_score = -float("inf")
         best_action_index: Optional[ActionType] = None
+
+        # Use 1 if num_visits is 0 to avoid issues with log(0) in some UCB formulas if not handled by an IF statement
+        parent_visits = current_node.num_visits if current_node.num_visits > 0 else 1
+
         for action_index, edge in edges_to_consider.items():
-            score = self._score_edge(
-                edge=edge, parent_node_num_visits=current_node.num_visits
-            )
+            # Calls the specific _score_edge implemented in child classes (PUCT or UCB1)
+            score = self._score_edge(edge=edge, parent_node_num_visits=parent_visits)
             if score > best_score:
                 best_score = score
                 best_action_index = action_index
 
         assert best_action_index is not None
         return best_action_index
+
+
+class UCB1Selection(MCTSSelectionStrategyBase):
+    """Selects nodes using the UCB1 algorithm."""
+
+    def __init__(self, exploration_constant: float):
+        if exploration_constant < 0:
+            raise ValueError("Exploration constant cannot be negative.")
+        self.exploration_constant = exploration_constant
+
+    def _score_edge(
+        self, edge: DeterministicEdge, parent_node_num_visits: int
+    ) -> float:
+        """Calculates the UCB1 score for a child node."""
+
+        # UCB Score = Avg_Reward + C * sqrt(log(N(parent)) / N(child))
+
+        if edge.num_visits == 0:
+            # Must return infinity to force selection of unvisited nodes first
+            return float("inf")
+
+        # The original UCB1 implementation typically does not use priors (edge.prior)
+        # and assumes edge.value is the running average reward for that edge.
+        exploitation_term = edge.value  # Assuming edge.value is already parent-relative
+
+        exploration_term = self.exploration_constant * math.sqrt(
+            math.log(parent_node_num_visits) / edge.num_visits
+        )
+        return exploitation_term + exploration_term
+
+
+class PUCTSelection(MCTSSelectionStrategyBase):
+    """Selects nodes using the AlphaZero PUCT algorithm."""
+
+    def __init__(self, exploration_constant: float = 1.0):
+        if exploration_constant < 0:
+            raise ValueError("Exploration constant cannot be negative.")
+        self.exploration_constant = exploration_constant
+
+    def _score_edge(
+        self, edge: DeterministicEdge, parent_node_num_visits: int
+    ) -> float:
+        """Calculates the PUCT score for a child edge."""
+        # Q(s, a) from parent's perspective: -Q(s', a')
+        exploitation_term = -edge.value if edge.num_visits > 0 else 0.0
+
+        # Exploration term: C * P(s, a) * sqrt(N(s)) / (1 + N(s, a))
+        # parent_node_num_visits here is N(s)
+        exploration_term = (
+            self.exploration_constant
+            * edge.prior
+            * (math.sqrt(parent_node_num_visits) / (1 + edge.num_visits))
+        )
+
+        return exploitation_term + exploration_term
 
 
 class UniformExpansion(ExpansionStrategy):

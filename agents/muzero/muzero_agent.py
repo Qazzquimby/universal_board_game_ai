@@ -64,6 +64,7 @@ from algorithms.mcts import (
     MCTSNodeCache,
     MCTSNode,
     Edge,
+    PUCTSelection,
 )
 from environments.base import (
     BaseEnvironment,
@@ -360,7 +361,7 @@ class MuZeroSelectionResult:
         return self.path.last_node
 
 
-class MuZeroSelection(UCB1Selection):
+class MuZeroSelection(PUCTSelection):
     def __init__(self, exploration_constant: float, network: nn.Module):
         super().__init__(exploration_constant)
         self.network = network
@@ -505,7 +506,7 @@ class MuZeroAgent(BaseLearningAgent):
             node=revelation,
             contender_actions=None,
             remaining_sims=remaining_sims,
-        )
+        )  # todo should make selections prior to seeing revelation?
 
         # 2. Expansion
         self._expand_leaf(leaf_node=selection_result.leaf_node, train=train)
