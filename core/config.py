@@ -24,7 +24,9 @@ class MCTSConfig(BaseModel):
 
 TRAINING_BATCH_SIZE = 128 * 2
 
-REPLAY_BUFFER_SIZE = 9999999999999999  # 100_000
+
+REPLAY_BUFFER_SIZE = 100_000  # dev
+# REPLAY_BUFFER_SIZE = 9999999999999999  # 100_000
 
 
 class SomethingZeroConfig(BaseModel):
@@ -67,7 +69,10 @@ class AlphaZeroConfig(SomethingZeroConfig):
 
 
 class MuZeroConfig(SomethingZeroConfig):
-    num_unroll_steps: int = 5  # 1  # Number of game steps to simulate in dynamics (k)
+    num_unroll_steps: int = (
+        1  # 5  # 1  # Number of game steps to simulate in dynamics (k)
+    )
+    # min 1
     td_steps: int = 10  # Number of steps for n-step return calculation
     policy_loss_weight: float = 1.0  # Weight for policy loss component (often 1.0)
     discount_factor: float = 0.99

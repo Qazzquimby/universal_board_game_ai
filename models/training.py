@@ -87,13 +87,13 @@ def run_training_loop(
                 )
 
         # Training
-        # logger.info("Running learning step...")
-        # metrics = current_agent.train_network(iteration=iteration)
-        # if metrics:
-        #     reporter.log_iteration_end(iteration=iteration, metrics=metrics)
-        #
-        # current_agent.save(iteration=iteration)
-        # logger.info(f"Saved checkpoint for iteration {iteration}")
+        logger.info("Running learning step...")
+        metrics = current_agent.train_network(iteration=iteration)
+        if metrics:
+            reporter.log_iteration_end(iteration=iteration, metrics=metrics)
+
+        current_agent.save(iteration=iteration)
+        logger.info(f"Saved checkpoint for iteration {iteration}")
         ###
 
         if isinstance(self_play_agent, MCTSAgent):
