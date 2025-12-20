@@ -20,7 +20,7 @@ def predict(
     """
     legal_actions = env.get_legal_actions()
 
-    if isinstance(agent, AlphaZeroAgent) and network_only:
+    if isinstance(agent, (AlphaZeroAgent, MuZeroAgent)) and network_only:
         if not agent.network:
             logger.warning("Agent has no network, cannot predict.")
             return None, None
@@ -123,7 +123,7 @@ def main():
     agents_to_check = []
     for agent_name, agent in agents.items():
         agents_to_check.append((agent_name, agent, False))
-        if isinstance(agent, AlphaZeroAgent):
+        if isinstance(agent, (AlphaZeroAgent, MuZeroAgent)):
             agents_to_check.append((f"{agent_name} (Network Only)", agent, True))
 
     for agent_name, agent, network_only in agents_to_check:
