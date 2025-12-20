@@ -393,12 +393,7 @@ class MuZeroNet(BaseTokenizingNet):
             if valid_steps.any():
                 assert action_mask[valid_steps].any(dim=1).all()
 
-            prior = torch.zeros_like(prior_logits)
-            if valid_steps.any():
-                i = valid_steps.nonzero(as_tuple=True)[0]
-                prior[i] = torch.softmax(prior_logits[i], dim=1)
-
-            unrolled_pred_policies.append(prior)
+            unrolled_pred_policies.append(prior_logits)
 
             # VALUE
             pred_value = self.state_latent_to_value(current_latent)
