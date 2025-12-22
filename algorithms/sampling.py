@@ -84,6 +84,8 @@ class ProgWidener:
 def take_sample(
     mu: Float[torch.Tensor, "batch emb"], log_var: Float[torch.Tensor, "batch emb"]
 ) -> Float[torch.Tensor, "batch emb"]:
+    return mu
+    # todo, temporarily removing sampling to see if it fixes failure to learn
     std = torch.exp(0.5 * log_var)
     eps = torch.randn_like(std)
     return mu + eps * std
