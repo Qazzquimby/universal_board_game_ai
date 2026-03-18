@@ -14,25 +14,9 @@ from core.config import AppConfig
 from models.training import run_training_loop
 
 if __name__ == "__main__":
-    # Diagnosis flags
-    FORCE_OVERFIT = False
-    NUM_GAMES_OVERFIT = 1
-    LEARN_ONLY_VALUE = False
-    LEARN_ONLY_POLICY = False
-
     config = AppConfig()
-    # if FORCE_OVERFIT:
-    #     config.training.num_epochs = 100
 
     logger.remove()
     logger.add(sys.stderr, level="INFO")
 
-    run_training_loop(
-        config,
-        model_type="muzero",
-        env_name_override=None,
-        force_overfit=FORCE_OVERFIT,
-        num_games_overfit=NUM_GAMES_OVERFIT,
-        learn_only_value=LEARN_ONLY_VALUE,
-        learn_only_policy=LEARN_ONLY_POLICY,
-    )
+    run_training_loop(config, model_type="muzero", env_name_override=None)
