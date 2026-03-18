@@ -442,6 +442,8 @@ class MuZeroAgent(BaseLearningAgent):
         config: MuZeroConfig,
         training_config: TrainingConfig,
         model_name: str = "muzero",
+        learn_only_value: bool = False,
+        learn_only_policy: bool = False,
     ):
         super().__init__(
             selection_strategy=selection_strategy,
@@ -458,6 +460,9 @@ class MuZeroAgent(BaseLearningAgent):
         self.selection_strategy: MuZeroSelection
         self.expansion_strategy: MuZeroExpansion
         self.evaluation_strategy: MuZeroEvaluation
+
+        self.learn_only_value = learn_only_value
+        self.learn_only_policy = learn_only_policy
 
         self.root: Optional[MuZeroObservedRootNode] = None
 
@@ -768,8 +773,15 @@ class MuZeroAgent(BaseLearningAgent):
             step_mask=step_mask,
         )
 
-        # todo temp, just seeing if it can learn value
-        total_loss = total_value_loss + total_policy_loss  # + total_hidden_state_loss
+        if self.learn_only_value:
+            total_loss = total_value_loss
+        elif self.learn_only_policy:
+            total_loss = total_policy_loss
+        else:
+            # todo temp, just seeing if it can learn value
+            total_loss = (
+                total_value_loss + total_policy_loss
+            )  # + total_hidden_state_loss
         assert not total_loss.isnan()
 
         return MuZeroLossStatistics(
@@ -935,6 +947,8 @@ def make_pure_muzero(
     config: MuZeroConfig,
     training_config: TrainingConfig,
     network: Optional[MuZeroNet] = None,
+    learn_only_value: bool = False,
+    learn_only_policy: bool = False,
 ):
     params = config.state_model_params
     if network is None:
@@ -959,4 +973,6 @@ def make_pure_muzero(
         env=env,
         config=config,
         training_config=training_config,
+        learn_only_value=learn_only_value,
+        learn_only_policy=learn_only_policy,
     )

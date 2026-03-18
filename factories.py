@@ -61,6 +61,8 @@ def create_learning_agent(
     model_type: str,
     env: BaseEnvironment,
     config: AppConfig,
+    learn_only_value: bool = False,
+    learn_only_policy: bool = False,
 ) -> Union[AlphaZeroAgent, MuZeroAgent]:
     if model_type == "alphazero":
         agent = make_pure_az(
@@ -73,6 +75,8 @@ def create_learning_agent(
             env=env,
             config=config.muzero,
             training_config=config.training,
+            learn_only_value=learn_only_value,
+            learn_only_policy=learn_only_policy,
         )
     else:
         raise ValueError(f"Unknown model type: {model_type}")

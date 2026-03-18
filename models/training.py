@@ -24,7 +24,13 @@ USE_REMOTE_SELF_PLAY = False
 
 
 def run_training_loop(
-    config: AppConfig, model_type: str, env_name_override: str = None
+    config: AppConfig,
+    model_type: str,
+    env_name_override: str = None,
+    force_overfit: bool = False,
+    num_games_overfit: int = 1,
+    learn_only_value: bool = False,
+    learn_only_policy: bool = False,
 ):
     """Runs the training process for a given model type (AlphaZero or MuZero)."""
 
@@ -33,7 +39,13 @@ def run_training_loop(
 
     env = get_environment(config.env)
 
-    current_agent = create_learning_agent(model_type, env, config)
+    current_agent = create_learning_agent(
+        model_type=model_type,
+        env=env,
+        config=config,
+        learn_only_value=learn_only_value,
+        learn_only_policy=learn_only_policy,
+    )
     mcts_agent = make_pure_mcts(num_simulations=config.mcts.num_simulations)
     mcts_agent.name = "mcts"
     mcts_agent.model_name = "mcts"
@@ -43,6 +55,8 @@ def run_training_loop(
         model_type=model_type,
         current_agent=current_agent,
         base_agent=mcts_agent,
+        learn_only_value=learn_only_value,
+        learn_only_policy=learn_only_policy,
     )
 
     self_play_agent.temperature = 0.15
@@ -59,13 +73,29 @@ def run_training_loop(
     start_time = time.time()
     reporter = TrainingReporter(config, current_agent, start_time)
 
+    experiment_suffix = ""
+    if force_overfit:
+        experiment_suffix += f"_overfit{num_games_overfit}"
+    if learn_only_value:
+        experiment_suffix += "_value_only"
+    if learn_only_policy:
+        experiment_suffix += "_policy_only"
+
     for iteration in outer_loop_iterator:
         reporter.log_iteration_start(iteration)
 
-        current_agent.model_name = f"{model_type}_iter_{iteration:03d}"
+        current_agent.model_name = (
+            f"{model_type}{experiment_suffix}_iter_{iteration:03d}"
+        )
         current_agent.name = current_agent.model_name.capitalize()
 
-        if iteration > start_iteration or SELF_PLAY_ON_FIRST_ITER:
+        if force_overfit:
+            should_self_play = iteration == start_iteration
+            config.training.num_games_per_iteration = num_games_overfit
+        else:
+            should_self_play = iteration > start_iteration or SELF_PLAY_ON_FIRST_ITER
+
+        if should_self_play:
             logger.info(f"Running self-play with '{self_play_agent.name}'...")
             if USE_REMOTE_SELF_PLAY:
                 if not os.path.exists("servers.json"):
@@ -112,7 +142,13 @@ def run_training_loop(
                     f"Promoting to use {current_agent.name} for self-play."
                 )
                 current_agent.promote_to_self_play(iteration)
-                self_play_agent = create_learning_agent(model_type, env, config)
+                self_play_agent = create_learning_agent(
+                    model_type,
+                    env,
+                    config,
+                    learn_only_value=learn_only_value,
+                    learn_only_policy=learn_only_policy,
+                )
                 model_path = current_agent.get_model_iter_path(iteration)
                 self_play_agent.load(model_path)
                 self_play_agent.model_name = f"{model_type}_iter_{iteration:03d}"
@@ -126,7 +162,13 @@ def run_training_loop(
             # Once promoted, the self-play agent is a learning agent.
             # We should have logic here to see if the new agent is better than the current self-play agent.
             # For now, we just update to the latest agent.
-            self_play_agent = create_learning_agent(model_type, env, config)
+            self_play_agent = create_learning_agent(
+                model_type,
+                env,
+                config,
+                learn_only_value=learn_only_value,
+                learn_only_policy=learn_only_policy,
+            )
             model_path = current_agent.get_model_iter_path(iteration)
             self_play_agent.load(model_path)
             self_play_agent.model_name = f"{model_type}_iter_{iteration:03d}"
@@ -140,7 +182,13 @@ def run_training_loop(
 
 
 def get_self_play_agent_and_start_iteration(
-    env, config, model_type, current_agent, base_agent
+    env,
+    config,
+    model_type,
+    current_agent,
+    base_agent,
+    learn_only_value: bool = False,
+    learn_only_policy: bool = False,
 ):
     current_agent.load_latest_version()
     start_iteration = current_agent.iteration_to_start_training_at
@@ -148,7 +196,13 @@ def get_self_play_agent_and_start_iteration(
     self_play_iter = current_agent.get_self_play_agent_iter()
     if self_play_iter is not None:
         logger.info(f"Loading agent from iter {self_play_iter} for self-play.")
-        self_play_agent = create_learning_agent(model_type, env, config)
+        self_play_agent = create_learning_agent(
+            model_type,
+            env,
+            config,
+            learn_only_value=learn_only_value,
+            learn_only_policy=learn_only_policy,
+        )
         model_path = self_play_agent.get_model_iter_path(self_play_iter)
         self_play_agent.load(model_path)
         self_play_agent.model_name = f"{model_type}_iter_{self_play_iter:03d}"
