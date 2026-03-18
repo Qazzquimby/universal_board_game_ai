@@ -22,7 +22,7 @@ class MCTSConfig(BaseModel):
     num_simulations: int = MCTS_SIMULATIONS
 
 
-TRAINING_BATCH_SIZE = 128 * 2
+TRAINING_BATCH_SIZE = 128 * 2 * 4
 
 
 # REPLAY_BUFFER_SIZE = 1000_000  # dev
@@ -70,7 +70,7 @@ class AlphaZeroConfig(SomethingZeroConfig):
 
 class MuZeroConfig(SomethingZeroConfig):
     num_unroll_steps: int = (
-        1  # 5  # 1  # Number of game steps to simulate in dynamics (k)
+        2  # 5  # 1  # Number of game steps to simulate in dynamics (k)
     )
     # min 1
     td_steps: int = 10  # Number of steps for n-step return calculation

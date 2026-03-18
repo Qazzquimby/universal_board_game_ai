@@ -816,14 +816,15 @@ class MuZeroAgent(BaseLearningAgent):
         network_output: MuZeroNetworkOutput,
         step_mask: Bool[torch.Tensor, "unroll"],
     ) -> Tuple[Float[torch.Tensor, "inner_unroll"], Float[torch.Tensor, "1"]]:
-        return (torch.zeros(step_mask.shape[0] - 1), torch.tensor(0.0))
-        # temporarily disabled
-        # hidden_state_losses = self._calculate_hidden_state_consistency_loss_per_step(
-        #     network_output=network_output, step_mask=step_mask
-        # )
-        # scaled_hidden_state_losses = scale_loss_by_step(hidden_state_losses)
-        # total_hidden_state_loss = torch.sum(scaled_hidden_state_losses)
-        # return hidden_state_losses, total_hidden_state_loss
+        # return (torch.zeros(step_mask.shape[0] - 1), torch.tensor(0.0))
+        # Use this to disable
+
+        hidden_state_losses = self._calculate_hidden_state_consistency_loss_per_step(
+            network_output=network_output, step_mask=step_mask
+        )
+        scaled_hidden_state_losses = scale_loss_by_step(hidden_state_losses)
+        total_hidden_state_loss = torch.sum(scaled_hidden_state_losses)
+        return hidden_state_losses, total_hidden_state_loss
 
     def _calculate_value_loss_per_step(
         self,
