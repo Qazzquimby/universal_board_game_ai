@@ -273,6 +273,7 @@ def make_pure_az(
     training_config: TrainingConfig,
     should_use_network: bool = True,
     network: AlphaZeroNet = None,
+    variant: str = None,
 ):
     if should_use_network:
         params = config.state_model_params
@@ -300,6 +301,7 @@ def make_pure_az(
         env=env,
         config=config,
         training_config=training_config,
+        variant=variant,
     )
 
 

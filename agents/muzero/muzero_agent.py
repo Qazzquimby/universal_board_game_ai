@@ -442,6 +442,7 @@ class MuZeroAgent(BaseLearningAgent):
         config: MuZeroConfig,
         training_config: TrainingConfig,
         model_name: str = "muzero",
+        variant: str = None,
     ):
         super().__init__(
             selection_strategy=selection_strategy,
@@ -454,6 +455,7 @@ class MuZeroAgent(BaseLearningAgent):
             config=config,
             training_config=training_config,
             model_name=model_name,
+            variant=variant,
         )
         self.selection_strategy: MuZeroSelection
         self.expansion_strategy: MuZeroExpansion
@@ -935,6 +937,7 @@ def make_pure_muzero(
     config: MuZeroConfig,
     training_config: TrainingConfig,
     network: Optional[MuZeroNet] = None,
+    variant: str = None,
 ):
     params = config.state_model_params
     if network is None:
@@ -959,4 +962,5 @@ def make_pure_muzero(
         env=env,
         config=config,
         training_config=training_config,
+        variant=variant,
     )

@@ -24,7 +24,10 @@ USE_REMOTE_SELF_PLAY = False
 
 
 def run_training_loop(
-    config: AppConfig, model_type: str, env_name_override: str = None
+    config: AppConfig,
+    model_type: str,
+    env_name_override: str = None,
+    variant: str = None,
 ):
     """Runs the training process for a given model type (AlphaZero or MuZero)."""
 
@@ -33,7 +36,9 @@ def run_training_loop(
 
     env = get_environment(config.env)
 
-    current_agent = create_learning_agent(model_type, env, config)
+    current_agent = create_learning_agent(
+        model_type=model_type, env=env, config=config, variant=variant
+    )
     mcts_agent = make_pure_mcts(num_simulations=config.mcts.num_simulations)
     mcts_agent.name = "mcts"
     mcts_agent.model_name = "mcts"

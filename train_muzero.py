@@ -19,4 +19,6 @@ if __name__ == "__main__":
     logger.remove()
     logger.add(sys.stderr, level="INFO")
 
-    run_training_loop(config, model_type="muzero", env_name_override=None)
+    run_training_loop(
+        config, model_type="muzero", env_name_override=None, variant="emb16"
+    )

@@ -58,21 +58,21 @@ def get_agents(env: BaseEnvironment, config: AppConfig) -> Dict[str, Agent]:
 
 
 def create_learning_agent(
-    model_type: str,
-    env: BaseEnvironment,
-    config: AppConfig,
+    model_type: str, env: BaseEnvironment, config: AppConfig, variant: str = None
 ) -> Union[AlphaZeroAgent, MuZeroAgent]:
     if model_type == "alphazero":
         agent = make_pure_az(
             env=env,
             config=config.alphazero,
             training_config=config.training,
+            variant=variant,
         )
     elif model_type == "muzero":
         agent = make_pure_muzero(
             env=env,
             config=config.muzero,
             training_config=config.training,
+            variant=variant,
         )
     else:
         raise ValueError(f"Unknown model type: {model_type}")

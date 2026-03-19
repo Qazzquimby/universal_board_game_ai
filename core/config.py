@@ -78,7 +78,7 @@ class MuZeroConfig(SomethingZeroConfig):
     discount_factor: float = 0.99
     state_model_params: Dict[str, Any] = Field(
         default_factory=lambda: {
-            "embedding_dim": 64,
+            "embedding_dim": 16,
             "num_heads": 4,
             "num_encoder_layers": 2,
             "dropout": 0.2,

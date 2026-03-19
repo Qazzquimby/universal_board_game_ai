@@ -204,6 +204,7 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
         config: SomethingZeroConfig,
         training_config: TrainingConfig,
         model_name: str,
+        variant: str = None,  # for keeping multiple versions
     ):
         super().__init__(
             num_simulations=config.num_simulations,
@@ -234,6 +235,7 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
         self.train_replay_buffer = deque(maxlen=train_buffer_size)
         self.val_replay_buffer = deque(maxlen=val_buffer_size)
 
+        self.variant = variant
         self.loaded = False
         self.printed_not_loaded_warning = False
 
@@ -611,8 +613,12 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
             raise ValueError("model_type not set on agent")
         model_dir = self._get_model_dir()
         latest_iter = -1
+
+        variant_string = f"_{self.variant}" if self.variant else ""
+        path_glob = f"{self.model_type}{variant_string}_iter_*_net.pth"
+
         if model_dir.exists():
-            for f in model_dir.glob(f"{self.model_type}_iter_*_net.pth"):
+            for f in model_dir.glob(path_glob):
                 try:
                     iter_num_str = f.stem.split("_iter_")[1].split("_net")[0]
                     iter_num = int(iter_num_str)
@@ -630,7 +636,11 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
         iter_num_string = str(iter_num).zfill(3)
         model_dir = self._get_model_dir()
         suffix = "optimizer.pth" if get_optimizer else "net.pth"
-        return model_dir / f"{self.model_type}_iter_{iter_num_string}_{suffix}"
+        variant_string = f"_{self.variant}" if self.variant else ""
+        return (
+            model_dir
+            / f"{self.model_type}{variant_string}_iter_{iter_num_string}_{suffix}"
+        )
 
     def load_latest_version(self) -> bool:
         """Loads the latest version of the model and returns True if a checkpoint was loaded."""
@@ -709,6 +719,7 @@ class BaseLearningAgent(BaseMCTSAgent, abc.ABC):
         opt_path = self.get_model_iter_path(iteration, get_optimizer=True)
 
         net_path.parent.mkdir(parents=True, exist_ok=True)
+        print(f"Saving net to {net_path} and opt to {opt_path}")
         torch.save(self.network.state_dict(), net_path)
         torch.save(self.optimizer.state_dict(), opt_path)
 
