@@ -10,15 +10,17 @@ import sys
 
 from loguru import logger
 
-from core.config import AppConfig
+from core.config import AppConfig, EnvConfig, MUZERO_VARIANT
 from models.training import run_training_loop
+
 
 if __name__ == "__main__":
     config = AppConfig()
+    config.env = EnvConfig(name="tictactoe")
 
     logger.remove()
     logger.add(sys.stderr, level="INFO")
 
     run_training_loop(
-        config, model_type="muzero", env_name_override=None, variant="emb16"
+        config, model_type="muzero", env_name_override=None, variant=MUZERO_VARIANT
     )

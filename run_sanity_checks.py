@@ -112,7 +112,8 @@ def run_sanity_checks_for_agent(
 
 def main():
     config = AppConfig()
-    config.env.name = "Connect4"
+    # config.env.name = "Connect4"
+    config.env.name = "tictactoe"
 
     logger.remove()
     logger.add(sys.stderr, level="INFO")

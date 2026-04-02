@@ -9,11 +9,13 @@ from core.agent_interface import Agent
 from core.config import (
     AppConfig,
     EnvConfig,
+    MUZERO_VARIANT,
 )
 from environments.base import BaseEnvironment
 from environments.connect4.connect4 import Connect4
 from agents.mcts_agent import make_pure_mcts
 from environments.gobblet.gobblet import Gobblet
+from environments.tictactoe.tictactoe import TicTacToe
 
 
 def get_environment(env_config: EnvConfig) -> BaseEnvironment:
@@ -23,6 +25,8 @@ def get_environment(env_config: EnvConfig) -> BaseEnvironment:
         return Connect4()
     elif env_config.name.lower() == "gobblet":
         return Gobblet()
+    elif env_config.name.lower() == "tictactoe":
+        return TicTacToe()
     else:
         raise ValueError(f"Unknown environment name: {env_config.name}")
 
@@ -44,7 +48,9 @@ def get_agents(env: BaseEnvironment, config: AppConfig) -> Dict[str, Agent]:
     mz_agent_name = f"MZ_{config.mcts.num_simulations}"
     # mz_agent = _create_mz_agent(env, config)
     # _load_and_prepare_agent(mz_agent, "MuZero")
-    mz_agent = create_learning_agent(model_type="muzero", env=env, config=config)
+    mz_agent = create_learning_agent(
+        model_type="muzero", env=env, config=config, variant=MUZERO_VARIANT
+    )
     agents[mz_agent_name] = mz_agent
 
     # MCTS agent

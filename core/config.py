@@ -11,6 +11,8 @@ MCTS_SIMULATIONS = 400
 TRAINING_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 INFERENCE_DEVICE = "cpu"
 
+MUZERO_VARIANT = "emb16"
+
 # --- Environment Configuration ---
 class EnvConfig(BaseModel):
     name: str = "connect4"
