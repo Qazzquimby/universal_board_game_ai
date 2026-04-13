@@ -823,7 +823,13 @@ class MuZeroAgent(BaseLearningAgent):
             network_output=network_output, step_mask=step_mask
         )
         scaled_hidden_state_losses = scale_loss_by_step(hidden_state_losses)
-        total_hidden_state_loss = torch.sum(scaled_hidden_state_losses)
+        
+        reg_loss = latent_regularization_loss(
+            mu=network_output.root_mu,
+            log_var=network_output.root_log_var,
+        )
+        
+        total_hidden_state_loss = torch.sum(scaled_hidden_state_losses) + reg_loss * 0.1
         return hidden_state_losses, total_hidden_state_loss
 
     def _calculate_value_loss_per_step(
@@ -918,10 +924,10 @@ def wasserstein_distance_loss(
     step_mask: Bool[torch.Tensor, "batch unroll"],
 ) -> Float[torch.Tensor, "unroll"]:
     # W^2(p, q) = ||mu1 - mu2||^2 + ||sigma1 - sigma2||^2
-    mean_diff_squared = torch.sum((mu_1 - mu_2).pow(2), dim=2)
+    mean_diff_squared = torch.sum((mu_1 - mu_2).pow(2), dim=-1)
     sigma1 = torch.exp(0.5 * log_var_1)
     sigma2 = torch.exp(0.5 * log_var_2)
-    std_diff_squared = torch.sum((sigma1 - sigma2).pow(2), dim=2)
+    std_diff_squared = torch.sum((sigma1 - sigma2).pow(2), dim=-1)
     distance = mean_diff_squared + std_diff_squared
 
     inner_step_mask = step_mask[:, 1:]  # inner unroll steps
@@ -929,6 +935,16 @@ def wasserstein_distance_loss(
     masked_distance = distance * inner_step_mask
     per_step_mean = masked_distance.sum(dim=0) / valid_counts
     return per_step_mean
+
+
+def latent_regularization_loss(
+    mu: Float[torch.Tensor, "batch emb"],
+    log_var: Float[torch.Tensor, "batch emb"],
+) -> torch.Tensor:
+    # L2 penalty on the mean to keep the latent space bounded.
+    # Penalize large variances to prevent explosion, but allow variance to be 0 (log_var -> -inf).
+    sigma_sq = torch.exp(log_var)
+    return torch.mean(mu.pow(2) + sigma_sq)
 
 
 def make_pure_muzero(

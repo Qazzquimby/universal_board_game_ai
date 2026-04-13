@@ -35,6 +35,8 @@ class MuZeroNetworkOutput:
     pred_dynamics_log_var: torch.Tensor
     target_representation_mu: torch.Tensor
     target_representation_log_var: torch.Tensor
+    root_mu: torch.Tensor
+    root_log_var: torch.Tensor
 
 
 class RootStateObservationToRevealedLatentSampler(nn.Module):
@@ -494,6 +496,8 @@ class MuZeroNet(BaseTokenizingNet):
             pred_dynamics_log_var=successor_log_var,
             target_representation_mu=target_representation_mu,
             target_representation_log_var=target_representation_log_var,
+            root_mu=revelation_mu,
+            root_log_var=revelation_log_var,
         )
 
     if typing.TYPE_CHECKING:
