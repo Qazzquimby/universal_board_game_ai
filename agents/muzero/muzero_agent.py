@@ -824,10 +824,26 @@ class MuZeroAgent(BaseLearningAgent):
         )
         scaled_hidden_state_losses = scale_loss_by_step(hidden_state_losses)
         
-        reg_loss = latent_regularization_loss(
+        root_reg_loss = latent_regularization_loss(
             mu=network_output.root_mu,
             log_var=network_output.root_log_var,
         )
+        
+        if network_output.pred_dynamics_mu.numel() > 0:
+            inner_step_mask = step_mask[:, 1:]
+            dyn_reg_loss = latent_regularization_loss(
+                mu=network_output.pred_dynamics_mu,
+                log_var=network_output.pred_dynamics_log_var,
+                mask=inner_step_mask,
+            )
+            target_reg_loss = latent_regularization_loss(
+                mu=network_output.target_representation_mu,
+                log_var=network_output.target_representation_log_var,
+                mask=inner_step_mask,
+            )
+            reg_loss = root_reg_loss + dyn_reg_loss + target_reg_loss
+        else:
+            reg_loss = root_reg_loss
         
         total_hidden_state_loss = torch.sum(scaled_hidden_state_losses) + reg_loss * 0.1
         return hidden_state_losses, total_hidden_state_loss
@@ -925,8 +941,13 @@ def wasserstein_distance_loss(
 ) -> Float[torch.Tensor, "unroll"]:
     # W^2(p, q) = ||mu1 - mu2||^2 + ||sigma1 - sigma2||^2
     mean_diff_squared = torch.sum((mu_1 - mu_2).pow(2), dim=-1)
-    sigma1 = torch.exp(0.5 * log_var_1)
-    sigma2 = torch.exp(0.5 * log_var_2)
+    
+    # Clamp log_var to prevent exp() from exploding
+    log_var_1_c = torch.clamp(log_var_1, max=10.0)
+    log_var_2_c = torch.clamp(log_var_2, max=10.0)
+    
+    sigma1 = torch.exp(0.5 * log_var_1_c)
+    sigma2 = torch.exp(0.5 * log_var_2_c)
     std_diff_squared = torch.sum((sigma1 - sigma2).pow(2), dim=-1)
     distance = mean_diff_squared + std_diff_squared
 
@@ -938,13 +959,25 @@ def wasserstein_distance_loss(
 
 
 def latent_regularization_loss(
-    mu: Float[torch.Tensor, "batch emb"],
-    log_var: Float[torch.Tensor, "batch emb"],
+    mu: torch.Tensor,
+    log_var: torch.Tensor,
+    mask: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     # L2 penalty on the mean to keep the latent space bounded.
     # Penalize large variances to prevent explosion, but allow variance to be 0 (log_var -> -inf).
-    sigma_sq = torch.exp(log_var)
-    return torch.mean(mu.pow(2) + sigma_sq)
+    # Clamp log_var to prevent exp() from exploding to inf
+    log_var_clamped = torch.clamp(log_var, max=10.0)
+    sigma_sq = torch.exp(log_var_clamped)
+    loss = mu.pow(2) + sigma_sq
+    
+    if mask is not None:
+        # mask is [batch, unroll]
+        # loss is [batch, unroll, emb]
+        mask_expanded = mask.unsqueeze(-1).expand_as(loss)
+        loss = loss * mask_expanded
+        return loss.sum() / mask_expanded.sum().clamp(min=1)
+    else:
+        return torch.mean(loss)
 
 
 def make_pure_muzero(

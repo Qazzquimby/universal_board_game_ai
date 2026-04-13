@@ -16,6 +16,20 @@ from models.networks import BaseTokenizingNet
 from algorithms.sampling import take_sample
 
 
+class ScaleGradient(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x, scale):
+        ctx.scale = scale
+        return x
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return grad_output * ctx.scale, None
+
+def scale_gradient(x, scale):
+    return ScaleGradient.apply(x, scale)
+
+
 @dataclass
 class UnrollStepOutput:
     pred_policy: torch.Tensor
@@ -448,7 +462,7 @@ class MuZeroNet(BaseTokenizingNet):
                 unrolled_pred_successor_log_var.append(successor_log_var)
 
                 next_hidden_state = take_sample(successor_mu, successor_log_var)
-                current_latent = next_hidden_state
+                current_latent = scale_gradient(next_hidden_state, 0.5)
 
                 # TARGET REPRESENTATION
                 # Get the latent from observed state->latent to
