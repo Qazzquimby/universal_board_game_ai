@@ -11,7 +11,7 @@ MCTS_SIMULATIONS = 400
 TRAINING_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 INFERENCE_DEVICE = "cpu"
 
-MUZERO_VARIANT = "emb16"
+MUZERO_VARIANT = ""
 
 # --- Environment Configuration ---
 class EnvConfig(BaseModel):
@@ -34,7 +34,6 @@ REPLAY_BUFFER_SIZE = 9999999999999999  # 100_000
 class SomethingZeroConfig(BaseModel):
     num_simulations: int = MCTS_SIMULATIONS  # MCTS simulations per move
     cpuct: float = 1.0  # Exploration constant in PUCT formula
-    learning_rate: float = 0.0001  # 0.0001
     weight_decay: float = 0.00001
 
     value_loss_weight: float = 0.5
@@ -80,10 +79,10 @@ class MuZeroConfig(SomethingZeroConfig):
     discount_factor: float = 0.99
     state_model_params: Dict[str, Any] = Field(
         default_factory=lambda: {
-            "embedding_dim": 16,
+            "embedding_dim": 64,
             "num_heads": 4,
             "num_encoder_layers": 2,
-            "dropout": 0.2,
+            "dropout": 0.1,
         }
     )
 
@@ -101,7 +100,7 @@ class TrainingConfig(BaseModel):
     save_checkpoint_frequency: int = 2
     # MCTS Profiling configuration
     enable_mcts_profiling: bool = True
-    learning_rate: float = 0.001
+    learning_rate: float = 0.00001
 
 
 # --- WandB Configuration ---

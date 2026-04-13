@@ -299,35 +299,25 @@ class MuZeroNet(BaseTokenizingNet):
     ) -> Tuple[typing.Dict[int, float], float]:
         self.eval()
         with torch.no_grad():
-            # Tokenize state
             batched_state = _get_batched_state([state_with_key.state])
             state_tokens, state_mask = self.tokenize_state_batch(
                 batched_state, batch_size=1
             )
 
-            # Get latent state params
-            (mu, _log_var,) = self.root_state_observation_to_revealed_latent_sampler(
+            (mu, log_var,) = self.root_state_observation_to_revealed_latent_sampler(
                 state_tokens=state_tokens, state_padding_mask=state_mask
             )
 
-            # Use mu as the latent state for deterministic prediction
-            latent_state = mu
-
-            # Get value
+            latent_state = take_sample(mu, log_var)
             value = self.state_latent_to_value(latent_state)
 
             if not legal_actions:
                 return {}, value.item()
 
-            # Tokenize legal actions
             action_tokens = self.tokenize_actions(legal_actions)
-
-            # Get policy logits
             policy_logits = self.state_latent_and_actions_to_policy_logits(
                 state_latent=latent_state, action_token=action_tokens
             )
-
-            # Softmax and format output
             policy_probs = F.softmax(policy_logits, dim=-1).squeeze(0).cpu().numpy()
             policy_dict = {i: float(prob) for i, prob in enumerate(policy_probs)}
 

@@ -1,7 +1,7 @@
 # don't delete.
 # Does not use Reward, only Policy and Value
 
-# I have a muzero variant designed for games with unknown action spaces, hidden info, and stochasticity. Please review
+# I have a muzero variant designed for games with unknown action spaces, hidden info, and stochasticity.
 #
 #
 # Create a RootNodeHiddenInfoSampler node
@@ -770,8 +770,7 @@ class MuZeroAgent(BaseLearningAgent):
             step_mask=step_mask,
         )
 
-        # todo temp, just seeing if it can learn value
-        total_loss = total_value_loss + total_policy_loss  # + total_hidden_state_loss
+        total_loss = total_value_loss + total_policy_loss + total_hidden_state_loss
         assert not total_loss.isnan()
 
         return MuZeroLossStatistics(

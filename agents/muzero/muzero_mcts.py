@@ -50,28 +50,41 @@ class MuZeroObservedRootNode(MCTSNodeWithState):
         self.is_expanded = True  # Edges created on init
 
     def get_revelation(self):
-        if self.revelations:
-            existing_children = torch.stack(
-                [rev.latent for rev in self.revelations], dim=1
-            )
-            _1, _action, _emb_dim = existing_children.shape
-            assert _1 == 1
-            new_revelation = self.widener.widen_if_needed(existing_children)
-        else:
-            new_revelation = self.widener.widen_if_needed()
-
-        if new_revelation is not None:
+        if not self.revelations:
+            # use mu from widener for a deterministic 'sample'
+            new_revelation_latent = self.widener.mu
             new_revelation_node = MuZeroRevealedRootNode(
                 network=self.network,
                 current_player_index=self.current_player_index,
                 observed_root=self,
-                latent=new_revelation,
+                latent=new_revelation_latent,
                 action_tokens=self.action_tokens,
             )
             self.revelations.append(new_revelation_node)
-            return new_revelation_node
-        else:
-            return random.choice(self.revelations)
+        return self.revelations[0]
+        # todo go back to allowing multiple revelations
+        # if self.revelations:
+        #     existing_children = torch.stack(
+        #         [rev.latent for rev in self.revelations], dim=1
+        #     )
+        #     _1, _action, _emb_dim = existing_children.shape
+        #     assert _1 == 1
+        #     new_revelation = self.widener.widen_if_needed(existing_children)
+        # else:
+        #     new_revelation = self.widener.widen_if_needed()
+        #
+        # if new_revelation is not None:
+        #     new_revelation_node = MuZeroRevealedRootNode(
+        #         network=self.network,
+        #         current_player_index=self.current_player_index,
+        #         observed_root=self,
+        #         latent=new_revelation,
+        #         action_tokens=self.action_tokens,
+        #     )
+        #     self.revelations.append(new_revelation_node)
+        #     return new_revelation_node
+        # else:
+        #     return random.choice(self.revelations)
 
 
 class MuZeroNode(MCTSNode):
@@ -177,25 +190,37 @@ class MuZeroEdge(Edge):
         )
 
     def get_child_node(self):
-        if self.child_nodes:
-            existing_children = torch.stack(
-                [node.latent for node in self.child_nodes], dim=1
-            )
-            _1, _action, _emb = existing_children.shape
-            assert _1 == 1
-        else:
-            existing_children = None
-        new_successor_latent = self.widener.widen_if_needed(
-            existing_children=existing_children
-        )
-
-        if new_successor_latent is not None:
+        if not self.child_nodes:
+            # use mu from widener for a deterministic 'sample'
+            new_successor_latent = self.widener.mu
             new_child_node = MuZeroInnerNode(
                 latent=new_successor_latent,
                 current_player_index=self.next_player_index,
                 network=self.network,
             )
             self.child_nodes.append(new_child_node)
-            return new_child_node
-        else:
-            return random.choice(self.child_nodes)
+        return self.child_nodes[0]
+        # todo go back to allowing multiple child nodes
+
+        # if self.child_nodes:
+        #     existing_children = torch.stack(
+        #         [node.latent for node in self.child_nodes], dim=1
+        #     )
+        #     _1, _action, _emb = existing_children.shape
+        #     assert _1 == 1
+        # else:
+        #     existing_children = None
+        # new_successor_latent = self.widener.widen_if_needed(
+        #     existing_children=existing_children
+        # )
+        #
+        # if new_successor_latent is not None:
+        #     new_child_node = MuZeroInnerNode(
+        #         latent=new_successor_latent,
+        #         current_player_index=self.next_player_index,
+        #         network=self.network,
+        #     )
+        #     self.child_nodes.append(new_child_node)
+        #     return new_child_node
+        # else:
+        #     return random.choice(self.child_nodes)
