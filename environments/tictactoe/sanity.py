@@ -11,8 +11,8 @@ def get_tictactoe_sanity_states():
         [
             (0, 0, 0),
             (0, 1, 0),  # P0
-            (1, 0, 1),
-            (2, 0, 1),  # P1
+            (1, 1, 1),
+            (2, 1, 1),  # P1
         ],
         columns=["row", "col", "player_id"],
     )
