@@ -418,7 +418,7 @@ class MuZeroEpochMetrics:
     policy_loss_by_step: List[float]
     value_loss_by_step: List[float]
     hidden_state_loss_by_step: List[float]
-    
+
     wasserstein_loss: float
     reg_loss: float
     mu_mag: float
@@ -730,7 +730,7 @@ class MuZeroAgent(BaseLearningAgent):
                 total_reg_loss += loss_statistics.reg_loss.item()
                 total_mu_mag += loss_statistics.mu_mag.item()
                 total_log_var_mag += loss_statistics.log_var_mag.item()
-                
+
                 for i, v in enumerate(loss_statistics.policy_losses_per_step):
                     policy_loss_by_step[i] += v.item()
                 for i, v in enumerate(loss_statistics.value_losses_per_step):
@@ -775,7 +775,7 @@ class MuZeroAgent(BaseLearningAgent):
         """Calculates the MuZero loss over an unrolled trajectory."""
 
         (policy_losses_per_step, total_policy_loss) = self._compute_policy_loss(
-            pred_policies=network_output.pred_policies,
+            pred_policies=network_output.pred_policy_logits,
             policy_targets=policy_targets,
             step_mask=step_mask,
         )
@@ -798,7 +798,7 @@ class MuZeroAgent(BaseLearningAgent):
 
         total_loss = total_value_loss + total_policy_loss + total_hidden_state_loss
         assert not total_loss.isnan()
-        
+
         mu_mag = network_output.root_mu.abs().mean()
         log_var_mag = network_output.root_log_var.mean()
 
@@ -848,7 +848,12 @@ class MuZeroAgent(BaseLearningAgent):
         self,
         network_output: MuZeroNetworkOutput,
         step_mask: Bool[torch.Tensor, "unroll"],
-    ) -> Tuple[Float[torch.Tensor, "inner_unroll"], Float[torch.Tensor, "1"], Float[torch.Tensor, "1"], Float[torch.Tensor, "1"]]:
+    ) -> Tuple[
+        Float[torch.Tensor, "inner_unroll"],
+        Float[torch.Tensor, "1"],
+        Float[torch.Tensor, "1"],
+        Float[torch.Tensor, "1"],
+    ]:
         # return (torch.zeros(step_mask.shape[0] - 1), torch.tensor(0.0))
         # Use this to disable
 
@@ -857,12 +862,12 @@ class MuZeroAgent(BaseLearningAgent):
         )
         scaled_hidden_state_losses = scale_loss_by_step(hidden_state_losses)
         total_wasserstein_loss = torch.sum(scaled_hidden_state_losses)
-        
+
         root_reg_loss = latent_regularization_loss(
             mu=network_output.root_mu,
             log_var=network_output.root_log_var,
         )
-        
+
         if network_output.pred_dynamics_mu.numel() > 0:
             inner_step_mask = step_mask[:, 1:]
             dyn_reg_loss = latent_regularization_loss(
@@ -878,9 +883,14 @@ class MuZeroAgent(BaseLearningAgent):
             reg_loss = root_reg_loss + dyn_reg_loss + target_reg_loss
         else:
             reg_loss = root_reg_loss
-        
+
         total_hidden_state_loss = total_wasserstein_loss + reg_loss * 0.1
-        return hidden_state_losses, total_hidden_state_loss, total_wasserstein_loss, reg_loss
+        return (
+            hidden_state_losses,
+            total_hidden_state_loss,
+            total_wasserstein_loss,
+            reg_loss,
+        )
 
     def _calculate_value_loss_per_step(
         self,
@@ -941,11 +951,11 @@ class MuZeroAgent(BaseLearningAgent):
         step_mask: Bool[torch.Tensor, "unroll"],
     ) -> Float[torch.Tensor, "inner_unroll"]:
         if not network_output.pred_dynamics_mu.numel():
-            num_steps = network_output.pred_policies.shape[1]
+            num_steps = network_output.pred_policy_logits.shape[1]
             return torch.zeros(
                 num_steps,
-                device=network_output.pred_policies.device,
-                dtype=network_output.pred_policies.dtype,
+                device=network_output.pred_policy_logits.device,
+                dtype=network_output.pred_policy_logits.dtype,
             )
 
         loss = wasserstein_distance_loss(
@@ -976,11 +986,11 @@ def wasserstein_distance_loss(
     # W^2(p, q) = ||mu1 - mu2||^2 + ||sigma1 - sigma2||^2
     # Use mean instead of sum over embedding dim to keep loss scale consistent with policy/value
     mean_diff_squared = torch.mean((mu_1 - mu_2).pow(2), dim=-1)
-    
+
     # Clamp log_var to prevent exp() from exploding
     log_var_1_c = torch.clamp(log_var_1, max=10.0)
     log_var_2_c = torch.clamp(log_var_2, max=10.0)
-    
+
     sigma1 = torch.exp(0.5 * log_var_1_c)
     sigma2 = torch.exp(0.5 * log_var_2_c)
     std_diff_squared = torch.mean((sigma1 - sigma2).pow(2), dim=-1)
@@ -1004,7 +1014,7 @@ def latent_regularization_loss(
     log_var_clamped = torch.clamp(log_var, max=10.0)
     sigma_sq = torch.exp(log_var_clamped)
     loss = mu.pow(2) + sigma_sq
-    
+
     if mask is not None:
         # mask is [batch, unroll]
         # loss is [batch, unroll, emb]

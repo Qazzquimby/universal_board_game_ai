@@ -44,7 +44,7 @@ class UnrollStepOutput:
 
 @dataclass
 class MuZeroNetworkOutput:
-    pred_policies: torch.Tensor
+    pred_policy_logits: torch.Tensor
     pred_values: torch.Tensor
     pred_dynamics_mu: torch.Tensor
     pred_dynamics_log_var: torch.Tensor
@@ -407,7 +407,7 @@ class MuZeroNet(BaseTokenizingNet):
 
         num_inner_unroll_steps = num_unroll_steps - 1
 
-        unrolled_pred_policies = []
+        unrolled_pred_policy_logits = []
         unrolled_pred_values = []
         unrolled_pred_successor_mu = []
         unrolled_pred_successor_log_var = []
@@ -438,10 +438,7 @@ class MuZeroNet(BaseTokenizingNet):
 
             if valid_steps.any():
                 assert action_mask[valid_steps].any(dim=1).all()
-
-            prior_probs = F.softmax(prior_logits, dim=-1)
-            prior_probs = prior_probs.nan_to_num(0.0)
-            unrolled_pred_policies.append(prior_probs)
+            unrolled_pred_policy_logits.append(prior_logits)
 
             # VALUE
             pred_value = self.state_latent_to_value(current_latent)
@@ -482,7 +479,7 @@ class MuZeroNet(BaseTokenizingNet):
                     target_representation_log_var
                 )
 
-        pred_policies = torch.stack(unrolled_pred_policies, dim=1)
+        pred_policy_logits = torch.stack(unrolled_pred_policy_logits, dim=1)
         pred_values = torch.stack(unrolled_pred_values, dim=1)
 
         if num_unroll_steps > 0:
@@ -507,7 +504,7 @@ class MuZeroNet(BaseTokenizingNet):
             target_representation_log_var = empty_hidden_state_part
 
         return MuZeroNetworkOutput(
-            pred_policies=pred_policies,
+            pred_policy_logits=pred_policy_logits,
             pred_values=pred_values,
             pred_dynamics_mu=successor_mu,
             pred_dynamics_log_var=successor_log_var,
