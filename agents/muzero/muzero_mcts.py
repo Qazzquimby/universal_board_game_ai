@@ -1,4 +1,4 @@
-import random
+import torch.nn.functional as F
 from typing import List, Dict
 
 import torch
@@ -141,9 +141,10 @@ class MuZeroRevealedRootNode(MuZeroNode):
         current_player_index: int,
         network: MuZeroNet,
     ):
-        prior = network.state_latent_and_actions_to_policy_logits(
+        prior_logits = network.state_latent_and_actions_to_policy_logits(
             state_latent=latent, action_token=action_tokens
         )
+        prior = F.softmax(prior_logits, dim=-1)
         super().__init__(
             latent=latent,
             current_player_index=current_player_index,

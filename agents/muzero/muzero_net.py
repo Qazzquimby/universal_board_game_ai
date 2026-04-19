@@ -439,7 +439,9 @@ class MuZeroNet(BaseTokenizingNet):
             if valid_steps.any():
                 assert action_mask[valid_steps].any(dim=1).all()
 
-            unrolled_pred_policies.append(prior_logits)  # missing softmax right?
+            prior_probs = F.softmax(prior_logits, dim=-1)
+            prior_probs = prior_probs.nan_to_num(0.0)
+            unrolled_pred_policies.append(prior_probs)
 
             # VALUE
             pred_value = self.state_latent_to_value(current_latent)
