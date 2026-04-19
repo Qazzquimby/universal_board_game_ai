@@ -100,7 +100,7 @@ class TrainingConfig(BaseModel):
     save_checkpoint_frequency: int = 2
     # MCTS Profiling configuration
     enable_mcts_profiling: bool = True
-    learning_rate: float = 0.00001
+    learning_rate: float = 0.0001
 
 
 # --- WandB Configuration ---

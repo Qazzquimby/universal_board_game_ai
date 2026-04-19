@@ -403,6 +403,11 @@ class MuZeroLossStatistics:
     total_hidden_state_loss: torch.Tensor
     hidden_state_losses_per_step: torch.Tensor
 
+    wasserstein_loss: torch.Tensor
+    reg_loss: torch.Tensor
+    mu_mag: torch.Tensor
+    log_var_mag: torch.Tensor
+
 
 @dataclass
 class MuZeroEpochMetrics:
@@ -413,6 +418,11 @@ class MuZeroEpochMetrics:
     policy_loss_by_step: List[float]
     value_loss_by_step: List[float]
     hidden_state_loss_by_step: List[float]
+    
+    wasserstein_loss: float
+    reg_loss: float
+    mu_mag: float
+    log_var_mag: float
 
     def __str__(self):
         return (
@@ -420,6 +430,9 @@ class MuZeroEpochMetrics:
             f"- Policy: {self.policy_loss:.3f} "
             f"- Value: {self.value_loss:.3f} "
             f"- State: {self.hidden_state_loss:.3f} "
+            f"(Wass: {self.wasserstein_loss:.3f}, Reg: {self.reg_loss:.3f}) "
+            f"- MuMag: {self.mu_mag:.3f} "
+            f"- LogVarMag: {self.log_var_mag:.3f}"
         )
 
 
@@ -690,6 +703,8 @@ class MuZeroAgent(BaseLearningAgent):
         """Runs a single epoch of training or validation for MuZero."""
         total_loss, total_policy_loss, total_value_loss = 0.0, 0.0, 0.0
         total_hidden_state_loss = 0.0
+        total_wasserstein_loss, total_reg_loss = 0.0, 0.0
+        total_mu_mag, total_log_var_mag = 0.0, 0.0
         policy_loss_by_step = defaultdict(float)
         value_loss_by_step = defaultdict(float)
         hidden_state_loss_by_step = defaultdict(float)
@@ -711,6 +726,11 @@ class MuZeroAgent(BaseLearningAgent):
                 total_hidden_state_loss += (
                     loss_statistics.total_hidden_state_loss.item()
                 )
+                total_wasserstein_loss += loss_statistics.wasserstein_loss.item()
+                total_reg_loss += loss_statistics.reg_loss.item()
+                total_mu_mag += loss_statistics.mu_mag.item()
+                total_log_var_mag += loss_statistics.log_var_mag.item()
+                
                 for i, v in enumerate(loss_statistics.policy_losses_per_step):
                     policy_loss_by_step[i] += v.item()
                 for i, v in enumerate(loss_statistics.value_losses_per_step):
@@ -739,6 +759,10 @@ class MuZeroAgent(BaseLearningAgent):
             policy_loss_by_step=policy_loss_list,
             value_loss_by_step=value_loss_list,
             hidden_state_loss_by_step=hidden_state_loss_list,
+            wasserstein_loss=total_wasserstein_loss / num_batches,
+            reg_loss=total_reg_loss / num_batches,
+            mu_mag=total_mu_mag / num_batches,
+            log_var_mag=total_log_var_mag / num_batches,
         )
 
     def _calculate_loss(
@@ -765,6 +789,8 @@ class MuZeroAgent(BaseLearningAgent):
         (
             hidden_state_losses_per_step,
             total_hidden_state_loss,
+            wasserstein_loss,
+            reg_loss,
         ) = self._compute_hidden_state_consistency_loss(
             network_output=network_output,
             step_mask=step_mask,
@@ -772,6 +798,9 @@ class MuZeroAgent(BaseLearningAgent):
 
         total_loss = total_value_loss + total_policy_loss + total_hidden_state_loss
         assert not total_loss.isnan()
+        
+        mu_mag = network_output.root_mu.abs().mean()
+        log_var_mag = network_output.root_log_var.mean()
 
         return MuZeroLossStatistics(
             batch_loss=total_loss,
@@ -781,6 +810,10 @@ class MuZeroAgent(BaseLearningAgent):
             policy_losses_per_step=policy_losses_per_step,
             total_hidden_state_loss=total_hidden_state_loss,
             hidden_state_losses_per_step=hidden_state_losses_per_step,
+            wasserstein_loss=wasserstein_loss,
+            reg_loss=reg_loss,
+            mu_mag=mu_mag,
+            log_var_mag=log_var_mag,
         )
 
     def _compute_policy_loss(
@@ -815,7 +848,7 @@ class MuZeroAgent(BaseLearningAgent):
         self,
         network_output: MuZeroNetworkOutput,
         step_mask: Bool[torch.Tensor, "unroll"],
-    ) -> Tuple[Float[torch.Tensor, "inner_unroll"], Float[torch.Tensor, "1"]]:
+    ) -> Tuple[Float[torch.Tensor, "inner_unroll"], Float[torch.Tensor, "1"], Float[torch.Tensor, "1"], Float[torch.Tensor, "1"]]:
         # return (torch.zeros(step_mask.shape[0] - 1), torch.tensor(0.0))
         # Use this to disable
 
@@ -823,6 +856,7 @@ class MuZeroAgent(BaseLearningAgent):
             network_output=network_output, step_mask=step_mask
         )
         scaled_hidden_state_losses = scale_loss_by_step(hidden_state_losses)
+        total_wasserstein_loss = torch.sum(scaled_hidden_state_losses)
         
         root_reg_loss = latent_regularization_loss(
             mu=network_output.root_mu,
@@ -845,8 +879,8 @@ class MuZeroAgent(BaseLearningAgent):
         else:
             reg_loss = root_reg_loss
         
-        total_hidden_state_loss = torch.sum(scaled_hidden_state_losses) + reg_loss * 0.1
-        return hidden_state_losses, total_hidden_state_loss
+        total_hidden_state_loss = total_wasserstein_loss + reg_loss * 0.1
+        return hidden_state_losses, total_hidden_state_loss, total_wasserstein_loss, reg_loss
 
     def _calculate_value_loss_per_step(
         self,
@@ -940,7 +974,8 @@ def wasserstein_distance_loss(
     step_mask: Bool[torch.Tensor, "batch unroll"],
 ) -> Float[torch.Tensor, "unroll"]:
     # W^2(p, q) = ||mu1 - mu2||^2 + ||sigma1 - sigma2||^2
-    mean_diff_squared = torch.sum((mu_1 - mu_2).pow(2), dim=-1)
+    # Use mean instead of sum over embedding dim to keep loss scale consistent with policy/value
+    mean_diff_squared = torch.mean((mu_1 - mu_2).pow(2), dim=-1)
     
     # Clamp log_var to prevent exp() from exploding
     log_var_1_c = torch.clamp(log_var_1, max=10.0)
@@ -948,7 +983,7 @@ def wasserstein_distance_loss(
     
     sigma1 = torch.exp(0.5 * log_var_1_c)
     sigma2 = torch.exp(0.5 * log_var_2_c)
-    std_diff_squared = torch.sum((sigma1 - sigma2).pow(2), dim=-1)
+    std_diff_squared = torch.mean((sigma1 - sigma2).pow(2), dim=-1)
     distance = mean_diff_squared + std_diff_squared
 
     inner_step_mask = step_mask[:, 1:]  # inner unroll steps

@@ -26,6 +26,7 @@ class ScaleGradient(torch.autograd.Function):
     def backward(ctx, grad_output):
         return grad_output * ctx.scale, None
 
+
 def scale_gradient(x, scale):
     return ScaleGradient.apply(x, scale)
 
@@ -438,7 +439,7 @@ class MuZeroNet(BaseTokenizingNet):
             if valid_steps.any():
                 assert action_mask[valid_steps].any(dim=1).all()
 
-            unrolled_pred_policies.append(prior_logits)
+            unrolled_pred_policies.append(prior_logits)  # missing softmax right?
 
             # VALUE
             pred_value = self.state_latent_to_value(current_latent)
